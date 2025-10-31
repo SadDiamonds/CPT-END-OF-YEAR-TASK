@@ -253,8 +253,7 @@ def render_ui(screen="work"):
     options = "[W]ork  [U]pgrade  [F]ocus"
     if game.get("inspiration_unlocked", False):
         options += "  [I]nspire"
-    else:
-        options += "  [Q]uit"
+    options += "  [Q]uit"
     right_lines.append("Options: " + options)
 
     # -----------------------------
