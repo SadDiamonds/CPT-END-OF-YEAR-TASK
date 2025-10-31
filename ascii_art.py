@@ -3,7 +3,7 @@
 LAYER_0_DESK = r"""
 ┌─────────────┐
 │   [Desk]    │
-│   [Laptop]  │
+│   [Lapop]  │
 │   [Coffee]  │
 └─────────────┘
 """
