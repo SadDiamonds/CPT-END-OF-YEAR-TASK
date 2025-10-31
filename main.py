@@ -1,12 +1,10 @@
-import json, os, time, sys, threading
+import json, os, time, sys, threading, select
 
-global KEY_PRESSED
-
-# Cross-platform non-blocking input
+# Cross-platform input
 try:
     import msvcrt  # Windows
 except ImportError:
-    import select, tty, termios  # macOS/Linux
+    msvcrt = None
 
 from ascii_art import LAYER_0_DESK, LAYER_1_INSPIRATION
 
@@ -14,13 +12,17 @@ SAVE_PATH = "data/save.json"
 if not os.path.exists("data"):
     os.makedirs("data")
 
+# -----------------------------
+# Global variables
+# -----------------------------
+game = {}
 work_timer = 0
-WORK_DELAY = 5  # seconds per money gain
-KEY_PRESSED = None  # Store key pressed
+WORK_DELAY = 5
+KEY_PRESSED = None  # stores last key pressed
 
 
 # -----------------------------
-# Save System
+# Save system
 # -----------------------------
 def load_save():
     if os.path.exists(SAVE_PATH):
@@ -30,7 +32,7 @@ def load_save():
                 if data:
                     return json.loads(data)
         except json.JSONDecodeError:
-            print("Save file empty or corrupted, starting new game.")
+            print("Save file empty or corrupted. Starting new game.")
     return {
         "layer": 0,
         "money": 0,
@@ -44,13 +46,14 @@ def load_save():
     }
 
 
-def save_game(data):
+def save_game():
     with open(SAVE_PATH, "w") as f:
-        json.dump(data, f)
+        json.dump(game, f)
 
 
-game = load_save()
-
+# -----------------------------
+# Upgrades
+# -----------------------------
 all_upgrades = [
     {"name": "Better Desk", "cost": 20, "effect": 1.5, "unlocked": True},
     {"name": "Coffee", "cost": 200, "effect": 2, "unlocked": False},
@@ -59,81 +62,10 @@ all_upgrades = [
 ]
 
 
-# -----------------------------
-# Utilities
-# -----------------------------
-def clear_screen():
-    os.system("cls" if os.name == "nt" else "clear")
-
-
-def display_status():
-    clear_screen()
-    if game["layer"] == 0:
-        print(LAYER_0_DESK)
-    else:
-        print(LAYER_1_INSPIRATION)
-    print(f"\nLayer: {game['layer']}")
-    print(
-        f"Money: ${game['money']:.1f} | Fatigue: {game['fatigue']} | Focus: {game['focus']}/100 | Inspiration: {game['inspiration']}"
-    )
-
-    if game["focus_unlocked"]:
-        focus_bar_len = 20
-        focus_progress = int((game["focus"] / 100) * focus_bar_len)
-        focus_bar = "#" * focus_progress + "-" * (focus_bar_len - focus_progress)
-        print(f"Focus: [{focus_bar}]")
-
-    print("\nUpgrades:")
-    for i, upg in enumerate(all_upgrades, start=1):
-        if upg["unlocked"]:
-            print(f"{i}. {upg['name']} - {upg['cost']} Money")
-
-    print("\nOptions: [Q]uit | [U]pgrade | [O]vertime | [R]eset to Inspiration")
-
-
-# -----------------------------
-# Work Mechanics
-# -----------------------------
-def work_tick():
-    global work_timer
-    work_timer += 1
-
-    # Draw progress bar
-    bar_len = 20
-    progress = min(work_timer / game["work_delay"], 1)
-    filled = int(progress * bar_len)
-    bar = "#" * filled + "-" * (bar_len - filled)
-    print(f"[{bar}] Working...", end="\r")
-
-    # Gain money if timer reached
-    if work_timer >= game["work_delay"]:
-        earned = 1 * game.get("money_mult", 1)
-        game["money"] += earned
-        work_timer = 0
-        if game["focus_unlocked"]:
-            game["focus"] = min(100, game["focus"] + 10)
-        save_game(game)
-
-
-def overtime():
-    if "Overtime" not in game["money_upgrades"]:
-        print("You haven't unlocked Overtime yet.")
-        time.sleep(1)
-        return
-    game["money"] += 3
-    game["fatigue"] += 5
-    save_game(game)
-    print("Overtime done! +3 Money, +5 Fatigue")
-    time.sleep(1)
-
-
-# -----------------------------
-# Upgrades
-# -----------------------------
 def apply_upgrade_effect(upg):
     name = upg["name"]
     if name == "Better Desk":
-        game["money_mult"] = game.get("money_mult", 1) * upg.get("effect", 1)
+        game["money_mult"] *= upg.get("effect", 1)
     elif name == "Coffee":
         game["work_delay"] = max(
             0.5, game.get("work_delay", WORK_DELAY) / upg.get("effect", 1)
@@ -146,13 +78,14 @@ def apply_upgrade_effect(upg):
 
 def buy_upgrade():
     unlocked = [u for u in all_upgrades if u["unlocked"]]
+    print("\n--- Upgrades ---")
     for i, u in enumerate(unlocked, start=1):
         print(f"{i}. {u['name']} - {u['cost']} Money")
+    print("Press number of upgrade to buy:")
 
     global KEY_PRESSED
-    print("Press number of upgrade to buy:")
     while KEY_PRESSED is None:
-        time.sleep(0.1)
+        time.sleep(0.05)
     choice = KEY_PRESSED
     KEY_PRESSED = None
 
@@ -165,7 +98,7 @@ def buy_upgrade():
                 if upg["name"] not in game["money_upgrades"]:
                     game["money_upgrades"].append(upg["name"])
                 apply_upgrade_effect(upg)
-                # Unlock next
+                # Unlock next upgrade
                 for next_upg in all_upgrades:
                     if not next_upg["unlocked"]:
                         next_upg["unlocked"] = True
@@ -176,10 +109,11 @@ def buy_upgrade():
             print("Invalid choice!")
     else:
         print("Enter a number!")
+    time.sleep(1)
 
 
 # -----------------------------
-# Reset Layer
+# Reset/Inspiration
 # -----------------------------
 def reset_inspiration():
     if game["money"] < 100:
@@ -202,23 +136,98 @@ def reset_inspiration():
             "layer": 1,
         }
     )
-    save_game(game)
+    save_game()
 
 
 # -----------------------------
-# Key listener
+# Work mechanics
+# -----------------------------
+def work_tick():
+    global work_timer
+    work_timer += 1
+    progress = min(work_timer / game.get("work_delay", WORK_DELAY), 1)
+    bar_len = 20
+    filled = int(progress * bar_len)
+    bar = "#" * filled + "-" * (bar_len - filled)
+    print(f"[{bar}] Working...", end="\r")
+    if work_timer >= game.get("work_delay", WORK_DELAY):
+        earned = 1 * game.get("money_mult", 1)
+        game["money"] += earned
+        work_timer = 0
+        if game["focus_unlocked"]:
+            game["focus"] = min(100, game["focus"] + 10)
+        save_game()
+
+
+def overtime():
+    if "Overtime" not in game["money_upgrades"]:
+        print("You haven't unlocked Overtime yet.")
+        time.sleep(1)
+        return
+    game["money"] += 3
+    game["fatigue"] += 5
+    save_game()
+    print("Overtime done! +3 Money, +5 Fatigue")
+    time.sleep(1)
+
+
+# -----------------------------
+# Display
+# -----------------------------
+def display_status():
+    os.system("cls" if os.name == "nt" else "clear")
+    print("╭" + "-" * 50 + "╮")
+    print("|{:^50}|".format("ESCAPE: Incremental Game"))
+    print("╰" + "-" * 50 + "╯\n")
+
+    if game["layer"] == 0:
+        print(LAYER_0_DESK)
+    else:
+        print(LAYER_1_INSPIRATION)
+
+    print(f"\nLayer: {game['layer']}")
+    print(
+        f"Money: ${game['money']:.1f} | Fatigue: {game['fatigue']} | Focus: {game['focus']}/100 | Inspiration: {game['inspiration']}"
+    )
+
+    if game["focus_unlocked"]:
+        focus_bar_len = 20
+        focus_progress = int((game["focus"] / 100) * focus_bar_len)
+        focus_bar = "#" * focus_progress + "-" * (focus_bar_len - focus_progress)
+        print(f"Focus: [{focus_bar}]")
+
+    print("\nUpgrades:")
+    for i, u in enumerate(all_upgrades, 1):
+        if u["unlocked"]:
+            print(f"{i}. {u['name']} - {u['cost']} Money")
+
+    print("\nOptions: [Q]uit | [U]pgrade | [O]vertime | [R]eset to Inspiration")
+
+
+# -----------------------------
+# Key Listener
 # -----------------------------
 def key_listener():
     global KEY_PRESSED
-    while True:
-        if sys.platform == "win32":
+    if sys.platform == "win32":
+        while True:
             if msvcrt.kbhit():
                 KEY_PRESSED = msvcrt.getwch().lower()
-        else:
-            dr, dw, de = select.select([sys.stdin], [], [], 0)
-            if dr:
-                KEY_PRESSED = sys.stdin.read(1).lower()
-        time.sleep(0.05)
+            time.sleep(0.05)
+    else:
+        import tty, termios
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            while True:
+                dr, dw, de = select.select([sys.stdin], [], [], 0)
+                if dr:
+                    KEY_PRESSED = sys.stdin.read(1).lower()
+                time.sleep(0.05)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 # -----------------------------
@@ -250,6 +259,7 @@ def main_loop():
 
 
 if __name__ == "__main__":
+    game = load_save()
     print("Welcome to ESCAPE: Incremental Game Prototype")
     time.sleep(1)
     main_loop()
