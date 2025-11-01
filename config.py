@@ -31,4 +31,12 @@ INSPIRE_UPGRADES = [
     {"id":"inspire_1", "name":"Quick Learner", "cost":50, "type":"work_mult", "value":0.9}, 
     {"id":"inspire_2", "name":"Efficient Worker", "cost":100, "type":"money_mult", "value":100}, 
     {"id":"inspire_3", "name":"Master Mind", "cost":200, "type":"focus_max", "value":20}, 
+    {
+    "id": "inspire_auto_work",
+    "name": "Let a clanker do the job for you",
+    "cost": 250,
+    "type": "auto_work",
+    "value": 1
+    },
+
 ]

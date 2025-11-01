@@ -16,6 +16,8 @@ from ascii_art import (
 )
 import config
 
+from config import INSPIRE_UPGRADES
+
 # Save file path
 SAVE_PATH = "data/save.json"
 if not os.path.exists("data"):
@@ -36,6 +38,7 @@ game = {
     "focus_unlocked": False,
     "base_work_delay": config.BASE_WORK_DELAY,
     "base_money_gain": config.BASE_MONEY_GAIN,
+    "auto_work_unlocked": False,
 }
 
 # runtime variables
@@ -69,6 +72,10 @@ def load_game():
     game.setdefault("focus_max_bonus", 0)
     game.setdefault("base_work_delay", config.BASE_WORK_DELAY)
     game.setdefault("base_money_gain", config.BASE_MONEY_GAIN)
+    game.setdefault("auto_work_unlocked", False)
+
+    if "inspire_auto_work" in game.get("inspiration_upgrades", []):
+        game["auto_work_unlocked"] = True
 
 def save_game():
     try:
@@ -189,7 +196,7 @@ def boxed_lines(content_lines, title=None, pad_top=1, pad_bottom=1, margin=confi
 # -----------------------------
 def render_ui(screen="work"):
     effective_gain, effective_delay = compute_gain_and_delay()
-    prog = min(work_timer / effective_delay, 1.0)
+    prog = min(work_timer / effective_delay, 1.0) if game.get("auto_work_unlocked", False) else 0
 
     bar_len = 36
     filled = int(prog * bar_len)
@@ -223,13 +230,9 @@ def render_ui(screen="work"):
             left_lines.append("=== INSPIRATION TREE ===")
             left_lines.append(f"Points: {game.get('inspiration',0)}")
             left_lines.append("")
-            tree = [
-                {"id":"inspire_1", "name":"Quick Learner", "cost":50},
-                {"id":"inspire_2", "name":"Efficient Worker", "cost":100},
-                {"id":"inspire_3", "name":"Master Mind", "cost":200},
-            ]
+            tree = INSPIRE_UPGRADES
             for i, u in enumerate(tree, start=1):
-                owned = "(owned)" if u["id"] in game.get("inspiration_upgrades",[]) else ""
+                owned = "(owned)" if u["id"] in game.get("inspiration_upgrades", []) else ""
                 left_lines.append(f" {i}. {u['name']} - Cost: {u['cost']} {owned}")
             left_lines.append("")
             left_lines.append(" [B] Back to Work ")
@@ -244,6 +247,10 @@ def render_ui(screen="work"):
         right_lines.extend(LAYER_0_DESK.splitlines())
     right_lines.append(f"MONEY: ${game.get('money',0):.2f}   GAIN: {effective_gain:.2f} / cycle   DELAY: {effective_delay:.2f}s")
     right_lines.append(work_bar)
+    if game.get("auto_work_unlocked", False):
+        right_lines.append("Auto-work: ENABLED")
+    else:
+        right_lines.append("Auto-work: MANUAL (press W)")
     if focus_bar_line:
         right_lines.append(focus_bar_line)
     right_lines.append("")
@@ -288,23 +295,26 @@ def render_ui(screen="work"):
 # -----------------------------
 def work_tick():
     global last_tick_time
+    # Work tick — only runs if auto-work is unlocked
     now = time.time()
-    gain, eff_delay = compute_gain_and_delay()
     delta = now - last_tick_time
     last_tick_time = now
 
-    work_timer_increment = delta
-    global work_timer
-    work_timer += work_timer_increment
-
+    gain, eff_delay = compute_gain_and_delay()
     focus_active = now < focus_active_until
 
-    if work_timer >= eff_delay:
-        game["money"] += gain
-        if game.get("focus_unlocked", False) and not focus_active:
-            game["focus"] = min(config.FOCUS_MAX, game.get("focus", 0) + config.FOCUS_CHARGE_PER_EARN)
-        work_timer -= eff_delay  # keep leftover
-        save_game()
+    if game.get("auto_work_unlocked", False):
+        work_timer += delta
+        if work_timer >= eff_delay:
+            game["money"] += gain
+            if game.get("focus_unlocked", False) and not focus_active:
+                game["focus"] = min(config.FOCUS_MAX, game.get("focus", 0) + config.FOCUS_CHARGE_PER_EARN)
+            work_timer -= eff_delay
+            save_game()
+    else:
+        work_timer = 0  # reset so the bar doesn’t auto-fill
+
+
 # -----------------------------
 # Focus activation
 # -----------------------------
@@ -447,6 +457,10 @@ def buy_inspire_upgrade(upg):
             game["money_mult"] = game.get("money_mult", 1.0) * upg["value"]
         elif upg["type"]=="focus_max":
             game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + upg["value"]
+        elif upg["type"]=="auto_work":
+            game["auto_work_unlocked"] = True
+            save_game()
+
 
         save_game()
         tmp = boxed_lines([f"Purchased {upg['name']}!"], title=" Inspire ", pad_top=1, pad_bottom=1)
@@ -609,17 +623,23 @@ def main_loop():
             now = time.time()
             delta = now - last_tick_time
             last_tick_time = now
-            work_timer += delta
 
             gain, eff_delay = compute_gain_and_delay()
             focus_active = now < focus_active_until
 
-            if work_timer >= eff_delay:
-                game["money"] += gain
-                if game.get("focus_unlocked", False) and not focus_active:
-                    game["focus"] = min(config.FOCUS_MAX, game.get("focus",0)+config.FOCUS_CHARGE_PER_EARN)
-                work_timer -= eff_delay  # keep leftover time
-                save_game()
+            # Only increment timer if auto-work is unlocked
+            if game.get("auto_work_unlocked", False):
+                work_timer += delta
+                if work_timer >= eff_delay:
+                    game["money"] += gain
+                    work_timer -= eff_delay
+                    if game.get("focus_unlocked", False) and not focus_active:
+                        game["focus"] = min(config.FOCUS_MAX, game.get("focus", 0) + config.FOCUS_CHARGE_PER_EARN)
+                    save_game()
+            else:
+                # Keep bar frozen until W is pressed
+                pass
+
 
             # -----------------------------
             # Render UI
@@ -640,6 +660,21 @@ def main_loop():
                 # Work screen
                 elif k == "w":
                     current_screen = "work"
+                    gain, eff_delay = compute_gain_and_delay()
+                    focus_active = now < focus_active_until
+
+                    # Always start fresh — ignore any half-filled progress
+                    work_timer = 0  
+
+                    # Shorter manual delay (instant or near-instant)
+                    game["money"] += gain
+                    if game.get("focus_unlocked", False) and not focus_active:
+                        game["focus"] = min(config.FOCUS_MAX, game.get("focus", 0) + config.FOCUS_CHARGE_PER_EARN)
+
+                    save_game()
+
+
+
                 # Upgrade menu
                 elif k == "u":
                     open_upgrade_menu()
