@@ -1,5 +1,6 @@
 # main.py
 import json, os, time, sys, threading, shutil
+import math
 import select
 
 # Cross-platform modules
@@ -12,8 +13,11 @@ from ascii_art import (
     LAYER_0_DESK,
     LAYER_1_UPGRADE,
     LAYER_2_INSPIRATION,
-    LAYER_FOCUS_MODE
+    LAYER_FOCUS_MODE,
+    UPGRADE_ART
 )
+
+
 import config
 
 from config import INSPIRE_UPGRADES
@@ -39,6 +43,7 @@ game = {
     "base_work_delay": config.BASE_WORK_DELAY,
     "base_money_gain": config.BASE_MONEY_GAIN,
     "auto_work_unlocked": False,
+    "money_since_reset": 0,
 }
 
 # runtime variables
@@ -49,6 +54,9 @@ focus_active_until = 0.0   # timestamp when focus effect ends
 
 # copy upgrades (so config.UPGRADES not mutated)
 all_upgrades = [u.copy() for u in config.UPGRADES]
+
+money_since_reset = game.get("money_since_reset", game.get("money", 0))
+layer = game.get("layer", 0)
 
 # -----------------------------
 # Persistence
@@ -142,20 +150,26 @@ def boxed_lines(content_lines, title=None, pad_top=1, pad_bottom=1, margin=confi
     box_w = max(config.MIN_BOX_WIDTH, term_w - margin * 2)
     inner_w = box_w - 2
 
-    # top border
+    # Pick border style based on layer
+    layer = game.get("layer", 0)
+    style = config.BORDERS.get(layer, list(config.BORDERS.values())[-1])
+    tl, tr, bl, br = style["tl"], style["tr"], style["bl"], style["br"]
+    h, v = style["h"], style["v"]
+
+    # Top border
     if title:
         t = f" {title} "
         if len(t) >= inner_w:
-            top = "╔" + "═" * inner_w + "╗"
+            top = tl + h * inner_w + tr
         else:
             left = (inner_w - len(t)) // 2
-            top = "╔" + "═" * left + t + "═" * (inner_w - left - len(t)) + "╗"
+            top = tl + h * left + t + h * (inner_w - left - len(t)) + tr
     else:
-        top = "╔" + "═" * inner_w + "╗"
+        top = tl + h * inner_w + tr
 
     lines = [top]
     for _ in range(pad_top):
-        lines.append("║" + " " * inner_w + "║")
+        lines.append(v + " " * inner_w + v)
 
     for raw in content_lines:
         if raw is None:
@@ -169,7 +183,7 @@ def boxed_lines(content_lines, title=None, pad_top=1, pad_bottom=1, margin=confi
             for w in words:
                 if cur == "":
                     cur = w
-                elif len(cur)+1+len(w) <= inner_w:
+                elif len(cur) + 1 + len(w) <= inner_w:
                     cur += " " + w
                 else:
                     segments.append(cur)
@@ -181,15 +195,16 @@ def boxed_lines(content_lines, title=None, pad_top=1, pad_bottom=1, margin=confi
                 if cur:
                     segments.append(cur)
         for seg in segments:
-            lines.append("║" + seg.center(inner_w) + "║")
+            lines.append(v + seg.center(inner_w) + v)
 
     for _ in range(pad_bottom):
-        lines.append("║" + " " * inner_w + "║")
+        lines.append(v + " " * inner_w + v)
 
-    lines.append("╚" + "═" * inner_w + "╝")
-    left_margin = max(0, (term_w - box_w)//2)
+    lines.append(bl + h * inner_w + br)
+    left_margin = max(0, (term_w - box_w) // 2)
     margin_str = " " * left_margin
     return [margin_str + l for l in lines]
+
 
 # -----------------------------
 # Render UI
@@ -202,69 +217,83 @@ def render_ui(screen="work"):
     filled = int(prog * bar_len)
     work_bar = "[" + "#" * filled + "-" * (bar_len - filled) + "] " + f"{int(prog*100):3d}%"
 
-    # Focus bar
-    focus_bar_line = ""
-    now = time.time()
-    if game.get("focus_unlocked", False):
-        # Include any bonus from inspiration upgrades
-        focus_max = config.FOCUS_MAX + game.get("focus_max_bonus", 0)
-        fprog = min(game.get("focus", 0) / float(focus_max), 1.0)
-        fbar_len = 36
-        ffilled = int(fprog * fbar_len)
-        focus_bar_line = "FOCUS: [" + "#" * ffilled + "-" * (fbar_len - ffilled) + f"] {int(fprog*100):3d}%"
-        if now < focus_active_until:
-            remaining = int(focus_active_until - now)
-            focus_bar_line += f"  (Active: {remaining}s)"
-
-
     # -----------------------------
-    # Build left panel (~25%)
+    # Left panel (~25%)
     # -----------------------------
+    calc_insp = calculate_inspiration(layer, money_since_reset)
+    time_next = predict_next_point()
     left_lines = []
+
     if game.get("inspiration_unlocked", False):
         if screen == "work":
-            left_lines.append(f"=== INSPIRATION ===  Points: {game.get('inspiration',0)}")
+            left_lines.append("    === INSPIRATION ===")
+            left_lines.append(f"        Points: {game.get('inspiration',0)}")
             left_lines.append("")
             left_lines.append(" [1] Open Inspiration Tree ")
         elif screen == "inspiration":
             left_lines.append("=== INSPIRATION TREE ===")
-            left_lines.append(f"Points: {game.get('inspiration',0)}")
+            left_lines.append(f"      Points: {game.get('inspiration',0)}")
             left_lines.append("")
             tree = INSPIRE_UPGRADES
             for i, u in enumerate(tree, start=1):
                 owned = "(owned)" if u["id"] in game.get("inspiration_upgrades", []) else ""
+                effect = f" → {u.get('desc', '')}" if u.get("desc") else ""
                 left_lines.append(f" {i}. {u['name']} - Cost: {u['cost']} {owned}")
+                if effect:
+                    left_lines.append(f"     {effect}")
             left_lines.append("")
             left_lines.append(" [B] Back to Work ")
+    elif game.get("money", 0) >= 1000:
+        left_lines.append(f"    You realise that all this work... is all for naught,")
+        left_lines.append(f"you decide to leave behind everything in return for {'an' if calc_insp==1 else str(calc_insp)} Inspiration")
+        left_lines.append("")
+        left_lines.append(f"                [I]nspire for {calc_insp} Inspiration")
+        if game.get("inspiration_unlocked", False):
+            left_lines.append(f"{time_next} until next point")
     else:
         left_lines.append("Reach $1000 to unlock Inspiration")
 
     # -----------------------------
-    # Build right panel (~50%)
+    # Right panel (~50%)
     # -----------------------------
     right_lines = []
+
+    # 1️ Desk table at top
     if LAYER_0_DESK:
-        right_lines.extend(LAYER_0_DESK.splitlines())
+        right_lines.extend(render_desk_table())
+
+    # 2️ Focus bar below desk
+    if game.get("focus_unlocked", False):
+        focus_max = config.FOCUS_MAX + game.get("focus_max_bonus", 0)
+        fprog = min(game.get("focus", 0) / float(focus_max), 1.0)
+        fbar_len = 36
+        ffilled = int(fprog * fbar_len)
+        focus_label_line = f"FOCUS: {int(fprog*100):3d}%"
+        focus_bar_line = "[" + "#" * ffilled + "-" * (fbar_len - ffilled) + "]"
+        right_lines.append(focus_label_line)
+        right_lines.append(focus_bar_line)
+        right_lines.append("")
+
+    # 3️ Work info
     right_lines.append(f"MONEY: ${game.get('money',0):.2f}   GAIN: {effective_gain:.2f} / cycle   DELAY: {effective_delay:.2f}s")
     right_lines.append(work_bar)
-    if game.get("auto_work_unlocked", False):
-        right_lines.append("Auto-work: ENABLED")
-    else:
-        right_lines.append("Auto-work: MANUAL (press W)")
-    if focus_bar_line:
-        right_lines.append(focus_bar_line)
-    right_lines.append("")
+    right_lines.append("Auto-work: " + ("ENABLED" if is_auto_work_unlocked() else "MANUAL (press W)"))
+
+    # 4️ Owned upgrades
     owned_names = [u['name'] for u in all_upgrades if u['id'] in game.get("owned",[])]
-    right_lines.append("Owned Upgrades: " + (", ".join(owned_names) if owned_names else "(none)"))
     right_lines.append("")
+    right_lines.append("Owned Upgrades: " + (", ".join(owned_names) if owned_names else "(none)"))
+
+    # 5️ Options
     options = "[W]ork  [U]pgrade  [F]ocus"
     if game.get("inspiration_unlocked", False):
         options += "  [I]nspire"
     options += "  [Q]uit"
+    right_lines.append("")
     right_lines.append("Options: " + options)
 
     # -----------------------------
-    # Combine columns with adjusted width
+    # Combine columns
     # -----------------------------
     max_lines = max(len(left_lines), len(right_lines))
     for _ in range(len(left_lines), max_lines):
@@ -272,14 +301,11 @@ def render_ui(screen="work"):
     for _ in range(len(right_lines), max_lines):
         right_lines.append("")
 
-    # Column widths
-    left_w = int(get_term_size()[0] * 0.25)  # ~25% left
-    right_w = int(get_term_size()[0] * 0.50) # ~50% right
+    left_w = int(get_term_size()[0] * 0.25)
+    right_w = int(get_term_size()[0] * 0.50)
     spacing = 4
 
-    combined_lines = []
-    for l, r in zip(left_lines, right_lines):
-        combined_lines.append(l.ljust(left_w) + " " * spacing + r.ljust(right_w))
+    combined_lines = [l.ljust(left_w) + " " * spacing + r.ljust(right_w) for l, r in zip(left_lines, right_lines)]
 
     # -----------------------------
     # Box and render
@@ -287,6 +313,34 @@ def render_ui(screen="work"):
     box = boxed_lines(combined_lines, title=f" ESCAPE — Layer {game.get('layer',0)} ", pad_top=1, pad_bottom=1)
     os.system("cls" if os.name=="nt" else "clear")
     print("\n".join(box))
+
+
+def render_desk_table():
+    table = LAYER_0_DESK.copy()
+
+    owned_ids = [u['id'] for u in all_upgrades if u['id'] in game.get("owned", [])]
+    owned_arts = [UPGRADE_ART[uid] for uid in owned_ids if uid in UPGRADE_ART]
+
+    # Indices of empty lines inside the table (where we can place art)
+    empty_indices = [i for i, line in enumerate(table) if line.strip() == "║                       ║"]
+
+    # Fill from bottom to top for realistic desk stacking
+    empty_idx_iter = reversed(empty_indices)
+    for art in owned_arts:
+        art_height = len(art)
+        try:
+            # Take the next N empty lines from bottom for the art
+            art_positions = [next(empty_idx_iter) for _ in range(art_height)]
+        except StopIteration:
+            break  # no more space
+
+        # Place each line of the art into the table at the corresponding position
+        for line_pos, art_line in zip(reversed(art_positions), art):
+            inner_width = 23  # width inside the ║ ║
+            table[line_pos] = "       ║" + art_line.center(inner_width) + "║"
+
+    return table
+
 
 
 
@@ -303,10 +357,11 @@ def work_tick():
     gain, eff_delay = compute_gain_and_delay()
     focus_active = now < focus_active_until
 
-    if game.get("auto_work_unlocked", False):
+    if is_auto_work_unlocked():
         work_timer += delta
         if work_timer >= eff_delay:
             game["money"] += gain
+            game["money_since_reset"] += gain
             if game.get("focus_unlocked", False) and not focus_active:
                 game["focus"] = min(config.FOCUS_MAX, game.get("focus", 0) + config.FOCUS_CHARGE_PER_EARN)
             work_timer -= eff_delay
@@ -332,6 +387,9 @@ def activate_focus():
 # -----------------------------
 # Upgrade menu
 # -----------------------------
+def is_auto_work_unlocked():
+    return "inspire_auto_work" in game.get("inspiration_upgrades", [])
+
 def open_upgrade_menu():
     global KEY_PRESSED
 
@@ -457,11 +515,6 @@ def buy_inspire_upgrade(upg):
             game["money_mult"] = game.get("money_mult", 1.0) * upg["value"]
         elif upg["type"]=="focus_max":
             game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + upg["value"]
-        elif upg["type"]=="auto_work":
-            game["auto_work_unlocked"] = True
-            save_game()
-
-
         save_game()
         tmp = boxed_lines([f"Purchased {upg['name']}!"], title=" Inspire ", pad_top=1, pad_bottom=1)
         os.system("cls" if os.name=="nt" else "clear")
@@ -473,48 +526,44 @@ def buy_inspire_upgrade(upg):
         print("\n".join(tmp))
         time.sleep(1.2)
 
-def handle_inspire_reset():
-    global KEY_PRESSED
+def reset_for_inspiration():
+    # check minimum money requirement
     if game.get("money", 0) < 1000:
-        tmp = boxed_lines(["Not enough money to reset for Inspiration."], title=" Inspire ", pad_top=1, pad_bottom=1)
-        os.system("cls" if os.name=="nt" else "clear")
+        tmp = boxed_lines(
+            ["Not enough money to reset for Inspiration."],
+            title=" Inspire ", pad_top=1, pad_bottom=1
+        )
+        os.system("cls" if os.name == "nt" else "clear")
         print("\n".join(tmp))
         time.sleep(1.2)
         return
 
-    gained = int(game.get("money",0) // config.INSPIRATION_CONVERT_DIV)
-    box = boxed_lines(
-        [f"You can gain {gained} Inspiration.",
-         "Press 'y' to confirm, any other key to cancel."],
-        title=" Inspire Confirmation ",
-        pad_top=1, pad_bottom=1
-    )
-    os.system("cls" if os.name=="nt" else "clear")
-    print("\n".join(box))
+    # calculate gained inspiration
+    gained = calculate_inspiration(layer, money_since_reset)
 
-    # Wait for confirmation
-    while True:
-        time.sleep(0.05)
-        if KEY_PRESSED:
-            confirm = KEY_PRESSED.lower()
-            KEY_PRESSED = None
-            if confirm == "y":
-                game["inspiration"] += gained
-                game.update({
-                    "money":0.0,
-                    "fatigue":0,
-                    "focus":0,
-                    "owned":[],
-                    "focus_unlocked":False
-                })
-                save_game()
-                done_msg = boxed_lines([f"You gained {gained} Inspiration!"],
-                                        title=" Inspiration Gained ",
-                                        pad_top=1, pad_bottom=1)
-                os.system("cls" if os.name=="nt" else "clear")
-                print("\n".join(done_msg))
-                time.sleep(1.5)
-            break
+    # apply reset
+    game["inspiration"] = game.get("inspiration", 0) + gained
+    game.update({
+        "money": 0.0,
+        "money_since_reset": 0.0,
+        "fatigue": 0,
+        "focus": 0,
+        "owned": [],
+        "focus_unlocked": False,
+        "inspiration_unlocked": True,
+        "layer": max(game.get("layer", 0), 1)
+    })
+    save_game()
+
+    # display lore-friendly message
+    done_msg = boxed_lines(
+        [f"You wake from a strange dream... Gained {gained} Inspiration!"],
+        title=" Inspiration Gained ", pad_top=1, pad_bottom=1
+    )
+    os.system("cls" if os.name == "nt" else "clear")
+    print("\n".join(done_msg))
+    time.sleep(1.5)
+
 
 def handle_inspire_purchase(idx):
     upgrades = config.INSPIRE_UPGRADES
@@ -574,28 +623,18 @@ def key_listener():
 # -----------------------------
 # Reset
 # -----------------------------
-def perform_reset():
-    if game.get("money",0) < config.INSPIRATION_CONVERT_DIV*2:
-        tmp = boxed_lines(["Not enough money to reset for inspiration."], title=" Reset ", pad_top=1, pad_bottom=1)
-        os.system("cls" if os.name=="nt" else "clear")
-        print("\n".join(tmp))
-        time.sleep(1.2)
-        return
-    gained = int(game.get("money",0)//config.INSPIRATION_CONVERT_DIV)
-    game["inspiration"] = game.get("inspiration",0)+gained
-    game.update({
-        "money":0.0,
-        "fatigue":0,
-        "focus":0,
-        "owned":[],
-        "focus_unlocked":False
-    })
-    save_game()
-    tmp = boxed_lines([f"Reset complete. Gained {gained} Inspiration."], title=" Reset Done ", pad_top=1, pad_bottom=1)
-    os.system("cls" if os.name=="nt" else "clear")
-    print("\n".join(tmp))
-    time.sleep(1.4)
+def calculate_inspiration(layer, money_since_reset):
+    if money_since_reset > 0:
+        n = int(math.floor(math.log10(money_since_reset)))
+    else:
+        n=0
 
+    return math.floor(1*1.4**(layer/10)*1.15**n)
+
+def predict_next_point():
+    gain, eff_delay = compute_gain_and_delay()
+    remaining = max(eff_delay - work_timer, 0)
+    return remaining
 # -----------------------------
 # Main loop
 # -----------------------------
@@ -611,6 +650,7 @@ def main_loop():
 
     if game.get("layer",0) >= 1 and not game.get("inspiration_unlocked", False):
         game["inspiration_unlocked"] = True
+        game["layer"] = 1
         save_game()
 
     current_screen = "work"
@@ -688,7 +728,7 @@ def main_loop():
                     time.sleep(1.0)
                 # Inspiration reset
                 elif k == "i":
-                    handle_inspire_reset()
+                    reset_for_inspiration()
                     current_screen = "work"
                 # Screen-specific
                 elif current_screen == "work" and k == "1" and game.get("inspiration_unlocked", False):
