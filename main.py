@@ -230,6 +230,17 @@ def render_ui(screen="work"):
             left_lines.append(f"        Points: {game.get('inspiration',0)}")
             left_lines.append("")
             left_lines.append(" [1] Open Inspiration Tree ")
+            left_lines.append("")
+            if game.get("money", 0) >= 1000:
+                left_lines.append(f"    You realise that all this work...")
+                left_lines.append("is all for naught,")
+                left_lines.append(f"you decide to leave behind everything in")
+                left_lines.append(f"return for {'an' if calc_insp==1 else str(calc_insp)} Inspiration")
+                left_lines.append("")
+                left_lines.append(f"[I]nspire for {calc_insp} Inspiration")
+                if game.get("inspiration_unlocked", False):
+                    left_lines.append("")
+                    left_lines.append(f"{time_next} until next point")
         elif screen == "inspiration":
             left_lines.append("=== INSPIRATION TREE ===")
             left_lines.append(f"      Points: {game.get('inspiration',0)}")
@@ -244,12 +255,12 @@ def render_ui(screen="work"):
             left_lines.append("")
             left_lines.append(" [B] Back to Work ")
     elif game.get("money", 0) >= 1000:
-        left_lines.append(f"    You realise that all this work... is all for naught,")
-        left_lines.append(f"you decide to leave behind everything in return for {'an' if calc_insp==1 else str(calc_insp)} Inspiration")
-        left_lines.append("")
-        left_lines.append(f"                [I]nspire for {calc_insp} Inspiration")
-        if game.get("inspiration_unlocked", False):
-            left_lines.append(f"{time_next} until next point")
+            left_lines.append(f"    You realise that all this work...")
+            left_lines.append("is all for naught,")
+            left_lines.append(f"you decide to leave behind everything in")
+            left_lines.append(f"return for {'an' if calc_insp==1 else str(calc_insp)} Inspiration")
+            left_lines.append("")
+            left_lines.append(f"[I]nspire for {calc_insp} Inspiration")
     else:
         left_lines.append("Reach $1000 to unlock Inspiration")
 
@@ -624,12 +635,8 @@ def key_listener():
 # Reset
 # -----------------------------
 def calculate_inspiration(layer, money_since_reset):
-    if money_since_reset > 0:
-        n = int(math.floor(math.log10(money_since_reset)))
-    else:
-        n=0
 
-    return math.floor(1*1.4**(layer/10)*1.15**n)
+    return math.floor(((money_since_reset**0.4)/25)+1)
 
 def predict_next_point():
     gain, eff_delay = compute_gain_and_delay()
@@ -708,6 +715,7 @@ def main_loop():
 
                     # Shorter manual delay (instant or near-instant)
                     game["money"] += gain
+                    game["money_since_reset"] += gain
                     if game.get("focus_unlocked", False) and not focus_active:
                         game["focus"] = min(config.FOCUS_MAX, game.get("focus", 0) + config.FOCUS_CHARGE_PER_EARN)
 

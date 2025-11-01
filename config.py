@@ -36,11 +36,11 @@ INSPIRE_UPGRADES = [
     {"id":"inspire_3", "name":"Master Mind", "cost":200, "type":"focus_max", "value":200, "desc":"xPLACEHOLDER focus cap"}, 
     {
     "id": "inspire_auto_work",
-    "name": "Let a clanker do the job for you",
+    "name": "Auto-generation",
     "cost": 250,
     "type": "auto_work",
     "value": 1,
-    "desc":"Automatically generates money"
+    "desc":"Generates money at a reduced rate"
     },
 
 ]
