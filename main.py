@@ -2,6 +2,7 @@
 import json, os, time, sys, threading, shutil
 import math
 import select
+import random
 
 # Cross-platform modules
 try:
@@ -20,7 +21,7 @@ from ascii_art import (
 
 import config
 
-from config import INSPIRE_UPGRADES
+from config import INSPIRE_UPGRADES, format_number
 
 # Save file path
 SAVE_PATH = "data/save.json"
@@ -54,6 +55,9 @@ KEY_PRESSED = None
 running = True
 focus_active_until = 0.0  # timestamp when focus effect ends
 
+# coffee art cuz why not
+steam = []
+
 # copy upgrades (so config.UPGRADES not mutated)
 all_upgrades = [u.copy() for u in config.UPGRADES]
 
@@ -84,9 +88,12 @@ def load_game():
     game.setdefault("base_work_delay", config.BASE_WORK_DELAY)
     game.setdefault("base_money_gain", config.BASE_MONEY_GAIN)
     game.setdefault("auto_work_unlocked", False)
+    game.setdefault("motivation_unlocked", False)
 
     if "inspire_auto_work" in game.get("inspiration_upgrades", []):
         game["auto_work_unlocked"] = True
+    if "inspire_motiv" in game.get("inspiration_upgrades", []):
+        game["motivation_unlocked"] = True
 
 
 def save_game():
@@ -96,9 +103,58 @@ def save_game():
     except Exception as e:
         print("Warning: failed to save:", e)
 
+# -----------------------------
+# Helpers
+# -----------------------------
+def get_upgrade_level(upg_id):
+    for u in game.get("inspiration_upgrades", []):
+        # make sure u is a dict with "id"
+        if isinstance(u, dict) and u.get("id") == upg_id:
+            return u.get("level", 0)
+    return 0
+
+
+def is_inspire_owned(upg_id):
+    for u in game.get("inspiration_upgrades", []):
+        if isinstance(u, str):
+            if u == upg_id:
+                return True
+        elif isinstance(u, dict):
+            if u.get("id") == upg_id:
+                return True
+    return False
+
+
+def get_inspire_level(upg_id):
+    for u in game.get("inspiration_upgrades", []):
+        if isinstance(u, dict) and u.get("id") == upg_id:
+            return u.get("level", 1)
+        elif isinstance(u, str) and u == upg_id:
+            return 1  # old format, level 1
+    return 0
+
+def has_inspire_upgrade(upg_id):
+    for u in game.get("inspiration_upgrades", []):
+        if isinstance(u, dict) and u.get("id") == upg_id:
+            return True
+        elif isinstance(u, str) and u == upg_id:  # old format support
+            return True
+    return False
+
+def convert_old_upgrades():
+    """Convert old string-format inspiration upgrades to dicts with a level."""
+    new_list = []
+    for u in game.get("inspiration_upgrades", []):
+        if isinstance(u, str):
+            # Convert to dict, level 1
+            new_list.append({"id": u, "level": 1})
+        elif isinstance(u, dict):
+            new_list.append(u)
+    game["inspiration_upgrades"] = new_list
+
 
 # -----------------------------
-# Compute gain and delay
+# Compute gain and delay and math stuff
 # -----------------------------
 def compute_gain_and_delay():
     """Return (effective_gain, effective_delay) after all upgrades"""
@@ -122,16 +178,38 @@ def compute_gain_and_delay():
                 game["focus_unlocked"] = True
 
     # Inspiration upgrades
-    for u in config.INSPIRE_UPGRADES:
-        if u["id"] in game.get("inspiration_upgrades", []):
-            if u["type"] == "money_mult":
-                gain_mult *= u.get("value", 1)
-            elif u["type"] == "work_mult":
-                delay_mult *= u.get("value", 1)
-            elif u["type"] == "focus_max":
-                game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + u.get(
-                    "value", 0
-                )
+    for entry in game.get("inspiration_upgrades", []):
+        # Handle both old saves (string) and new saves (dict)
+        if isinstance(entry, dict):
+            upg_id = entry.get("id")
+            level = entry.get("level", 1)
+        else:
+            upg_id = entry
+            level = 1
+
+        # Find the upgrade definition
+        u = next((x for x in config.INSPIRE_UPGRADES if x["id"] == upg_id), None)
+        if not u:
+            continue
+
+        # Apply effects according to type
+        if u["type"] == "money_mult":
+            base_value = u.get("base_value", u.get("value", 1))
+            value_mult = u.get("value_mult", 1.0)
+            total_value = base_value * (value_mult ** (level - 1))
+            gain_mult *= total_value
+
+        elif u["type"] == "work_mult":
+            base_value = u.get("base_value", u.get("value", 1))
+            value_mult = u.get("value_mult", 1.0)
+            total_value = base_value * (value_mult ** (level - 1))
+            delay_mult *= total_value
+
+        elif u["type"] == "focus_max":
+            base_value = u.get("base_value", u.get("value", 0))
+            value_mult = u.get("value_mult", 1.0)
+            total_value = base_value * (value_mult ** (level - 1))
+            game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + total_value
 
     eff_gain = (base_gain + gain_add) * gain_mult
     eff_delay = base_delay * delay_mult
@@ -240,7 +318,7 @@ def render_ui(screen="work"):
     # -----------------------------
     # Left panel (~25%)
     # -----------------------------
-    calc_insp = calculate_inspiration(layer, money_since_reset)
+    calc_insp = calculate_inspiration(money_since_reset)
     time_next = predict_next_point()
     left_lines = []
 
@@ -259,25 +337,43 @@ def render_ui(screen="work"):
                     f"return for {'an' if calc_insp==1 else str(calc_insp)} Inspiration"
                 )
                 left_lines.append("")
-                left_lines.append(f"[I]nspire for {calc_insp} Inspiration")
+                left_lines.append(f"[I]nspire for {format_number(calc_insp)} Inspiration")
                 if game.get("inspiration_unlocked", False):
                     left_lines.append("")
-                    left_lines.append(f"{time_next} until next point")
+                    left_lines.append(f"{format_number(time_next)} until next point")
         elif screen == "inspiration":
             left_lines.append("=== INSPIRATION TREE ===")
-            left_lines.append(f"      Points: {game.get('inspiration',0)}")
+            left_lines.append(f"      Points: {game.get('inspiration', 0)}")
             left_lines.append("")
-            tree = INSPIRE_UPGRADES
-            for i, u in enumerate(tree, start=1):
-                owned = (
-                    "(owned)" if u["id"] in game.get("inspiration_upgrades", []) else ""
+
+            for i, u in enumerate(INSPIRE_UPGRADES, start=1):
+                # Get current level of this upgrade
+                level = get_inspire_level(u["id"])
+
+                # Calculate next level cost
+                cost = get_inspire_cost(u, current_level=level)
+
+                # Compute total multiplier for display
+                base_value = u.get("base_value", 1.0)
+                value_mult = u.get("value_mult", 1.0)
+                total_mult = base_value * (value_mult ** (level - 1)) if level > 0 else base_value
+
+                # Level + cost info
+                owned = "(MAX)" if level == u.get('max_level', 1) else f"(lvl {level}/{u.get('max_level', '?')})" if level > 1 else ""
+                left_lines.append(
+                    f" {i}. {u['name']} {owned}" + (f" - Cost: {format_number(cost)}" if level < u.get("max_level", 1) else "")
                 )
-                effect = f" → {u.get('desc', '')}" if u.get("desc") else ""
-                left_lines.append(f" {i}. {u['name']} - Cost: {u['cost']} {owned}")
-                if effect:
-                    left_lines.append(f"     {effect}")
+                # Show description, and total multiplier if owned
+                if u.get("desc"):
+                    desc_line = f"     → {u['desc']}"
+                    if level > 0:
+                        desc_line += f" (x{total_mult:.2f})"
+                    left_lines.append(desc_line)
+
             left_lines.append("")
             left_lines.append(" [B] Back to Work ")
+
+
     elif game.get("money", 0) >= 1000:
         left_lines.append(f"    You realise that all this work...")
         left_lines.append("is all for naught,")
@@ -313,13 +409,14 @@ def render_ui(screen="work"):
 
     # 3️ Work info
     right_lines.append(
-        f"MONEY: ${game.get('money',0):.2f}   GAIN: {effective_gain:.2f} / cycle   DELAY: {effective_delay:.2f}s"
+        f"MONEY: ${format_number(game.get('money',0))}   GAIN: {format_number(effective_gain)} / cycle   DELAY: {effective_delay:.2f}s"
     )
     right_lines.append(work_bar)
     right_lines.append(
-        "Auto-work: " + ("ENABLED" if is_auto_work_unlocked() else "MANUAL (press W)")
+        ("Auto-work: ENABLED" if is_auto_work_unlocked() else "Press W to work") +
+        (f"   Motivation: {int((game.get('motivation', config.MOTIVATION_MAX) / config.MOTIVATION_MAX) * 100)}%" 
+        if has_inspire_upgrade("inspire_motiv") else "")
     )
-
     # 4️ Owned upgrades
     owned_names = [u["name"] for u in all_upgrades if u["id"] in game.get("owned", [])]
     right_lines.append("")
@@ -362,39 +459,80 @@ def render_ui(screen="work"):
         pad_top=1,
         pad_bottom=1,
     )
-    os.system("cls" if os.name == "nt" else "clear")
-    print("\n".join(box))
+    # Move cursor home and overwrite
+    print("\033[H" + "\n".join(box), end="", flush=True)
 
 
 def render_desk_table():
+    global steam
     table = LAYER_0_DESK.copy()
 
+    # --- Place owned items ---
     owned_ids = [u["id"] for u in all_upgrades if u["id"] in game.get("owned", [])]
     owned_arts = [UPGRADE_ART[uid] for uid in owned_ids if uid in UPGRADE_ART]
 
-    # Indices of empty lines inside the table (where we can place art)
     empty_indices = [
         i for i, line in enumerate(table) if line.strip() == "║                       ║"
     ]
-
-    # Fill from bottom to top for realistic desk stacking
     empty_idx_iter = reversed(empty_indices)
+
     for art in owned_arts:
         art_height = len(art)
         try:
-            # Take the next N empty lines from bottom for the art
             art_positions = [next(empty_idx_iter) for _ in range(art_height)]
         except StopIteration:
-            break  # no more space
+            break
 
-        # Place each line of the art into the table at the corresponding position
         for line_pos, art_line in zip(reversed(art_positions), art):
-            inner_width = 23  # width inside the ║ ║
+            inner_width = 23
             table[line_pos] = "       ║" + art_line.center(inner_width) + "║"
 
+    # --- Add coffee steam ---
+    if "coffee" in owned_ids:
+        # find bottom index of coffee
+        coffee_idx = None
+        for i, art_id in enumerate(owned_ids):
+            if art_id == "coffee":
+                coffee_idx = empty_indices[-(i + 1)]
+                break
+
+        if coffee_idx is not None:
+            coffee_art = UPGRADE_ART["coffee"]
+            cup_height = len(coffee_art)
+            steam_start_idx = coffee_idx - (cup_height - 1)  # top line of cup
+            steam_emit_idx = steam_start_idx - 2  # 2 line above cup
+
+            # Correct horizontal center of cup
+            coffee_line = coffee_art[0]
+            first_char_idx = next((i for i, c in enumerate(coffee_line) if c != " "), 0)
+            last_char_idx = len(coffee_line.rstrip()) - 1
+            cup_center = 9 + (first_char_idx + last_char_idx) // 2  # table padding = 9
+
+            # Move existing steam upward and advance fade
+            new_steam = []
+            for x, y, stage, life in steam:
+                y -= config.STEAM_SPEED
+                life -= 1
+                if life > 0 and y >= 0:
+                    stage_idx = min(len(config.STEAM_CHARS) - 1, (config.STEAM_LIFETIME - life) // 3)
+                    new_steam.append((x, y, stage_idx, life))
+            steam = new_steam
+
+            # Randomly emit new puff from center
+            if random.random() < config.STEAM_CHANCE:
+                offset = random.randint(-config.STEAM_SPREAD, config.STEAM_SPREAD)
+                steam.append((cup_center + offset, steam_emit_idx, 0, config.STEAM_LIFETIME))
+
+            # Overlay steam on table
+            for x, y, stage_idx, _ in steam:
+                yi = int(round(y))
+                if 0 <= yi < len(table):
+                    line = table[yi]
+                    if 0 <= x < len(line):
+                        line = line[:x] + config.STEAM_CHARS[stage_idx] + line[x + 1:]
+                        table[yi] = line
+
     return table
-
-
 # -----------------------------
 # Work tick
 # -----------------------------
@@ -454,7 +592,7 @@ def open_upgrade_menu():
         unlocked = get_unlocked_upgrades()
         lines = ["--- UPGRADE BAY ---"]
         for i, u in enumerate(unlocked, start=1):
-            owned = "(owned)" if u["id"] in game.get("owned", []) else ""
+            owned = "(owned)" if is_inspire_owned(u["id"]) else ""
             typ = u.get("type", "mult")
             val = u.get("value", 0)
             if typ == "unlock_focus":
@@ -577,30 +715,27 @@ def open_inspire_menu():
                         buy_inspire_upgrade(upgrades[idx])
                     break
 
-def buy_inspire_upgrade(upg):
-    if game.get("inspiration", 0) >= upg["cost"]:
-        game["inspiration"] -= upg["cost"]
-        if "inspiration_upgrades" not in game:
-            game["inspiration_upgrades"] = []
-        game["inspiration_upgrades"].append(upg["id"])
+# Handler for levels
+def get_inspire_cost(upg, current_level=0):
+    base_cost = upg.get("base_cost", upg.get("cost", 0))
+    mult = upg.get("cost_mult", 1)
+    return int(base_cost * (mult ** current_level))
 
-        # Apply effects
-        if upg["type"] == "work_mult":
-            game["work_delay_multiplier"] = (
-                game.get("work_delay_multiplier", 1.0) * upg["value"]
-            )
-        elif upg["type"] == "money_mult":
-            game["money_mult"] = game.get("money_mult", 1.0) * upg["value"]
-        elif upg["type"] == "focus_max":
-            game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + upg["value"]
-        save_game()
-        tmp = boxed_lines(
-            [f"Purchased {upg['name']}!"], title=" Inspire ", pad_top=1, pad_bottom=1
-        )
-        os.system("cls" if os.name == "nt" else "clear")
-        print("\n".join(tmp))
-        time.sleep(1.2)
-    else:
+def get_inspire_value(upg):
+    if "base_value" in upg:
+        return upg["base_value"] * (upg.get("value_mult", 1) ** upg.get("level", 0))
+    return upg.get("value", 1)
+
+
+def buy_inspire_upgrade(upg):
+    # Handle multi-level upgrades
+    is_multilevel = "base_cost" in upg
+    current_level = upg.get("level", 0)
+    max_level = upg.get("max_level", 1)
+
+    cost = get_inspire_cost(upg)
+
+    if game.get("inspiration", 0) < cost:
         tmp = boxed_lines(
             [f"Not enough Inspire to buy {upg['name']}."],
             title=" Inspire ",
@@ -610,6 +745,53 @@ def buy_inspire_upgrade(upg):
         os.system("cls" if os.name == "nt" else "clear")
         print("\n".join(tmp))
         time.sleep(1.2)
+        return
+
+    if is_multilevel and current_level >= max_level:
+        tmp = boxed_lines(
+            [f"{upg['name']} is already max level!"],
+            title=" Inspire ",
+            pad_top=1,
+            pad_bottom=1,
+        )
+        os.system("cls" if os.name == "nt" else "clear")
+        print("\n".join(tmp))
+        time.sleep(1.2)
+        return
+
+    # Deduct and upgrade
+    game["inspiration"] -= cost
+
+    if is_multilevel:
+        upg["level"] = current_level + 1
+        value = get_inspire_value(upg)
+    else:
+        value = upg.get("value", 1)
+        game.setdefault("inspiration_upgrades", []).append(upg["id"])
+
+    # Apply effect
+    if upg["type"] == "work_mult":
+        game["work_delay_multiplier"] = game.get("work_delay_multiplier", 1.0) * value
+    elif upg["type"] == "money_mult":
+        game["money_mult"] = game.get("money_mult", 1.0) * value
+    elif upg["type"] == "focus_max":
+        game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + value
+    elif upg["type"] == "unlock_motivation":
+        game["motivation_unlocked"] = True
+
+    save_game()
+
+    # Confirmation message
+    msg = (
+        f"Upgraded {upg['name']} to Lv.{upg['level']}!"
+        if is_multilevel
+        else f"Purchased {upg['name']}!"
+    )
+    tmp = boxed_lines([msg], title=" Inspire ", pad_top=1, pad_bottom=1)
+    os.system("cls" if os.name == "nt" else "clear")
+    print("\n".join(tmp))
+    time.sleep(1.2)
+
 
 
 def reset_for_inspiration():
@@ -627,7 +809,7 @@ def reset_for_inspiration():
         return
 
     # calculate gained inspiration
-    gained = calculate_inspiration(layer, money_since_reset)
+    gained = calculate_inspiration(money_since_reset)
 
     # apply reset
     game["inspiration"] = game.get("inspiration", 0) + gained
@@ -665,18 +847,57 @@ def handle_inspire_purchase(idx):
         return
 
     upg = upgrades[idx]
+    max_level = upg.get("max_level", 1)
+    current_level = get_inspire_level(upg["id"])
 
-    if upg["id"] in game.get("inspiration_upgrades", []):
-        msg = f"You already own {upg['name']}!"
-    elif game.get("inspiration", 0) >= upg["cost"]:
-        game["inspiration"] -= upg["cost"]
-        game.setdefault("inspiration_upgrades", []).append(upg["id"])
-        save_game()
-        msg = f"Purchased {upg['name']}!"
-    else:
-        msg = f"Not enough Inspiration for {upg['name']}!"
+    if current_level >= max_level:
+        msg = f"{upg['name']} is already at max level!"
+        tmp = boxed_lines([msg], title="Inspiration", pad_top=1, pad_bottom=1)
+        os.system("cls" if os.name == "nt" else "clear")
+        print("\n".join(tmp))
+        time.sleep(1.0)
+        return
 
-    # Show confirmation
+    cost = get_inspire_cost(upg, current_level=current_level)
+
+    if game.get("inspiration", 0) < cost:
+        msg = f"Not enough Inspiration for {upg['name']} (cost {cost})!"
+        tmp = boxed_lines([msg], title="Inspiration", pad_top=1, pad_bottom=1)
+        os.system("cls" if os.name == "nt" else "clear")
+        print("\n".join(tmp))
+        time.sleep(1.0)
+        return
+
+    # Deduct cost
+    game["inspiration"] -= cost
+
+    # Find existing upgrade
+    found = False
+    for i, u in enumerate(game.get("inspiration_upgrades", [])):
+        if (isinstance(u, dict) and u.get("id") == upg["id"]) or (isinstance(u, str) and u == upg["id"]):
+            if isinstance(u, dict):
+                u["level"] += 1
+            else:
+                game["inspiration_upgrades"][i] = {"id": u, "level": 2}
+            found = True
+            break
+
+    if not found:
+        game.setdefault("inspiration_upgrades", []).append({"id": upg["id"], "level": 1})
+
+    # Apply effects
+    value = get_inspire_value(upg) * (current_level + 1 if "base_value" in upg else 1)
+    if upg["type"] == "money_mult":
+        game["money_mult"] = game.get("money_mult", 1.0) * value
+    elif upg["type"] == "work_mult":
+        game["work_delay_multiplier"] = game.get("work_delay_multiplier", 1.0) * value
+    elif upg["type"] == "focus_max":
+        game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + value
+    elif upg["type"] == "unlock_motivation":
+        game["motivation_unlocked"] = True
+
+    save_game()
+    msg = f"Purchased {upg['name']} level {current_level + 1}!"
     tmp = boxed_lines([msg], title="Inspiration", pad_top=1, pad_bottom=1)
     os.system("cls" if os.name == "nt" else "clear")
     print("\n".join(tmp))
@@ -719,15 +940,27 @@ def key_listener():
 # -----------------------------
 # Reset
 # -----------------------------
-def calculate_inspiration(layer, money_since_reset):
+def calculate_inspiration(money_since_reset):
+    money_since_reset = game.get("money_since_reset", 0)
 
     return math.floor(((money_since_reset**0.4) / 25) + 1)
 
 
 def predict_next_point():
-    gain, eff_delay = compute_gain_and_delay()
-    remaining = max(eff_delay - work_timer, 0)
+    current_money = game.get("money_since_reset", 0)
+    current_insp = calculate_inspiration(current_money)
+
+    # Find the minimum money needed to get one more inspiration
+    # Formula inversion: next_insp = floor((x^0.4)/25 + 1)
+    next_insp = current_insp + 1
+
+    # Solve for x: (x^0.4)/25 + 1 >= next_insp
+    target_money = ((next_insp - 1) * 25) ** (1 / 0.4)
+
+    remaining = round(max(target_money - current_money, 0), 2)
     return remaining
+
+
 
 
 # -----------------------------
@@ -737,6 +970,7 @@ def main_loop():
     """Main game loop with proper inspiration upgrade handling."""
     global KEY_PRESSED, running, work_timer, last_tick_time
     load_game()
+    convert_old_upgrades()
 
     last_tick_time = time.time()  # properly initialize
 
@@ -804,10 +1038,14 @@ def main_loop():
                     gain, eff_delay = compute_gain_and_delay()
                     focus_active = now < focus_active_until
 
-                    # Always start fresh — ignore any half-filled progress
-                    work_timer = 0
+                    # If auto-work is disabled we reset the timer so manual work
+                    # uses the manual short-cooldown behaviour. If auto-work is
+                    # enabled, do NOT reset work_timer so the auto-work progress
+                    # bar continues uninterrupted.
+                    if not game.get("auto_work_unlocked", False):
+                        work_timer = 0
 
-                    # Shorter manual delay (instant or near-instant)
+                    # Perform manual work (instant)
                     game["money"] += gain
                     game["money_since_reset"] += gain
                     if game.get("focus_unlocked", False) and not focus_active:
@@ -820,6 +1058,7 @@ def main_loop():
                             0, game["motivation"] - config.MOTIVATION_DRAIN_PER_WORK
                         )
                     save_game()
+
 
                 # Upgrade menu
                 elif k == "u":
