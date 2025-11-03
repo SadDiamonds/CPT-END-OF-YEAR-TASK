@@ -337,7 +337,7 @@ def render_ui(screen="work"):
     if game.get("inspiration_unlocked", False):
         if screen == "work":
             left_lines.append("=== INSPIRATION ===")
-            left_lines.append(f"Points: {game.get('inspiration', 0)}")
+            left_lines.append(f"Points: {game.get('inspiration', 0)}i")
             left_lines.append("")
             left_lines.append("[1] Open Inspiration Tree")
             left_lines.append("")
@@ -358,7 +358,7 @@ def render_ui(screen="work"):
                 left_lines.append(f"{format_number(time_next)} until next point")
         elif screen == "inspiration":
             left_lines.append("=== INSPIRATION TREE ===")
-            left_lines.append(f"Points: {game.get('inspiration', 0)}")
+            left_lines.append(f"Points: {game.get('inspiration', 0)}i")
             left_lines.append("")
 
             for i, u in enumerate(INSPIRE_UPGRADES, start=1):
@@ -381,7 +381,7 @@ def render_ui(screen="work"):
                 left_lines.append(
                     f"{i}. {u['name']} {owned}"
                     + (
-                        f" - Cost: {format_number(cost)}"
+                        f" - Cost: {format_number(cost)}i"
                         if level < u.get("max_level", 1)
                         else ""
                     )
@@ -434,7 +434,7 @@ def render_ui(screen="work"):
 
     # Work info
     right_lines.append(
-        f"MONEY: ${format_number(game.get('money',0))}   GAIN: {format_number(effective_gain)} / cycle   DELAY: {effective_delay:.2f}s"
+        (f"MONEY: ${format_number(game.get('money',0))}   GAIN: {format_number(effective_gain)} / cycle")  + (f"   DELAY: {effective_delay:.2f}s" if game.get("auto_work_unlocked", False) else "")
     )
     right_lines.append(work_bar)
     right_lines.append(
@@ -484,7 +484,7 @@ def render_ui(screen="work"):
     # -----------------------------
     box = boxed_lines(
         combined_lines,
-        title=f" ESCAPE — Layer {game.get('layer',0)} ",
+        title=f" Layer {game.get('layer',0)} ",
         pad_top=1,
         pad_bottom=1,
     )
