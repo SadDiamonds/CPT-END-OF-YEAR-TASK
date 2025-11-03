@@ -3,6 +3,7 @@ import json, os, time, sys, threading, shutil
 import math
 import select
 import random
+import textwrap
 
 # Cross-platform modules
 try:
@@ -103,9 +104,13 @@ def save_game():
     except Exception as e:
         print("Warning: failed to save:", e)
 
+
 # -----------------------------
 # Helpers
 # -----------------------------
+def clear_screen():
+    os.system("cls" if os.name == "nt" else "clear")
+
 def get_upgrade_level(upg_id):
     for u in game.get("inspiration_upgrades", []):
         # make sure u is a dict with "id"
@@ -153,6 +158,11 @@ def convert_old_upgrades():
     game["inspiration_upgrades"] = new_list
 
 
+def wrap_ui_text(text, panel_width_ratio=0.25):
+    """Wrap text to fit left panel (or other panel) dynamically."""
+    term_w, _ = get_term_size()
+    panel_width = int(term_w * panel_width_ratio) - 4  # some padding
+    return textwrap.wrap(text, width=panel_width)
 # -----------------------------
 # Compute gain and delay and math stuff
 # -----------------------------
@@ -218,7 +228,8 @@ def compute_gain_and_delay():
         eff_delay *= config.FOCUS_BOOST_FACTOR
 
     motivation = game.get("motivation", config.MOTIVATION_MAX)
-    motivation_mult = (motivation / config.MOTIVATION_MAX) * 4 + 1  # 1x→5x
+    # Scale from 1 → MAX_MOTIVATION_MULT
+    motivation_mult = 1 + (motivation / config.MOTIVATION_MAX) * (config.MAX_MOTIVATION_MULT - 1)
     eff_gain = ((base_gain + gain_add) * gain_mult) * motivation_mult
 
     return eff_gain, eff_delay
@@ -302,6 +313,7 @@ def boxed_lines(
 # Render UI
 # -----------------------------
 def render_ui(screen="work"):
+    clear_screen()
     effective_gain, effective_delay = compute_gain_and_delay()
     prog = (
         min(work_timer / effective_delay, 1.0)
@@ -324,107 +336,124 @@ def render_ui(screen="work"):
 
     if game.get("inspiration_unlocked", False):
         if screen == "work":
-            left_lines.append("    === INSPIRATION ===")
-            left_lines.append(f"        Points: {game.get('inspiration',0)}")
+            left_lines.append("=== INSPIRATION ===")
+            left_lines.append(f"Points: {game.get('inspiration', 0)}")
             left_lines.append("")
-            left_lines.append(" [1] Open Inspiration Tree ")
+            left_lines.append("[1] Open Inspiration Tree")
             left_lines.append("")
+
             if game.get("money", 0) >= 1000:
-                left_lines.append(f"    You realise that all this work...")
-                left_lines.append("is all for naught,")
-                left_lines.append(f"you decide to leave behind everything in")
+                insp_msg = (
+                    f"You realise all your work is for naught, "
+                    f"and you decide to leave behind everything "
+                    f"for {'an' if calc_insp==1 else str(calc_insp)} Inspiration."
+                )
+                wrapped_lines = wrap_ui_text(insp_msg)
+                left_lines.extend(wrapped_lines)
+                left_lines.append("")
                 left_lines.append(
-                    f"return for {'an' if calc_insp==1 else str(calc_insp)} Inspiration"
+                    f"[I]nspire for {format_number(calc_insp)} Inspiration"
                 )
                 left_lines.append("")
-                left_lines.append(f"[I]nspire for {format_number(calc_insp)} Inspiration")
-                if game.get("inspiration_unlocked", False):
-                    left_lines.append("")
-                    left_lines.append(f"{format_number(time_next)} until next point")
+                left_lines.append(f"{format_number(time_next)} until next point")
         elif screen == "inspiration":
             left_lines.append("=== INSPIRATION TREE ===")
-            left_lines.append(f"      Points: {game.get('inspiration', 0)}")
+            left_lines.append(f"Points: {game.get('inspiration', 0)}")
             left_lines.append("")
 
             for i, u in enumerate(INSPIRE_UPGRADES, start=1):
-                # Get current level of this upgrade
                 level = get_inspire_level(u["id"])
-
-                # Calculate next level cost
                 cost = get_inspire_cost(u, current_level=level)
 
-                # Compute total multiplier for display
                 base_value = u.get("base_value", 1.0)
                 value_mult = u.get("value_mult", 1.0)
-                total_mult = base_value * (value_mult ** (level - 1)) if level > 0 else base_value
-
-                # Level + cost info
-                owned = "(MAX)" if level == u.get('max_level', 1) else f"(lvl {level}/{u.get('max_level', '?')})" if level > 1 else ""
-                left_lines.append(
-                    f" {i}. {u['name']} {owned}" + (f" - Cost: {format_number(cost)}" if level < u.get("max_level", 1) else "")
+                total_mult = (
+                    base_value * (value_mult ** (level - 1))
+                    if level > 0
+                    else base_value
                 )
-                # Show description, and total multiplier if owned
+
+                owned = (
+                    "(MAX)"
+                    if level == u.get("max_level", 1)
+                    else f"(lvl {level}/{u.get('max_level', '?')})" if level > 1 else ""
+                )
+                left_lines.append(
+                    f"{i}. {u['name']} {owned}"
+                    + (
+                        f" - Cost: {format_number(cost)}"
+                        if level < u.get("max_level", 1)
+                        else ""
+                    )
+                )
+
                 if u.get("desc"):
-                    desc_line = f"     → {u['desc']}"
-                    if level > 0:
-                        desc_line += f" (x{total_mult:.2f})"
-                    left_lines.append(desc_line)
+                    desc_text = f"→ {u['desc']}"
+                    if level > 0 and not u["id"] == "inspire_motiv":
+                        desc_text += f" (x{total_mult:.2f})"
+                    elif u["id"] == "inspire_motiv":
+                        desc_text += f" (x{1 + round(((game.get("motivation", config.MOTIVATION_MAX) / config.MOTIVATION_MAX) * (config.MAX_MOTIVATION_MULT - 1)),2)})"
+                    wrapped_desc = wrap_ui_text(desc_text)
+                    left_lines.extend(["     " + line for line in wrapped_desc])
 
             left_lines.append("")
-            left_lines.append(" [B] Back to Work ")
+            left_lines.append("[B] Back to Work")
 
-
-    elif game.get("money", 0) >= 1000:
-        left_lines.append(f"    You realise that all this work...")
-        left_lines.append("is all for naught,")
-        left_lines.append(f"you decide to leave behind everything in")
-        left_lines.append(
-            f"return for {'an' if calc_insp==1 else str(calc_insp)} Inspiration"
-        )
-        left_lines.append("")
-        left_lines.append(f"[I]nspire for {calc_insp} Inspiration")
     else:
-        left_lines.append("Reach $1000 to unlock Inspiration")
+        if game.get("money", 0) >= 1000:
+            insp_msg = (
+                f"You realise all your work is for naught, "
+                f"and you decide to leave behind everything "
+                f"for {'an' if calc_insp==1 else str(calc_insp)} Inspiration."
+            )
+            wrapped_lines = wrap_ui_text(insp_msg)
+            left_lines.extend(wrapped_lines)
+            left_lines.append("")
+            left_lines.append(f"[I]nspire for {calc_insp} Inspiration")
+        else:
+            left_lines.append("Reach $1000 to unlock Inspiration")
 
     # -----------------------------
     # Right panel (~50%)
     # -----------------------------
     right_lines = []
 
-    # 1️ Desk table at top
+    # Desk
     if LAYER_0_DESK:
         right_lines.extend(render_desk_table())
 
-    # 2️ Focus bar below desk
+    # Focus bar
     if game.get("focus_unlocked", False):
         focus_max = config.FOCUS_MAX + game.get("focus_max_bonus", 0)
         fprog = min(game.get("focus", 0) / float(focus_max), 1.0)
         fbar_len = 36
         ffilled = int(fprog * fbar_len)
-        focus_label_line = f"FOCUS: {int(fprog*100):3d}%"
-        focus_bar_line = "[" + "#" * ffilled + "-" * (fbar_len - ffilled) + "]"
-        right_lines.append(focus_label_line)
-        right_lines.append(focus_bar_line)
+        right_lines.append(f"FOCUS: {int(fprog*100):3d}%")
+        right_lines.append("[" + "#" * ffilled + "-" * (fbar_len - ffilled) + "]")
         right_lines.append("")
 
-    # 3️ Work info
+    # Work info
     right_lines.append(
         f"MONEY: ${format_number(game.get('money',0))}   GAIN: {format_number(effective_gain)} / cycle   DELAY: {effective_delay:.2f}s"
     )
     right_lines.append(work_bar)
     right_lines.append(
-        ("Auto-work: ENABLED" if is_auto_work_unlocked() else "Press W to work") +
-        (f"   Motivation: {int((game.get('motivation', config.MOTIVATION_MAX) / config.MOTIVATION_MAX) * 100)}%" 
-        if has_inspire_upgrade("inspire_motiv") else "")
+        ("Auto-work: ENABLED" if is_auto_work_unlocked() else "Press W to work")
+        + (
+            f"   Motivation: {int((game.get('motivation', config.MOTIVATION_MAX)/config.MOTIVATION_MAX)*100)}%"
+            if has_inspire_upgrade("inspire_motiv")
+            else ""
+        )
     )
-    # 4️ Owned upgrades
+
+    # Owned upgrades
     owned_names = [u["name"] for u in all_upgrades if u["id"] in game.get("owned", [])]
     right_lines.append("")
     right_lines.append(
         "Owned Upgrades: " + (", ".join(owned_names) if owned_names else "(none)")
     )
 
-    # 5️ Options
+    # Options
     options = "[W]ork  [U]pgrade  [F]ocus"
     if game.get("inspiration_unlocked", False):
         options += "  [I]nspire"
@@ -459,7 +488,6 @@ def render_ui(screen="work"):
         pad_top=1,
         pad_bottom=1,
     )
-    # Move cursor home and overwrite
     print("\033[H" + "\n".join(box), end="", flush=True)
 
 
@@ -778,6 +806,8 @@ def buy_inspire_upgrade(upg):
         game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + value
     elif upg["type"] == "unlock_motivation":
         game["motivation_unlocked"] = True
+    elif upg["type"] == "auto_work":
+        game["auto_work_unlocked"] = True
 
     save_game()
 
@@ -791,7 +821,6 @@ def buy_inspire_upgrade(upg):
     os.system("cls" if os.name == "nt" else "clear")
     print("\n".join(tmp))
     time.sleep(1.2)
-
 
 
 def reset_for_inspiration():
@@ -811,6 +840,8 @@ def reset_for_inspiration():
     # calculate gained inspiration
     gained = calculate_inspiration(money_since_reset)
 
+    play_inspiration_reset_animation()
+
     # apply reset
     game["inspiration"] = game.get("inspiration", 0) + gained
     game.update(
@@ -828,7 +859,7 @@ def reset_for_inspiration():
         }
     )
     save_game()
-
+    
     # display lore-friendly message
     done_msg = boxed_lines(
         [f"You wake from a strange dream... Gained {gained} Inspiration!"],
@@ -895,6 +926,8 @@ def handle_inspire_purchase(idx):
         game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + value
     elif upg["type"] == "unlock_motivation":
         game["motivation_unlocked"] = True
+    elif upg["type"] == "auto_work":
+        game["auto_work_unlocked"] = True
 
     save_game()
     msg = f"Purchased {upg['name']} level {current_level + 1}!"
@@ -903,6 +936,56 @@ def handle_inspire_purchase(idx):
     print("\n".join(tmp))
     time.sleep(0.7)
 
+
+def play_inspiration_reset_animation():
+    """Plays a dynamic comic-style floating Z animation (~3s)."""
+    term_w, term_h = shutil.get_terminal_size(fallback=(80, 24))
+
+    num_zs = 5  # max Zs on screen
+    frames = 15
+    z_lifetime = 6  # frames each Z lasts
+    zs = []
+
+    for frame in range(frames):
+        os.system("cls" if os.name == "nt" else "clear")
+        screen = [" " * term_w for _ in range(term_h)]
+
+        # Randomly emit new Zs gradually
+        if len(zs) < num_zs and random.random() < 0.3:
+            zs.append(
+                {
+                    "y": term_h - 4,
+                    "x": term_w // 2 + random.randint(-10, 10),
+                    "life": z_lifetime,
+                }
+            )
+
+        # Draw Zs
+        for z in zs:
+            y, x = int(z["y"]), int(z["x"])
+            if 0 <= y < term_h and 0 <= x < term_w:
+                row = screen[y]
+                screen[y] = row[:x] + "Z" + row[x + 1 :]
+
+        # Print screen
+        print("\n".join(screen))
+
+        # Update Zs: move up and fade
+        for z in zs:
+            z["y"] -= 1
+            z["x"] += random.choice([-1, 0, 1])
+            z["life"] -= 1
+
+        # Remove dead Zs
+        zs = [z for z in zs if z["life"] > 0]
+
+        time.sleep(0.2)
+
+    # Final big exclamation mark
+    os.system("cls" if os.name == "nt" else "clear")
+    print("\n" * (term_h // 2))
+    print("!".center(term_w))
+    time.sleep(0.6)
 
 # -----------------------------
 # Key listener
@@ -959,8 +1042,6 @@ def predict_next_point():
 
     remaining = round(max(target_money - current_money, 0), 2)
     return remaining
-
-
 
 
 # -----------------------------
@@ -1101,7 +1182,6 @@ def main_loop():
         save_game()
         os.system("cls" if os.name == "nt" else "clear")
         print("Saved. Bye!")
-    
 
 
 # -----------------------------

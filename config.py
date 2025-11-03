@@ -22,13 +22,14 @@ INSPIRATION_CONVERT_DIV = 50  # money // DIV gives inspiration when resetting
 # Motivation system
 MOTIVATION_MAX = 100
 MOTIVATION_DRAIN_PER_WORK = 1
-MOTIVATION_REGEN_IDLE = 0.1
+MAX_MOTIVATION_MULT = 3.0
+
 
 # COFFEEEEEE
 STEAM_SPEED = 0.1  # fraction of a line per tick (slower for Minecraft effect)
 STEAM_CHANCE = 0.2  # chance to emit a new puff per render
 STEAM_SPREAD = 3  # max horizontal offset from center
-STEAM_LIFETIME = 8 # number of lines before disappearing
+STEAM_LIFETIME = 8  # number of lines before disappearing
 STEAM_CHARS = ["~", "^", "."]
 
 # UI / layout
@@ -89,7 +90,7 @@ INSPIRE_UPGRADES = [
         "type": "unlock_motivation",
         "value": 1,
         "max_level": 1,
-        "desc": "A buff that decays as you manually work",
+        "desc": "A buff that decays over work",
     },
     {
         "id": "inspire_2",
@@ -130,7 +131,6 @@ INSPIRE_UPGRADES = [
         "max_level": 1,
         "desc": "xPLACEHOLDER focus cap",
     },
-    
 ]
 
 BORDERS = {
@@ -140,6 +140,7 @@ BORDERS = {
     3: {"tl": "◆", "tr": "◆", "bl": "◆", "br": "◆", "h": "─", "v": "│"},
     4: {"tl": "▛", "tr": "▜", "bl": "▙", "br": "▟", "h": "▀", "v": "▌"},
 }
+
 
 # FORMATTING NUMBERS CUZ FUNNY
 def format_number(n):
@@ -156,9 +157,9 @@ def format_number(n):
         (1e18, "Qn"),  # Quintillion
         (1e15, "Qd"),  # Quadrillion
         (1e12, "T"),  # Trillion
-        (1e9,  "B"),  # Billion
-        (1e6,  "M"),  # Million
-        (1e3,  "K"),  # Thousand
+        (1e9, "B"),  # Billion
+        (1e6, "M"),  # Million
+        (1e3, "K"),  # Thousand
     ]
 
     for value, symbol in suffixes:
