@@ -22,7 +22,7 @@ from ascii_art import (
 
 import config
 
-from config import INSPIRE_UPGRADES, format_number
+from config import INSPIRE_UPGRADES, format_number, INSPIRATION_MILESTONES
 
 # Save file path
 SAVE_PATH = "data/save.json"
@@ -30,6 +30,9 @@ if not os.path.exists("data"):
     os.makedirs("data")
 
 last_tick_time = time.time()
+
+last_render =""
+last_size=(0,0)
 
 # -----------------------------
 # Game state (persistent)
@@ -90,6 +93,8 @@ def load_game():
     game.setdefault("base_money_gain", config.BASE_MONEY_GAIN)
     game.setdefault("auto_work_unlocked", False)
     game.setdefault("motivation_unlocked", False)
+    game.setdefault("total_inspirations", 0)
+    game.setdefault("milestones_earned", [])
 
     if "inspire_auto_work" in game.get("inspiration_upgrades", []):
         game["auto_work_unlocked"] = True
@@ -108,8 +113,13 @@ def save_game():
 # -----------------------------
 # Helpers
 # -----------------------------
-def clear_screen():
-    os.system("cls" if os.name == "nt" else "clear")
+def get_term_size():
+    """Return (columns, rows) of terminal."""
+    try:
+        size = shutil.get_terminal_size(fallback=(80, 24))
+        return (size.columns, size.lines)
+    except Exception:
+        return (80, 24)
 
 def get_upgrade_level(upg_id):
     for u in game.get("inspiration_upgrades", []):
@@ -174,6 +184,55 @@ def apply_upgrade_effects():
         if level > 0:
             apply_single_upgrade_effect(upg, level)
 
+def gain_inspiration(amount=1):
+    game["total_inspirations"] += amount
+    check_inspiration_milestones()
+
+def check_inspiration_milestones():
+    for milestone in INSPIRATION_MILESTONES:
+        if (
+            game["total_inspirations"] >= milestone["inspirations_required"]
+            and milestone["inspirations_required"] not in game["milestones_earned"]
+        ):
+            apply_milestone_reward(milestone)
+            game["milestones_earned"].append(milestone["inspirations_required"])
+
+def apply_milestone_reward(milestone):
+    reward_type = milestone["reward_type"]
+    reward_value = milestone["reward_value"]
+
+    if reward_type == "xmult":
+        game["money_mult"] *= reward_value
+        print(f"Milestone reached! Money multiplier x{reward_value} applied!")
+
+    elif reward_type == "addmult":
+        game["money_mult"] += reward_value
+        print(f"Milestone reached! Money multiplier +{reward_value} applied!")
+
+def render_inspiration_milestones():
+    """Render inspiration milestones on the right side."""
+    lines = []
+    total_insp = game.get("total_inspirations", 0)
+    earned = game.get("milestones_earned", [])
+
+    lines.append("=== MILESTONES ===")
+    for m in INSPIRATION_MILESTONES:
+        req = m["inspirations_required"]
+        unlocked = req in earned
+        status = "[UNLOCKED]" if unlocked else f"[LOCKED: {total_insp}/{req}]"
+
+        if m["reward_type"] == "xmult":
+            reward_desc = f"x{m['reward_value']} money"
+        elif m["reward_type"] == "addmult":
+            reward_desc = f"+{m['reward_value']} money"
+        else:
+            reward_desc = "?"
+
+        line = f"{req} i → {reward_desc} {status}"
+        lines.append(line)
+    lines.append("")  # add spacing at bottom
+    return lines
+
 
 # -----------------------------
 # Compute gain and delay and math stuff
@@ -202,12 +261,12 @@ def compute_gain_and_delay():
         elif typ == "mult":
             base_val = float(u.get("base_value", u.get("value", 1)))
             val_mult = float(u.get("value_mult", 1))
-            effective = base_val * (val_mult**level)
+            effective = base_val * (val_mult**(level-1))
             gain_mult *= effective
         elif typ == "reduce_delay":
             base_val = float(u.get("base_value", u.get("value", 1)))
             val_mult = float(u.get("value_mult", 1))
-            effective = base_val * (val_mult**level)
+            effective = base_val * (val_mult**(level-1))
             delay_mult *= effective
         elif typ == "unlock_focus":
             game["focus_unlocked"] = True
@@ -256,8 +315,6 @@ def compute_gain_and_delay():
     eff_gain *= motivation_mult
 
     # --- Safety caps to prevent runaway values ---
-    gain_mult = min(gain_mult, 1e6)
-    eff_gain = min(eff_gain, 1e9)
     eff_delay = max(eff_delay, 0.01)  # prevent zero delay
 
     return eff_gain, eff_delay
@@ -340,105 +397,90 @@ def boxed_lines(
 # Render UI
 # -----------------------------
 def render_ui(screen="work"):
-    clear_screen()
+    global last_render, last_size
+
+    # detect resizing
+    current_size = get_term_size()
+    resized = current_size != last_size
+
     effective_gain, effective_delay = compute_gain_and_delay()
     prog = (
         min(work_timer / effective_delay, 1.0)
         if game.get("auto_work_unlocked", False)
         else 0
     )
-
     bar_len = 36
     filled = int(prog * bar_len)
-    work_bar = (
-        "[" + "#" * filled + "-" * (bar_len - filled) + "] " + f"{int(prog*100):3d}%"
-    )
+    work_bar = f"[{'#' * filled}{'-' * (bar_len - filled)}] {int(prog*100):3d}%"
 
     # -----------------------------
     # Left panel (~25%)
     # -----------------------------
     calc_insp = calculate_inspiration(money_since_reset)
     time_next = predict_next_point()
-    left_lines = []
 
+    # Top part: sticks to top
+    top_left_lines = []
     if game.get("inspiration_unlocked", False):
         if screen == "work":
-            left_lines.append(f"=== INSPIRATION ===")
-            left_lines.append(f"Points: {format_number(game.get('inspiration', 0))} i")
-            left_lines.append("")
-            left_lines.append("[1] Open Inspiration Tree")
-            left_lines.append("")
-
+            top_left_lines.append("=== INSPIRATION ===")
+            top_left_lines.append(f"Points: {format_number(game.get('inspiration', 0))} i")
+            top_left_lines.append("")
+            top_left_lines.append("[1] Open Inspiration Tree")
+            top_left_lines.append("")
             if game.get("money", 0) >= 1000:
-                insp_msg = (
-                    f"You realise all your work is for naught, "
-                    f"and you decide to leave behind everything "
-                    f"for {'an' if calc_insp==1 else str(format_number(calc_insp))} Inspiration."
-                )
-                wrapped_lines = wrap_ui_text(insp_msg)
-                left_lines.extend(wrapped_lines)
-                left_lines.append("")
-                left_lines.append(
-                    f"[I]nspire for {format_number(calc_insp)} Inspiration"
-                )
-                left_lines.append("")
-                left_lines.append(f"{format_number(time_next)} until next point")
+                top_left_lines.append(f"[I]nspire for {format_number(calc_insp)} Inspiration")
+                top_left_lines.append(f"{format_number(time_next)} until next point")
         elif screen == "inspiration":
-            left_lines.append("=== INSPIRATION TREE ===")
-            left_lines.append(f"Points: {format_number(game.get('inspiration', 0))} i")
-            left_lines.append("")
-
+            top_left_lines.append("=== INSPIRATION TREE ===")
+            top_left_lines.append(f"Points: {format_number(game.get('inspiration', 0))} i")
+            top_left_lines.append("")
             for i, u in enumerate(INSPIRE_UPGRADES, start=1):
                 level = get_inspire_level(u["id"])
                 cost = get_inspire_cost(u, current_level=level)
-
                 base_value = u.get("base_value", 1.0)
                 value_mult = u.get("value_mult", 1.0)
-                total_mult = (
-                    base_value * (value_mult ** (level - 1))
-                    if level > 0
-                    else base_value
-                )
-
-                owned = (
-                    "(MAX)"
-                    if level == u.get("max_level", 1)
-                    else f"(lvl {level}/{u.get('max_level', '?')})" if level > 1 else ""
-                )
-                left_lines.append(
-                    f"{i}. {u['name']} {owned}"
-                    + (
-                        f" - Cost: {format_number(cost)}i"
-                        if level < u.get("max_level", 1)
-                        else ""
-                    )
-                )
-
+                total_mult = base_value * (value_mult ** (level - 1)) if level > 0 else base_value
+                owned = "(MAX)" if level == u.get("max_level", 1) else f"(lvl {level}/{u.get('max_level', '?')})" if level > 1 else ""
+                top_left_lines.append(f"{i}. {u['name']} {owned}" + (f" - Cost: {format_number(cost)}i" if level < u.get("max_level",1) else ""))
                 if u.get("desc"):
                     desc_text = f"→ {u['desc']}"
-                    if level > 0 and not u["id"] == "inspire_motiv":
+                    if level > 0 and u["id"] != "inspire_motiv":
                         desc_text += f" (x{total_mult:.2f})"
                     elif u["id"] == "inspire_motiv":
-                        desc_text += f" (x{1 + round(((game.get("motivation", config.MOTIVATION_MAX) / config.MOTIVATION_MAX) * (config.MAX_MOTIVATION_MULT - 1)),2)})"
+                        motiv = game.get("motivation", config.MOTIVATION_MAX)
+                        motiv_mult = 1 + round(((motiv / config.MOTIVATION_MAX) * (config.MAX_MOTIVATION_MULT - 1)), 2)
+                        desc_text += f" (x{motiv_mult})"
                     wrapped_desc = wrap_ui_text(desc_text)
-                    left_lines.extend(["     " + line for line in wrapped_desc])
-
-            left_lines.append("")
-            left_lines.append("[B] Back to Work")
-
+                    top_left_lines.extend(["     " + line for line in wrapped_desc])
+            top_left_lines.append("")
+            top_left_lines.append("[B] Back to Work")
     else:
-        if game.get("money", 0) >= 1000:
-            insp_msg = (
-                f"You realise all your work is for naught, "
-                f"and you decide to leave behind everything "
-                f"for {'an' if calc_insp==1 else str(calc_insp)} Inspiration."
-            )
-            wrapped_lines = wrap_ui_text(insp_msg)
-            left_lines.extend(wrapped_lines)
-            left_lines.append("")
-            left_lines.append(f"[I]nspire for {calc_insp} Inspiration")
-        else:
-            left_lines.append("Reach $1000 to unlock Inspiration")
+        top_left_lines.append("=== INSPIRATION ===")
+        top_left_lines.append("Reach $1000 to unlock Inspiration")
+
+    # Bottom-left part: milestones (fixed at ~50% terminal height)
+    bottom_left_lines = []
+    if game.get("inspiration_unlocked", False):
+        bottom_left_lines.append("")  # small gap
+        bottom_left_lines.append("=== MILESTONES ===")
+        total_insp = game.get("total_inspirations", game.get("inspiration", 0))
+        earned = set(game.get("milestones_earned", []))
+        for m in config.INSPIRATION_MILESTONES:
+            req = m.get("inspirations_required", 0)
+            rtype = m.get("reward_type", "")
+            rval = m.get("reward_value", "")
+            unlocked = req in earned or total_insp >= req
+            status = "✓" if unlocked else "✗"
+            if rtype == "xmult":
+                reward_desc = f"x{rval} money"
+            elif rtype in ("+mult", "addmult"):
+                reward_desc = f"+{rval} mult"
+            elif rtype in ("-cd", "reduce_cd"):
+                reward_desc = f"/{rval} work delay"
+            else:
+                reward_desc = str(rtype) + " " + str(rval)
+            bottom_left_lines.append(f"{status} {req} i → {reward_desc}")
 
     # -----------------------------
     # Right panel (~50%)
@@ -460,25 +502,14 @@ def render_ui(screen="work"):
         right_lines.append("")
 
     # Work info
-    right_lines.append(
-        (f"MONEY: ${format_number(game.get('money',0))}   GAIN: {format_number(effective_gain)} / cycle")  + (f"   DELAY: {effective_delay:.2f}s" if game.get("auto_work_unlocked", False) else "")
-    )
+    right_lines.append(f"MONEY: ${format_number(game.get('money',0))}   GAIN: {format_number(effective_gain)} / cycle" + (f"   DELAY: {effective_delay:.2f}s" if game.get("auto_work_unlocked", False) else ""))
     right_lines.append(work_bar)
-    right_lines.append(
-        ("Auto-work: ENABLED" if is_auto_work_unlocked() else "Press W to work")
-        + (
-            f"   Motivation: {int((game.get('motivation', config.MOTIVATION_MAX)/config.MOTIVATION_MAX)*100)}%"
-            if has_inspire_upgrade("inspire_motiv")
-            else ""
-        )
-    )
-
+    right_lines.append(("Auto-work: ENABLED" if is_auto_work_unlocked() else "Press W to work") + (f"   Motivation: {int((game.get('motivation', config.MOTIVATION_MAX)/config.MOTIVATION_MAX)*100)}%" if has_inspire_upgrade("inspire_motiv") else ""))
+    
     # Owned upgrades
     owned_names = [u["name"] for u in all_upgrades if u["id"] in game.get("owned", [])]
     right_lines.append("")
-    right_lines.append(
-        "Owned Upgrades: " + (", ".join(owned_names) if owned_names else "(none)")
-    )
+    right_lines.append("Owned Upgrades: " + (", ".join(owned_names) if owned_names else "(none)"))
 
     # Options
     options = "[W]ork  [U]pgrade  [F]ocus"
@@ -489,33 +520,44 @@ def render_ui(screen="work"):
     right_lines.append("Options: " + options)
 
     # -----------------------------
-    # Combine columns
+    # Combine panels and pad vertically
     # -----------------------------
+    term_width, term_height = get_term_size()
+
+    # Position milestones at ~50% terminal height
+    top_height = len(top_left_lines)
+    desired_midpoint = term_height // 2
+    gap_lines = max(0, desired_midpoint - top_height)
+    left_lines = top_left_lines + ([""] * gap_lines) + bottom_left_lines
+
+    # Bottom-stick right panel
+    right_content_height = len(right_lines)
+    total_box_height_right = right_content_height + 1 + 1 + 2  # pad_top + pad_bottom + border
+    empty_lines_needed_right = max(term_height - total_box_height_right, 0)
+    right_lines = ([""] * empty_lines_needed_right) + right_lines
+
+    # Equalize lengths
     max_lines = max(len(left_lines), len(right_lines))
-    for _ in range(len(left_lines), max_lines):
+    while len(left_lines) < max_lines:
         left_lines.append("")
-    for _ in range(len(right_lines), max_lines):
+    while len(right_lines) < max_lines:
         right_lines.append("")
 
-    left_w = int(get_term_size()[0] * 0.25)
-    right_w = int(get_term_size()[0] * 0.50)
-    spacing = 4
-
-    combined_lines = [
-        l.ljust(left_w) + " " * spacing + r.ljust(right_w)
-        for l, r in zip(left_lines, right_lines)
-    ]
+    combined_lines = [l.ljust(int(term_width*0.25)) + " " * 4 + r.ljust(int(term_width*0.50)) for l,r in zip(left_lines, right_lines)]
 
     # -----------------------------
     # Box and render
     # -----------------------------
-    box = boxed_lines(
-        combined_lines,
-        title=f" Layer {game.get('layer',0)} ",
-        pad_top=1,
-        pad_bottom=1,
-    )
-    print("\033[H" + "\n".join(box), end="", flush=True)
+    box = boxed_lines(combined_lines, title=f" Layer {game.get('layer',0)} ", pad_top=1, pad_bottom=1)
+    if resized:
+        print("\033[2J\033[H", end="")  # clear screen on resize
+        last_size = current_size
+        last_render = ""
+
+    output = "\033[H" + "\n".join(box)
+    if output != last_render:
+        print(output, end="", flush=True)
+        last_render = output
 
 
 def render_desk_table():
@@ -655,7 +697,7 @@ def open_upgrade_menu():
             if typ == "mult":
                 base = float(u.get("base_value", u.get("value", 1)))
                 val_mult = float(u.get("value_mult", 1))
-                effective = base * (val_mult**level)
+                effective = base * (val_mult**(level-1))
                 val_display = f"x{format_number(effective)}"
             elif typ == "add":
                 base = float(u.get("base_value", u.get("value", 0)))
@@ -1171,7 +1213,6 @@ def main_loop():
                     break
                 # Work screen
                 elif k == "w":
-                    current_screen = "work"
                     gain, eff_delay = compute_gain_and_delay()
                     focus_active = now < focus_active_until
 

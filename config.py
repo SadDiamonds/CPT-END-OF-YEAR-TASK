@@ -149,6 +149,25 @@ INSPIRE_UPGRADES = [
     },
 ]
 
+INSPIRATION_MILESTONES = [
+    {
+        "inspirations_required": 1,
+        "reward_type": "xmult",
+        "reward_value": 3.0
+    },
+    {
+        "inspirations_required": 2,
+        "reward_type": "+mult",
+        "reward_value": 50.0
+    },
+    {
+        "inspirations_required": 5,
+        "reward_type": "-cd",
+        "reward_value": 0.75
+    },
+    # add more milestones as needed
+]
+
 BORDERS = {
     0: {"tl": "+", "tr": "+", "bl": "+", "br": "+", "h": "-", "v": "|"},
     1: {"tl": "╔", "tr": "╗", "bl": "╚", "br": "╝", "h": "═", "v": "║"},
