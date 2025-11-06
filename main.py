@@ -51,6 +51,8 @@ game = {
     "money_since_reset": 0,
     "motivation": 0,
     "motivation_unlocked": False,
+    "total_inspirations": 0,
+    "caffeine_points": 0.0,
 }
 
 # runtime variables
@@ -95,6 +97,7 @@ def load_game():
     game.setdefault("motivation_unlocked", False)
     game.setdefault("total_inspirations", 0)
     game.setdefault("milestones_earned", [])
+    game.setdefault("caffeine_points", 0.0)
 
     if "inspire_auto_work" in game.get("inspiration_upgrades", []):
         game["auto_work_unlocked"] = True
@@ -184,18 +187,20 @@ def apply_upgrade_effects():
         if level > 0:
             apply_single_upgrade_effect(upg, level)
 
-def gain_inspiration(amount=1):
-    game["total_inspirations"] += amount
+def total_inspiration(amount=1):
+    game["total_inspirations"] = game.get("total_inspirations", 0) + amount
     check_inspiration_milestones()
 
+
 def check_inspiration_milestones():
+    total = game.get("total_inspirations", 0)
+    earned = game.setdefault("milestones_earned", [])
     for milestone in INSPIRATION_MILESTONES:
-        if (
-            game["total_inspirations"] >= milestone["inspirations_required"]
-            and milestone["inspirations_required"] not in game["milestones_earned"]
-        ):
+        req = milestone["inspirations_required"]
+        if req not in earned and total >= req:
+            earned.append(req)
             apply_milestone_reward(milestone)
-            game["milestones_earned"].append(milestone["inspirations_required"])
+    save_game()
 
 def apply_milestone_reward(milestone):
     reward_type = milestone["reward_type"]
@@ -203,11 +208,12 @@ def apply_milestone_reward(milestone):
 
     if reward_type == "xmult":
         game["money_mult"] *= reward_value
-        print(f"Milestone reached! Money multiplier x{reward_value} applied!")
 
-    elif reward_type == "addmult":
+    elif reward_type == "+mult":
         game["money_mult"] += reward_value
-        print(f"Milestone reached! Money multiplier +{reward_value} applied!")
+        
+    elif reward_type == "-cd":
+        game["work_delay_multiplier"] *= reward_value
 
 def render_inspiration_milestones():
     """Render inspiration milestones on the right side."""
@@ -222,9 +228,9 @@ def render_inspiration_milestones():
         status = "[UNLOCKED]" if unlocked else f"[LOCKED: {total_insp}/{req}]"
 
         if m["reward_type"] == "xmult":
-            reward_desc = f"x{m['reward_value']} money"
-        elif m["reward_type"] == "addmult":
-            reward_desc = f"+{m['reward_value']} money"
+            reward_desc = f"x${m['reward_value']}"
+        elif m["reward_type"] == "+mult":
+            reward_desc = f"+${m['reward_value']}"
         else:
             reward_desc = "?"
 
@@ -313,7 +319,7 @@ def compute_gain_and_delay():
         config.MAX_MOTIVATION_MULT - 1
     )
     eff_gain *= motivation_mult
-
+    eff_gain *= game.get("money_mult", 1.0)
     # --- Safety caps to prevent runaway values ---
     eff_delay = max(eff_delay, 0.01)  # prevent zero delay
 
@@ -455,9 +461,23 @@ def render_ui(screen="work"):
                     top_left_lines.extend(["     " + line for line in wrapped_desc])
             top_left_lines.append("")
             top_left_lines.append("[B] Back to Work")
-    else:
-        top_left_lines.append("=== INSPIRATION ===")
+    elif 10000 > game.get("money_since_reset", 0) >= 5000:
+        top_left_lines.append("       === INSPIRATION ===")
+        top_left_lines.append("")
         top_left_lines.append("Reach $1000 to unlock Inspiration")
+    elif game.get("money_since_reset", 0) >= 10000:
+        top_left_lines.append("       === INSPIRATION ===")
+        top_left_lines.append("")
+        desc_texts = [
+            "You realise the pointlessness of this mundane work",
+            "Perhaps there is more to life than work?",
+            f"[I]nspire for {format_number(calc_insp)} Inspiration",
+        ]
+        for desc in desc_texts:
+            wrapped = wrap_ui_text(desc)
+            top_left_lines.extend(["   " + line for line in wrapped])
+        else:
+            top_left_lines.append("")
 
     # Bottom-left part: milestones (fixed at ~50% terminal height)
     bottom_left_lines = []
@@ -473,9 +493,9 @@ def render_ui(screen="work"):
             unlocked = req in earned or total_insp >= req
             status = "✓" if unlocked else "✗"
             if rtype == "xmult":
-                reward_desc = f"x{rval} money"
-            elif rtype in ("+mult", "addmult"):
-                reward_desc = f"+{rval} mult"
+                reward_desc = f"x${rval}"
+            elif rtype in ("+mult", "+mult"):
+                reward_desc = f"+${rval}"
             elif rtype in ("-cd", "reduce_cd"):
                 reward_desc = f"/{rval} work delay"
             else:
@@ -505,7 +525,7 @@ def render_ui(screen="work"):
     right_lines.append(f"MONEY: ${format_number(game.get('money',0))}   GAIN: {format_number(effective_gain)} / cycle" + (f"   DELAY: {effective_delay:.2f}s" if game.get("auto_work_unlocked", False) else ""))
     right_lines.append(work_bar)
     right_lines.append(("Auto-work: ENABLED" if is_auto_work_unlocked() else "Press W to work") + (f"   Motivation: {int((game.get('motivation', config.MOTIVATION_MAX)/config.MOTIVATION_MAX)*100)}%" if has_inspire_upgrade("inspire_motiv") else ""))
-    
+
     # Owned upgrades
     owned_names = [u["name"] for u in all_upgrades if u["id"] in game.get("owned", [])]
     right_lines.append("")
@@ -556,6 +576,7 @@ def render_ui(screen="work"):
 
     output = "\033[H" + "\n".join(box)
     if output != last_render:
+        os.system("cls" if os.name == "nt" else "clear")
         print(output, end="", flush=True)
         last_render = output
 
@@ -566,10 +587,16 @@ def render_desk_table():
 
     # --- Place owned items ---
     owned_ids = [u["id"] for u in all_upgrades if u["id"] in game.get("owned", [])]
+    for new, old in config.UPGRADE_REPLACEMENT.items():
+        if new in owned_ids and old in owned_ids:
+            owned_ids.remove(old)
+    owned_ids.sort(key=lambda uid: config.DESK_ORDER.index(uid) if uid in config.DESK_ORDER else 999)
     owned_arts = [UPGRADE_ART[uid] for uid in owned_ids if uid in UPGRADE_ART]
 
     empty_indices = [
-        i for i, line in enumerate(table) if line.strip() == "║                       ║"
+        i
+        for i, line in enumerate(table)
+        if line.startswith("       ║") and line.endswith("║")
     ]
     empty_idx_iter = reversed(empty_indices)
 
@@ -635,6 +662,7 @@ def render_desk_table():
 # -----------------------------
 def work_tick():
     global last_tick_time
+    global work_timer
     # Work tick — only runs if auto-work is unlocked
     now = time.time()
     delta = now - last_tick_time
@@ -653,6 +681,9 @@ def work_tick():
                     config.FOCUS_MAX,
                     game.get("focus", 0) + config.FOCUS_CHARGE_PER_EARN,
                 )
+            if "coffee" in game.get("owned", []):
+                game["caffeine_points"] = game.get("caffeine_points", 0.0) + delta * config.CAFFEINE_POINT_RATE
+                print(game["caffeine_points"], delta)
             work_timer -= eff_delay
             save_game()
     else:
@@ -700,7 +731,7 @@ def open_upgrade_menu():
                 effective = base * (val_mult**(level-1))
                 val_display = f"x{format_number(effective)}"
             elif typ == "add":
-                base = float(u.get("base_value", u.get("value", 0)))
+                base = float(u.get("base_value", u.get("value", 1)))
                 effective = base * level
                 val_display = f"+{format_number(effective)}"
             elif typ == "reduce_delay":
@@ -939,6 +970,8 @@ def reset_for_inspiration():
 
     play_inspiration_reset_animation()
 
+    total_inspiration(1)
+    
     # apply reset
     game["inspiration"] = game.get("inspiration", 0) + gained
     game.update(
@@ -952,9 +985,10 @@ def reset_for_inspiration():
             "focus_unlocked": False,
             "inspiration_unlocked": True,
             "layer": max(game.get("layer", 0), 1),
-            "motivation": config.MOTIVATION_MAX,
         }
     )
+    if game.get("motivation_unlocked", False):
+        game.update({"motivation": config.MOTIVATION_MAX})
     save_game()
     
     # display lore-friendly message
@@ -1023,6 +1057,7 @@ def handle_inspire_purchase(idx):
         game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + value
     elif upg["type"] == "unlock_motivation":
         game["motivation_unlocked"] = True
+        game["motivation"] = config.MOTIVATION_MAX
     elif upg["type"] == "auto_work":
         game["auto_work_unlocked"] = True
 

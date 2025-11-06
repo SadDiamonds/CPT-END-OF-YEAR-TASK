@@ -2,7 +2,7 @@
 
 # Base resource values
 BASE_MONEY_GAIN = 1.0  # money gained per work cycle before modifiers
-BASE_WORK_DELAY = 5.0  # seconds per work cycle (base)
+BASE_WORK_DELAY = 10.0  # seconds per work cycle (base)
 BASE_MONEY_MULT = 1.0  # base multiplier (other multipliers multiply this)
 
 # Focus (temporary boost) config
@@ -31,6 +31,7 @@ STEAM_CHANCE = 0.2  # chance to emit a new puff per render
 STEAM_SPREAD = 3  # max horizontal offset from center
 STEAM_LIFETIME = 8  # number of lines before disappearing
 STEAM_CHARS = ["~", "^", "."]
+CAFFEINE_POINT_RATE = 1  # caffeine points gained per second when coffee is owned
 
 # UI / layout
 MIN_BOX_WIDTH = 50  # don't make the box narrower than this
@@ -38,64 +39,70 @@ BOX_MARGIN = 4  # left/right margin in terminal columns
 
 # TEMPLATE {"id": "", "name":"", "cost": ,"type": "", "value": , "unlocked": False},
 
+UPGRADE_REPLACEMENT = {
+    "mech_keyboard": "keyboard",
+    "dual_monitors": "monitor",
+}
+
+DESK_ORDER = [
+    "ergonomic_chair",
+    "keyboard",
+    "mech_keyboard",  
+    "coffee",
+    "monitor",
+    "dual_monitors",  
+]
+
 UPGRADES = [
     {
         "id": "keyboard",
         "name": "New Keyboard",
         "cost": 20,
         "type": "mult",
-        "base_value": 1.5,
+        "base_value": 2,
         "unlocked": True,
-    },
-    {
-        "id": "Dev_upg",
-        "name": "Dev_upg",
-        "cost": 1,
-        "type": "mult",
-        "base_value": 10000000,
-        "max_level": 10,
-        "value_mult": 2,
-        "cost_mult": 1,
-        "level": 0,
-        "unlocked": False,
-    },
-    {
-        "id": "Dev_upg_delay",
-        "name": "Dev_upg_delay",
-        "cost": 1,
-        "type": "reduce_delay",
-        "base_value": 1e-9,
-        "max_level": 10,
-        "value_mult": 0.1,
-        "cost_mult": 1,
-        "level": 0,
-        "unlocked": False,
     },
     {
         "id": "coffee",
         "name": "Coffee!!!!!",
-        "cost": 200,
+        "cost": 100,
         "type": "reduce_delay",
-        "value": 0.75,
+        "base_value": 0.5,
         "unlocked": False,
     },
     # coffee here divides delay (we'll treat 'value' as a factor to multiply work_delay by)
     {
         "id": "monitor",
         "name": "New Monitor",
-        "cost": 1000,
+        "cost": 500,
         "type": "add",
-        "value": 3.0,
+        "base_value": 5.0,
         "unlocked": False,
     },
     {
-        "id": "focus_meter",
-        "name": "Ability to lock in",
-        "cost": 5000,
-        "type": "unlock_focus",
-        "value": 0,
+        "id": "ergonomic_chair",
+        "name": "Ergonomic Chair",
+        "cost": 1500,
+        "type": "mult",
+        "base_value": 3,
         "unlocked": False,
     },
+    {
+        "id": "dual_monitors",
+        "name": "Dual Monitors",
+        "cost": 3000,
+        "type": "add",
+        "base_value": 20.0,
+        "unlocked": False,
+    },
+    {
+        "id": "mech_keyboard",
+        "name": "Mechanical Keyboard",
+        "cost": 5000,
+        "type": "mult",
+        "base_value": 5.0,
+        "unlocked": False,
+    }
 ]
 
 INSPIRE_UPGRADES = [
@@ -123,7 +130,7 @@ INSPIRE_UPGRADES = [
     {
         "id": "inspire_auto_work",
         "name": "Auto-generation",
-        "cost": 250,
+        "cost": 1,
         "type": "auto_work",
         "value": 1,
         "max_level": 1,
