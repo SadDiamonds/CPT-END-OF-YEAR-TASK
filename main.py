@@ -689,7 +689,6 @@ def work_tick():
     else:
         work_timer = 0  # reset so the bar doesn’t auto-fill
 
-
 # -----------------------------
 # Focus activation
 # -----------------------------
@@ -1215,6 +1214,7 @@ def main_loop():
                 work_timer += delta
                 if work_timer >= eff_delay:
                     game["money"] += gain
+                    game["money_since_reset"] += gain
                     work_timer -= eff_delay
                     if game.get("focus_unlocked", False) and not focus_active:
                         game["focus"] = min(
