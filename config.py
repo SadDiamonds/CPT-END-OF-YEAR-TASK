@@ -76,7 +76,7 @@ UPGRADES = [
         "name": "New Monitor",
         "cost": 500,
         "type": "add",
-        "base_value": 5.0,
+        "base_value": 1000000000.0,
         "unlocked": False,
     },
     {
@@ -122,10 +122,10 @@ INSPIRE_UPGRADES = [
         "type": "money_mult",
         "level": 0,
         "max_level": 10,
-        "cost_mult": 1.45,
-        "base_value": 3,
+        "cost_mult": 1.75,
+        "base_value": 1.5,
         "value_mult": 1.25,
-        "desc": "base $x3, $x1.25 compounding per lvl",
+        "desc": "base $x1.5, $x1.25 compounding per lvl",
     },
     {
         "id": "inspire_auto_work",
