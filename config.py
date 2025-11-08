@@ -3,7 +3,7 @@
 # Base resource values
 BASE_MONEY_GAIN = 1.0  # money gained per work cycle before modifiers
 BASE_WORK_DELAY = 10.0  # seconds per work cycle (base)
-BASE_MONEY_MULT = 1.0  # base multiplier (other multipliers multiply this)
+BASE_MONEY_MULT = 129138129381239718273.0  # base multiplier (other multipliers multiply this)
 
 # Focus (temporary boost) config
 FOCUS_UNLOCK_COST_INSP = 0  # if you want inspiration cost for unlocking (unused)
@@ -53,56 +53,116 @@ DESK_ORDER = [
     "dual_monitors",  
 ]
 
+UPGRADE_DEPENDENCIES = {
+    "keyboard": [],
+    "coffee": ["keyboard", "auto_work", "cup_holder"],
+    "cup_holder": ["keyboard"],
+    "monitor": ["cup_holder"], 
+    "ergonomic_chair": ["monitor"],
+    "dual_monitors": ["ergonomic_chair"],
+    "mech_keyboard": ["dual_monitors"],
+    "lamp": ["mech_keyboard"],
+    "whiteboard": ["lamp"],
+}
+
 UPGRADES = [
     {
         "id": "keyboard",
-        "name": "New Keyboard",
-        "cost": 20,
+        "name": "Basic Keyboard",
+        "cost": 50,
         "type": "mult",
-        "base_value": 2,
+        "base_value": 1.5,
+        "value_mult": 1.15,
+        "max_level": 5,
+        "cost_mult": 1.8,
         "unlocked": True,
     },
     {
         "id": "coffee",
-        "name": "Coffee!!!!!",
-        "cost": 100,
+        "name": "Coffee",
+        "cost": 200,
         "type": "reduce_delay",
-        "base_value": 0.5,
+        "base_value": 0.95,
+        "value_mult": 0.95,
+        "max_level": 3,
+        "cost_mult": 2.0,
         "unlocked": False,
     },
-    # coffee here divides delay (we'll treat 'value' as a factor to multiply work_delay by)
+    {
+        "id": "cup_holder",
+        "name": "Cup Holder",
+        "cost": 150,
+        "type": "add",
+        "base_value": 2.0,
+        "max_level": 1,
+        "unlocked": False,
+    },
     {
         "id": "monitor",
-        "name": "New Monitor",
-        "cost": 500,
+        "name": "Second Monitor",
+        "cost": 1000,
         "type": "add",
-        "base_value": 1000000000.0,
+        "base_value": 10.0,
+        "value_mult": 1.5,
+        "max_level": 4,
+        "cost_mult": 2.2,
         "unlocked": False,
     },
     {
         "id": "ergonomic_chair",
         "name": "Ergonomic Chair",
-        "cost": 1500,
+        "cost": 2500,
         "type": "mult",
-        "base_value": 3,
+        "base_value": 2.0,
+        "value_mult": 1.25,
+        "max_level": 3,
+        "cost_mult": 2.5,
         "unlocked": False,
     },
     {
         "id": "dual_monitors",
         "name": "Dual Monitors",
-        "cost": 3000,
+        "cost": 6000,
         "type": "add",
-        "base_value": 20.0,
+        "base_value": 25.0,
+        "value_mult": 1.5,
+        "max_level": 3,
+        "cost_mult": 2.5,
         "unlocked": False,
     },
     {
         "id": "mech_keyboard",
         "name": "Mechanical Keyboard",
-        "cost": 5000,
+        "cost": 12000,
         "type": "mult",
-        "base_value": 5.0,
+        "base_value": 2.5,
+        "value_mult": 1.3,
+        "max_level": 5,
+        "cost_mult": 2.8,
         "unlocked": False,
-    }
+    },
+    {
+        "id": "lamp",
+        "name": "Desk Lamp",
+        "cost": 20000,
+        "type": "reduce_delay",
+        "base_value": 0.9,
+        "value_mult": 0.95,
+        "max_level": 4,
+        "cost_mult": 3.0,
+        "unlocked": False,
+    },
+    {
+        "id": "whiteboard",
+        "name": "Whiteboard",
+        "cost": 50000,
+        "type": "add",
+        "base_value": 100.0,
+        "value_mult": 1.5,
+        "max_level": 5,
+        "cost_mult": 3.5,
+        "unlocked": False,
+    },
 ]
 
 INSPIRE_UPGRADES = [
@@ -135,6 +195,15 @@ INSPIRE_UPGRADES = [
         "value": 1,
         "max_level": 1,
         "desc": "Generates $ at a reduced rate",
+    },
+    {
+        "id": "inspire_charge",
+        "name": "Battery..?",
+        "cost": 1,
+        "type": "unlock_charge",
+        "value": 1,
+        "max_level": 1,
+        "desc": "Passive charge that boosts $ gain",
     },
     {
         "id": "inspire_3",
@@ -173,6 +242,11 @@ INSPIRATION_MILESTONES = [
         "reward_value": 0.75
     },
     # add more milestones as needed
+]
+
+CHARGE_THRESHOLDS = [
+    {"amount": 60, "reward_type": "xmult", "reward_value": 1.1},
+    {"amount": 300, "reward_type": "-cd", "reward_value": 0.9},
 ]
 
 BORDERS = {
