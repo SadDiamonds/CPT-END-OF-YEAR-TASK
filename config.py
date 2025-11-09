@@ -223,7 +223,7 @@ INSPIRE_UPGRADES = [
         "cost_mult": 2.0,
         "base_value": 2.0,
         "value_mult": 1.15,
-        "desc": "xPLACEHOLDER caffeine point gain",
+        "desc": "x2ip, x1.15ip compounding per lvl",
     },
     {
         "id": "inspire_3",
