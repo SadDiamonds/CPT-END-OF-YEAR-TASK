@@ -402,7 +402,7 @@ def render_ui(screen="work"):
         if screen == "work":
             top_left_lines += [
                 "=== INSPIRATION ===",
-                f"Points: {format_number(game.get('inspiration', 0))} i",
+                f"Points: {format_number(game.get('inspiration', 0))} ip",
                 "",
                 "[1] Open Inspiration Tree",
                 "",
@@ -415,7 +415,7 @@ def render_ui(screen="work"):
         elif screen == "inspiration":
             top_left_lines += [
                 "=== INSPIRATION TREE ===",
-                f"Points: {format_number(game.get('inspiration', 0))} i",
+                f"Points: {format_number(game.get('inspiration', 0))} ip",
                 "",
             ]
             for i, u in enumerate(INSPIRE_UPGRADES, start=1):
@@ -514,7 +514,9 @@ def render_ui(screen="work"):
         "",
         "Owned Upgrades: " + (", ".join(owned_names) if owned_names else "(none)"),
     ]
-    options = "[W]ork  [U]pgrade  [F]ocus"
+    options = "[W]ork  [U]pgrade"
+    if game.get("focus_unlocked", False):
+        options += "  [F]ocus"
     if game.get("inspiration_unlocked", False):
         options += "  [I]nspire"
     options += "  [Q]uit"
