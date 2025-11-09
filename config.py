@@ -3,10 +3,9 @@
 # Base resource values
 BASE_MONEY_GAIN = 1.0  # money gained per work cycle before modifiers
 BASE_WORK_DELAY = 10.0  # seconds per work cycle (base)
-BASE_MONEY_MULT = 129138129381239718273.0  # base multiplier (other multipliers multiply this)
+BASE_MONEY_MULT = 1.0  # base multiplier (other multipliers multiply this)
 
 # Focus (temporary boost) config
-FOCUS_UNLOCK_COST_INSP = 0  # if you want inspiration cost for unlocking (unused)
 FOCUS_BOOST_FACTOR = (
     0.5  # while focus active, work delay is multiplied by this (faster)
 )
@@ -203,7 +202,28 @@ INSPIRE_UPGRADES = [
         "type": "unlock_charge",
         "value": 1,
         "max_level": 1,
-        "desc": "Passive charge that boosts $ gain",
+        "desc": "Battery.",
+    },
+    {
+        "id": "battery_t2",
+        "name": "Battery Tier 2",
+        "cost": 50,
+        "type": "battery_t2",
+        "value": 2,
+        "max_level": 1,
+        "desc": "Unlocks Battery Tier 2 (100,000Ω cap)",
+    },
+    {
+        "id": "ip_boost",
+        "name": "PLACEHOLDER",
+        "cost": 75,
+        "type": "inspire_rate",
+        "level": 0,
+        "max_level": 10,
+        "cost_mult": 2.0,
+        "base_value": 2.0,
+        "value_mult": 1.15,
+        "desc": "xPLACEHOLDER caffeine point gain",
     },
     {
         "id": "inspire_3",
@@ -245,9 +265,15 @@ INSPIRATION_MILESTONES = [
 ]
 
 CHARGE_THRESHOLDS = [
-    {"amount": 60, "reward_type": "xmult", "reward_value": 1.1},
-    {"amount": 300, "reward_type": "-cd", "reward_value": 0.9},
+    {"amount": 0, "reward_type": "x$", "reward_value": 1.1},
+    {"amount": 500, "reward_type": "x$", "reward_value": 1.2},
 ]
+
+BATTERY_TIERS = {
+    1: {"cap": 1000, "rows": 5},
+    2: {"cap": 100000, "rows": 10},
+    3: {"cap": 10000000, "rows": 15},
+}
 
 BORDERS = {
     0: {"tl": "+", "tr": "+", "bl": "+", "br": "+", "h": "-", "v": "|"},

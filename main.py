@@ -51,6 +51,7 @@ game = {
     "best_charge": 0.0,
     "charge_threshold": [],
     "charge_unlocked": False,
+    "battery_tier": 1,
 }
 
 
@@ -149,17 +150,24 @@ def get_inspire_info(upg_id):
     return False, 0
 
 
-def render_battery(charge, max_charge=1000):
+def render_battery(charge, tier=None):
+    if tier is None:
+        tier = game.get("battery_tier", 1)
+    tier_info = config.BATTERY_TIERS.get(tier, config.BATTERY_TIERS[1])
+    cap = tier_info["cap"]
+    total_rows = tier_info["rows"]
     inner_w = 13
-    total_rows = 5
-    filled_rows = int((charge / max_charge) * total_rows)
-    val_str = (str(int(charge)) + " Ω").center(inner_w)
+
+    filled_rows = int((charge / cap) * total_rows)
+    val_str = (str(format_number(int(charge))) + " Ω").center(inner_w)
+
     rows = []
     for i in range(total_rows):
         if i < filled_rows:
             rows.append("│" + "█" * inner_w + "│")
         else:
             rows.append("│" + " " * inner_w + "│")
+
     battery_block = [
         "┌" + "─" * inner_w + "┐",
         f"│{val_str}│",
@@ -292,6 +300,15 @@ def compute_gain_and_delay():
             game["auto_work_unlocked"] = True
         elif u["type"] == "unlock_charge":
             game["charge_unlocked"] = True
+        elif u["type"] == "battery_t2":
+            game["battery_tier"] = 2
+    buff_mult = get_charge_bonus()
+    for t in config.CHARGE_THRESHOLDS:
+        if t["amount"] in game.get("charge_threshold", []):
+            if t["reward_type"] == "x$":
+                gain_mult *= t["reward_value"] * buff_mult
+            elif t["reward_type"] == "-cd":
+                delay_mult *= t["reward_value"] ** buff_mult
     eff_gain = (base_gain + gain_add) * gain_mult
     eff_delay = base_delay * delay_mult
     if time.time() < focus_active_until:
@@ -514,14 +531,17 @@ def render_ui(screen="work"):
     right_lines = []
     col_width = int(term_width * 0.25)
     if game.get("charge_unlocked", False):
-        right_lines.append("=== INSPIRATION BATTERY ===".center(col_width))
-        battery_art = render_battery(game.get("charge", 0), max_charge=1000)
+        right_lines.append("=== BATTERY ===".center(col_width))
+        battery_art = render_battery(game.get("charge", 0), tier=game.get("battery_tier", 1))
         right_lines += [line.center(col_width) for line in battery_art]
+        buff_mult = get_charge_bonus()
+        right_lines.append(f"Buffs all charge thresholds by x{buff_mult:.2f}".center(col_width))
         right_lines.append("Milestones:".center(col_width))
         for t in config.CHARGE_THRESHOLDS:
             req = t["amount"]
             status = "✓" if req in game.get("charge_threshold", []) else "✗"
-            desc = f"{status} {req}Ω → {t['reward_type']} {t['reward_value']}"
+            eff_value = t["reward_value"] * buff_mult
+            desc = f"{status} {req}Ω → {t['reward_type']} {eff_value:.2f}"
             right_lines.append(desc.center(col_width))
     max_lines = max(len(left_lines), len(middle_lines), len(right_lines))
     while len(left_lines) < max_lines:
@@ -666,7 +686,7 @@ def work_tick():
 
 def check_charge_thresholds():
     earned = game.setdefault("charge_threshold", [])
-    total = game.get("charge", 0)
+    total = game.get("best_charge", 0)
     for t in config.CHARGE_THRESHOLDS:
         req = t["amount"]
         if req not in earned and total >= req:
@@ -679,8 +699,8 @@ def check_charge_thresholds():
 
 def get_charge_bonus():
     charge = game.get("charge", 0)
-    return 1.5 ** math.log10(max(1, charge))
-
+    scale = 1.5 ** (math.log10(charge+0.1))
+    return scale
 
 def activate_focus():
     global focus_active_until
@@ -885,6 +905,9 @@ def reset_for_inspiration():
             "focus_unlocked": False,
             "inspiration_unlocked": True,
             "layer": max(game.get("layer", 0), 1),
+            "charge": 0.0,
+            "best_charge": 0.0,
+            "charge_threshold": [],
         }
     )
     if game.get("motivation_unlocked", False):
@@ -965,11 +988,30 @@ def key_listener():
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-
 def calculate_inspiration(money_since_reset):
     normalized = money_since_reset / 100_000
-    return math.floor(((normalized**0.35) * math.log(normalized + 1, 1.5)))
+    base_gain = math.floor(((normalized**0.35) * math.log(normalized + 1, 1.5)))
+    rate_mult = 1.0
+    final_mult = 1.0
+    for entry in game.get("inspiration_upgrades", []):
+        upg_id, level = (
+            (entry.get("id"), entry.get("level", 1))
+            if isinstance(entry, dict)
+            else (entry, 1)
+        )
+        u = next((x for x in config.INSPIRE_UPGRADES if x["id"] == upg_id), None)
+        if not u:
+            continue
 
+        base_val = float(u.get("base_value", u.get("value", 1)))
+        val_mult = float(u.get("value_mult", 1))
+        val = base_val * (val_mult ** max(0, (level - 1)))
+        if u["type"] == "inspire_rate":
+            rate_mult *= val
+        elif u["type"] == "inspire_mult":
+            final_mult *= val
+
+    return int(base_gain * rate_mult * final_mult)
 
 def predict_next_point():
     current_money = game.get("money_since_reset", 0)
