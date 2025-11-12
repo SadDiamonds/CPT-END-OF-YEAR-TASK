@@ -1,26 +1,54 @@
-import json, os, time, sys, threading, shutil, math, select, random, textwrap
+import json, os, time, sys, threading, shutil, math, select, random, textwrap, subprocess, re
 
 try:
     import msvcrt
 except:
     msvcrt = None
-from ascii_art import (
-    LAYER_0_DESK,
-    UPGRADE_ART,
-)
+
+try:
+    import colorama
+    from colorama import Fore, Back, Style
+except ImportError:
+    print("Colorama not found, installing...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "colorama"])
+    import colorama
+    from colorama import Fore, Back, Style
+colorama.init()
+
+from ascii_art import LAYER_0_DESK, UPGRADE_ART
 import config
-from config import INSPIRE_UPGRADES, format_number, INSPIRATION_MILESTONES
+from config import (
+    BASE_MONEY_GAIN,
+    BASE_WORK_DELAY,
+    BASE_MONEY_MULT,
+    INSPIRE_UPGRADES,
+    CONCEPT_UPGRADES,
+    INSPIRATION_UNLOCK_MONEY,
+    CONCEPTS_UNLOCK_MONEY,
+    MOTIVATION_MAX,
+    MAX_MOTIVATION_MULT,
+    FOCUS_BOOST_FACTOR,
+    FOCUS_DURATION,
+    FOCUS_CHARGE_PER_EARN,
+    FOCUS_MAX,
+    CHARGE_THRESHOLDS,
+    BATTERY_TIERS,
+    BORDERS,
+    UPGRADES,
+    format_number,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 SAVE_PATH = os.path.join(DATA_DIR, "save.json")
 
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
 last_tick_time = time.time()
 last_render, last_size = "", (0, 0)
 work_timer, KEY_PRESSED, running, focus_active_until = 0.0, None, True, 0.0
 steam = []
-all_upgrades = [u.copy() for u in config.UPGRADES]
 view_offset_x = 0
 view_offset_y = 0
 last_manual_time = 0.0
@@ -28,32 +56,30 @@ last_manual_time = 0.0
 game = {
     "layer": 0,
     "money": 0.0,
+    "money_since_reset": 0.0,
     "fatigue": 0,
     "focus": 0,
     "inspiration": 0,
-    "owned": [],
-    "focus_unlocked": False,
-    "base_work_delay": config.BASE_WORK_DELAY,
-    "base_money_gain": config.BASE_MONEY_GAIN,
-    "auto_work_unlocked": False,
-    "money_since_reset": 0,
+    "concepts": 0,
     "motivation": 0,
-    "motivation_unlocked": False,
-    "total_inspirations": 0,
-    "caffeine_points": 0.0,
+    "owned": [],
+    "upgrade_levels": {},
+    "focus_unlocked": False,
+    "auto_work_unlocked": False,
     "inspiration_unlocked": False,
+    "concepts_unlocked": False,
     "inspiration_upgrades": [],
-    "last_inspire_time": 0.0,
+    "concept_upgrades": [],
     "work_delay_multiplier": 1.0,
     "money_mult": 1.0,
     "focus_max_bonus": 0,
-    "milestones_earned": [],
-    "upgrade_levels": {},
     "charge": 0.0,
     "best_charge": 0.0,
     "charge_threshold": [],
     "charge_unlocked": False,
     "battery_tier": 1,
+    "insp_page": 0,
+    "concept_page": 0,
 }
 
 
@@ -67,32 +93,22 @@ def load_game():
                 game.update(data)
         except:
             pass
-    game["base_money_gain"] = config.BASE_MONEY_GAIN
-    game["base_work_delay"] = config.BASE_WORK_DELAY
-    game.setdefault("money_mult", config.BASE_MONEY_MULT)
-    for k, v in {
-        "owned": [],
-        "focus_unlocked": False,
-        "inspiration_unlocked": False,
-        "inspiration_upgrades": [],
-        "work_delay_multiplier": 1.0,
-        "money_mult": game["money_mult"],
-        "focus_max_bonus": 0,
-        "auto_work_unlocked": False,
-        "motivation_unlocked": False,
-        "total_inspirations": 0,
-        "milestones_earned": [],
-        "caffeine_points": 0.0,
-        "upgrade_levels": {},
-    }.items():
-        game.setdefault(k, v)
-    if get_inspire_info("inspire_auto_work")[0]:
-        game["auto_work_unlocked"] = True
-    if get_inspire_info("inspire_motiv")[0]:
-        game["motivation_unlocked"] = True
-        if game.get("motivation", 0) <= 0:
-            game["motivation"] = config.MOTIVATION_MAX
-    check_inspiration_milestones()
+    game.setdefault("money_mult", BASE_MONEY_MULT)
+    game.setdefault("focus_unlocked", False)
+    game.setdefault("auto_work_unlocked", False)
+    game.setdefault("inspiration_unlocked", False)
+    game.setdefault("concepts_unlocked", False)
+    game.setdefault("inspiration_upgrades", [])
+    game.setdefault("concept_upgrades", [])
+    game.setdefault("upgrade_levels", {})
+    game.setdefault("focus_max_bonus", 0)
+    game.setdefault("motivation", 0)
+    game.setdefault("charge", 0.0)
+    game.setdefault("best_charge", 0.0)
+    game.setdefault("charge_threshold", [])
+    game.setdefault("battery_tier", 1)
+    game.setdefault("insp_page", 0)
+    game.setdefault("concept_page", 0)
     save_game()
 
 
@@ -100,8 +116,18 @@ def save_game():
     try:
         with open(SAVE_PATH, "w") as f:
             json.dump(game, f)
-    except Exception as e:
-        print("Save failed:", e)
+    except:
+        pass
+
+
+def ansi_center(text, width):
+    vis = visible_len(text)
+    pad_left = max(0, (width - vis) // 2)
+    pad_right = max(0, width - vis - pad_left)
+    return " " * pad_left + text + " " * pad_right
+
+def visible_len(s):
+    return len(ANSI_ESCAPE.sub("", s))
 
 
 def get_term_size():
@@ -112,35 +138,16 @@ def get_term_size():
         return 80, 24
 
 
-def convert_old_upgrades():
-    new_list = []
-    for u in game.get("inspiration_upgrades", []):
-        if isinstance(u, str):
-            new_list.append({"id": u, "level": 1})
-        elif isinstance(u, dict):
-            new_list.append(u)
-    game["inspiration_upgrades"] = new_list
-
-
 def clear_screen():
     sys.stdout.write("\033[H\033[J")
     sys.stdout.flush()
 
 
-def check_inspiration_milestones():
-    total = game.get("total_inspirations", 0)
-    earned = game.setdefault("milestones_earned", [])
-    for m in INSPIRATION_MILESTONES:
-        req = m["inspirations_required"]
-        if req not in earned and total >= req:
-            earned.append(req)
-            if m["reward_type"] == "xmult":
-                game["money_mult"] *= m["reward_value"]
-            elif m["reward_type"] == "+mult":
-                game["money_mult"] += m["reward_value"]
-            elif m["reward_type"] == "-cd":
-                game["work_delay_multiplier"] *= m["reward_value"]
-    save_game()
+def render_frame(lines):
+    frame = "\n".join(lines)
+    clear_screen()
+    sys.stdout.write(frame)
+    sys.stdout.flush()
 
 
 def get_inspire_info(upg_id):
@@ -152,66 +159,38 @@ def get_inspire_info(upg_id):
     return False, 0
 
 
+def get_concept_info(upg_id):
+    for u in game.get("concept_upgrades", []):
+        if isinstance(u, dict) and u.get("id") == upg_id:
+            return True, u.get("level", 1)
+        elif isinstance(u, str) and u == upg_id:
+            return True, 1
+    return False, 0
+
+
 def render_battery(charge, tier=None):
     if tier is None:
         tier = game.get("battery_tier", 1)
-    tier_info = config.BATTERY_TIERS.get(tier, config.BATTERY_TIERS[1])
+    tier_info = BATTERY_TIERS.get(tier, BATTERY_TIERS[1])
     cap = tier_info["cap"]
     total_rows = tier_info["rows"]
     inner_w = 13
-
     filled_rows = int((charge / cap) * total_rows)
     val_str = (str(format_number(int(charge))) + " Ω").center(inner_w)
-
     rows = []
     for i in range(total_rows):
         if i < filled_rows:
             rows.append("│" + "█" * inner_w + "│")
         else:
             rows.append("│" + " " * inner_w + "│")
-
-    battery_block = [
+    return [
         "┌" + "─" * inner_w + "┐",
         f"│{val_str}│",
         "├" + "─" * inner_w + "┤",
         *rows,
         "└" + "─" * inner_w + "┘",
     ]
-    return battery_block
 
-def check_research_requirement():
-    total_rows = 5
-    filled_rows = int((game["charge"] / game["max_charge"]) * total_rows)
-    if filled_rows >= 3:
-        game["next_reset_unlocked"] = True
-
-
-def build_ip_lines(u, index, level, max_level, cost, total_mult):
-    owned_text = (
-        "(MAX)"
-        if level >= max_level
-        else (f"(lvl {level}/{max_level})" if level > 0 else "")
-    )
-    cost_text = f" - Cost: {format_number(cost)}i" if level < max_level else ""
-    lines = [f"{index}. {u['name']} {owned_text}{cost_text}"]
-
-    if u.get("desc"):
-        desc_text = f"→ {u['desc']}"
-        if level > 0 and u["type"] not in (
-            "unlock_motivation",
-            "unlock_charge",
-            "auto_work",
-        ):
-            desc_text += f" (x{total_mult:.2f})"
-        elif u["type"] == "unlock_motivation":
-            motiv = game.get("motivation", config.MOTIVATION_MAX)
-            motiv_mult = 1 + (motiv / config.MOTIVATION_MAX) * (
-                config.MAX_MOTIVATION_MULT - 1
-            )
-            desc_text += f" (x{motiv_mult:.2f})"
-        wrapped = wrap_ui_text(desc_text)
-        lines += ["     " + w for w in wrapped]
-    return lines
 
 def wrap_ui_text(text):
     term_w, _ = get_term_size()
@@ -221,140 +200,167 @@ def wrap_ui_text(text):
     return textwrap.wrap(text, width=panel_width)
 
 
-def apply_upgrade_effects():
-    game.setdefault("upgrade_levels", {})
-    for upg in config.UPGRADES:
-        uid = upg["id"]
-        level = game["upgrade_levels"].get(uid, 0)
-        if upg.get("type") == "unlock_focus" and level > 0:
-            game["focus_unlocked"] = True
-
-
-def total_inspiration(amount=1):
-    game["total_inspirations"] = game.get("total_inspirations", 0) + amount
-    earned = game.setdefault("milestones_earned", [])
-    for m in INSPIRATION_MILESTONES:
-        req = m["inspirations_required"]
-        if req not in earned and game["total_inspirations"] >= req:
-            earned.append(req)
-            if m["reward_type"] == "xmult":
-                game["money_mult"] *= m["reward_value"]
-            elif m["reward_type"] == "+mult":
-                game["money_mult"] += m["reward_value"]
-            elif m["reward_type"] == "-cd":
-                game["work_delay_multiplier"] *= m["reward_value"]
-    save_game()
-
-
-def render_milestones_lines():
-    lines = ["=== MILESTONES ==="]
-    total_insp = game.get("total_inspirations", 0)
-    earned = set(game.get("milestones_earned", []))
-    for m in INSPIRATION_MILESTONES:
-        req = m.get("inspirations_required", 0)
-        rtype = m.get("reward_type", "")
-        rval = m.get("reward_value", "")
-        unlocked = req in earned or total_insp >= req
-        status = "✓" if unlocked else "✗"
-        if rtype == "xmult":
-            desc = f"x${rval}"
-        elif rtype == "+mult":
-            desc = f"+${rval}"
-        elif rtype in ("-cd", "reduce_cd"):
-            desc = f"/{rval} work delay"
-        else:
-            desc = f"{rtype} {rval}"
-        lines.append(f"{status} {req} i → {desc}")
-    return lines
-
-
-def apply_viewport(lines):
+def build_tree_lines(upgrades, get_info_fn, page_key):
     term_w, term_h = get_term_size()
-    max_lines_per_page = term_h//2
-    visible_lines = lines[view_offset_y : view_offset_y + term_h]
-    return [line[view_offset_x : view_offset_x + term_w] for line in visible_lines]
+    max_lines = term_h // 2 - 6
+    pages, current, used = [], [], 0
+    for i, u in enumerate(upgrades, start=1):
+        owned, level = get_info_fn(u["id"])
+        max_level = u.get("max_level", 1)
+        cost = get_tree_cost(u, current_level=level)
+        base_value = u.get("base_value", u.get("value", 1.0))
+        value_mult = u.get("value_mult", 1.0)
+        total_mult = (
+            base_value * (value_mult ** max(0, (level - 1)))
+            if level > 0
+            else base_value
+        )
+        owned_text = (
+            "(MAX)"
+            if level >= max_level
+            else (f"(lvl {level}/{max_level})" if level > 0 else "")
+        )
+        cost_text = (
+            f" - Cost: {format_number(cost)}"
+            + ("i" if upgrades is INSPIRE_UPGRADES else "Co")
+            if level < max_level
+            else ""
+        )
+        line_head = f"{i}. {u['name']} {owned_text}{cost_text}"
+        lines = [line_head]
+        if u.get("desc"):
+            desc_text = f"→ {u['desc']}"
+            if level > 0 and u["type"] not in ("unlock_motivation", "unlock_autowork"):
+                desc_text += f" (x{total_mult:.2f})"
+            if u["type"] == "unlock_motivation":
+                motiv = game.get("motivation", MOTIVATION_MAX)
+                motiv_mult = 1 + (motiv / MOTIVATION_MAX) * (MAX_MOTIVATION_MULT - 1)
+                desc_text += f" (x{motiv_mult:.2f})"
+            wrapped = wrap_ui_text(desc_text)
+            lines += ["     " + w for w in wrapped]
+        if used + len(lines) > max_lines and current:
+            pages.append(current)
+            current, used = [], 0
+        current += lines
+        used += len(lines)
+    if current:
+        pages.append(current)
+    current_page = game.setdefault(page_key, 0)
+    current_page = max(0, min(current_page, len(pages) - 1))
+    visible_lines = pages[current_page] if pages else ["(no upgrades)"]
+    footer = f"Page {current_page+1}/{len(pages) if pages else 1}  (z, x to switch)"
+    return visible_lines, footer, len(pages)
 
 
-def compute_gain_and_delay():
-    base_gain = game.get("base_money_gain", config.BASE_MONEY_GAIN)
-    base_delay = game.get("base_work_delay", config.BASE_WORK_DELAY)
-    gain_add = 0.0
-    gain_mult = 1.0
-    delay_mult = game.get("work_delay_multiplier", 1.0)
-    lvl_map = game.get("upgrade_levels", {})
-    for u in all_upgrades:
-        uid = u["id"]
-        level = int(lvl_map.get(uid, 0))
-        if level <= 0:
-            continue
-        typ = u.get("type", "mult")
-        if typ == "add":
-            gain_add += float(u.get("base_value", u.get("value", 0))) * level
-        elif typ == "mult":
-            base = float(u.get("base_value", u.get("value", 1)))
-            val_mult = float(u.get("value_mult", 1))
-            effective = base * (val_mult ** max(0, (level - 1)))
-            gain_mult *= effective
-        elif typ == "reduce_delay":
-            base_val = float(u.get("base_value", u.get("value", 1)))
-            val_mult = float(u.get("value_mult", 1))
-            effective = base_val * (val_mult ** max(0, (level - 1)))
-            delay_mult *= effective
-        elif typ == "unlock_focus":
-            game["focus_unlocked"] = True
-    applied_ids = set()
+def get_tree_cost(upg, current_level=0):
+    return int(
+        upg.get("base_cost", upg.get("cost", 0))
+        * (upg.get("cost_mult", 1) ** current_level)
+    )
+
+
+def apply_inspiration_effects():
     for entry in game.get("inspiration_upgrades", []):
         upg_id, level = (
             (entry.get("id"), entry.get("level", 1))
             if isinstance(entry, dict)
             else (entry, 1)
         )
-        if upg_id in applied_ids:
+        u = next((x for x in INSPIRE_UPGRADES if x["id"] == upg_id), None)
+        if not u:
             continue
-        applied_ids.add(upg_id)
+        if u["type"] == "unlock_motivation" and level > 0:
+            game["motivation_unlocked"] = True
+
+
+def apply_concept_effects():
+    for entry in game.get("concept_upgrades", []):
+        upg_id, level = (
+            (entry.get("id"), entry.get("level", 1))
+            if isinstance(entry, dict)
+            else (entry, 1)
+        )
+        u = next((x for x in CONCEPT_UPGRADES if x["id"] == upg_id), None)
+        if not u:
+            continue
+        if u["type"] == "unlock_autowork" and level > 0:
+            game["auto_work_unlocked"] = True
+
+
+def get_charge_bonus():
+    charge = game.get("charge", 0)
+    return 1.5 ** (math.log10(charge + 0.1))
+
+
+def compute_gain_and_delay():
+    base_gain = BASE_MONEY_GAIN
+    base_delay = BASE_WORK_DELAY
+    gain_add = 0.0
+    gain_mult = 1.0
+    delay_mult = 1.0
+    for entry in game.get("inspiration_upgrades", []):
+        upg_id, level = (
+            (entry.get("id"), entry.get("level", 1))
+            if isinstance(entry, dict)
+            else (entry, 1)
+        )
         u = next((x for x in INSPIRE_UPGRADES if x["id"] == upg_id), None)
         if not u:
             continue
         base = float(u.get("base_value", u.get("value", 1)))
-        val_mult = float(u.get("value_mult", 1))
-        val = base * (val_mult ** max(0, (level - 1)))
-        if u["type"] == "money_mult":
+        step = float(u.get("value_mult", 1))
+        val = base * (step ** max(0, level - 1))
+        t = u["type"]
+        if t == "money_mult":
             gain_mult *= val
-        elif u["type"] == "work_mult":
-            delay_mult *= val
-        elif u["type"] == "focus_max":
+        elif t == "focus_max":
             game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + val
-        elif u["type"] == "unlock_motivation":
-            game["motivation_unlocked"] = True
-        elif u["type"] == "auto_work":
-            game["auto_work_unlocked"] = True
-        elif u["type"] == "unlock_charge":
-            game["charge_unlocked"] = True
-        elif u["type"] == "battery_t2":
-            game["battery_tier"] = 2
+    for entry in game.get("concept_upgrades", []):
+        upg_id, level = (
+            (entry.get("id"), entry.get("level", 1))
+            if isinstance(entry, dict)
+            else (entry, 1)
+        )
+        u = next((x for x in CONCEPT_UPGRADES if x["id"] == upg_id), None)
+        if not u:
+            continue
+        base = float(u.get("base_value", u.get("value", 1)))
+        step = float(u.get("value_mult", 1))
+        val = base * (step ** max(0, level - 1))
+        t = u["type"]
+        if t == "money_mult":
+            gain_mult *= val
+        elif t == "work_mult":
+            delay_mult *= val
+    if game.get("motivation_unlocked", False):
+        motivation = game.get("motivation", MOTIVATION_MAX)
+        motivation_mult = 1 + (motivation / max(1, MOTIVATION_MAX)) * (
+            MAX_MOTIVATION_MULT - 1
+        )
+        gain_mult *= motivation_mult
     buff_mult = get_charge_bonus()
-    for t in config.CHARGE_THRESHOLDS:
+    for t in CHARGE_THRESHOLDS:
         if t["amount"] in game.get("charge_threshold", []):
-            if t["reward_type"] == "x$":
-                gain_mult *= t["reward_value"] * buff_mult
-            elif t["reward_type"] == "-cd":
-                delay_mult *= t["reward_value"] ** buff_mult
-    eff_gain = (base_gain + gain_add) * gain_mult
-    eff_delay = base_delay * delay_mult
+            rtype, rval = t["reward_type"], t["reward_value"]
+            if rtype in ("x$", "xmult"):
+                gain_mult *= rval * buff_mult
+            elif rtype == "-cd":
+                delay_mult *= rval**buff_mult
     if time.time() < focus_active_until:
-        eff_delay *= config.FOCUS_BOOST_FACTOR
-    motivation = game.get(
-        "motivation", config.MOTIVATION_MAX if game.get("motivation_unlocked") else 0
-    )
-    motivation_mult = 1 + (motivation / max(1, config.MOTIVATION_MAX)) * (
-        config.MAX_MOTIVATION_MULT - 1
-    )
-    gain_mult *= get_charge_bonus()
-    eff_gain *= motivation_mult
-    eff_gain *= config.BASE_MONEY_MULT
+        delay_mult *= FOCUS_BOOST_FACTOR
+    eff_gain = (base_gain + gain_add) * gain_mult
+    eff_gain *= BASE_MONEY_MULT
     eff_gain *= game.get("money_mult", 1.0)
-    eff_delay = max(eff_delay, 0.01)
+    eff_delay = max(base_delay * delay_mult, 0.01)
     return eff_gain, eff_delay
+
+def dual_header(left_text, right_text, inner_w):
+    half = inner_w // 2
+    left_vis = visible_len(left_text)
+    right_vis = visible_len(right_text)
+    left_pad = max(0, half - left_vis)
+    right_pad = max(0, half - right_vis)
+    return left_text + " " * left_pad + right_text + " " * right_pad
 
 
 def boxed_lines(
@@ -411,214 +417,18 @@ def boxed_lines(
     margin_str = " " * left_margin
     return [margin_str + l for l in lines]
 
-
-def render_ui(screen="work"):
-    global last_render, last_size, view_offset_x, view_offset_y
-    term_w, term_h = get_term_size()
-    current_size = get_term_size()
-    resized = current_size != last_size
-    effective_gain, effective_delay = compute_gain_and_delay()
-    prog = (
-        min(work_timer / effective_delay, 1.0)
-        if game.get("auto_work_unlocked", False)
-        else 0
-    )
-    bar_len = 36
-    filled = int(prog * bar_len)
-    work_bar = f"[{'#' * filled}{'-' * (bar_len - filled)}] {int(prog * 100):3d}%"
-    calc_insp = calculate_inspiration(game.get("money_since_reset", 0))
-    time_next = predict_next_point()
-    top_left_lines = []
-    if game.get("inspiration_unlocked", False):
-        if screen == "work":
-            top_left_lines += [
-                "=== INSPIRATION ===",
-                f"Points: {format_number(game.get('inspiration', 0))} ip",
-                "",
-                "[1] Open Inspiration Tree",
-                "",
-            ]
-            if game.get("money_since_reset", 0) >= 100000 and game.get("inspiration", 0) < 8:
-                for desc in [
-                    "You realise the pointlessness of this mundane work",
-                    "Perhaps there is more to life than work?",
-                    f"[I]nspire for {format_number(calc_insp)} Inspiration",
-                ]:
-                    wrapped = wrap_ui_text(desc)
-                    top_left_lines += ["   " + line for line in wrapped]
-                top_left_lines.append("")
-            elif game.get("money_since_reset", 0) >= 100000:
-                top_left_lines.append(
-                    f"[I]nspire for {format_number(calc_insp)} Inspiration"
-                )
-                top_left_lines.append(f"{format_number(time_next)} until next point")
-        elif screen == "inspiration":
-            max_lines = term_h // 2 - 6
-            pages, current, used = [], [], 0
-            for i, u in enumerate(INSPIRE_UPGRADES, start=1):
-                owned, level = get_inspire_info(u["id"])
-                max_level = u.get("max_level", 1)
-                cost = get_inspire_cost(u, current_level=level)
-                base_value = u.get("base_value", u.get("value", 1.0))
-                value_mult = u.get("value_mult", 1.0)
-                total_mult = (
-                    base_value * (value_mult ** max(0, (level - 1)))
-                    if level > 0 else base_value
-                )
-                block = build_ip_lines(u, i, level, max_level, cost, total_mult)
-                if used + len(block) > max_lines and current:
-                    pages.append(current)
-                    current, used = [], 0
-                current += block
-                used += len(block)
-            if current:
-                pages.append(current)
-            current_page = game.setdefault("insp_page", 0)
-            current_page = max(0, min(current_page, len(pages)-1))
-            visible_lines = pages[current_page]
-            top_left_lines += [
-                "=== INSPIRATION TREE ===",
-                f"Points: {format_number(game.get('inspiration', 0))} ip",
-                "",
-            ]
-            top_left_lines += visible_lines
-            top_left_lines.append("")
-            top_left_lines.append(f"Page {current_page+1}/{len(pages)}  (z, x to switch)")
-            top_left_lines.append("[B] Back to Work")
-    elif 100000 > game.get("money_since_reset", 0) >= 50000:
-        top_left_lines += [
-            "       === INSPIRATION ===",
-            "",
-            "Reach $100K to unlock Inspiration",
-        ]
-    elif game.get("money_since_reset", 0) >= 100000:
-        top_left_lines += ["       === INSPIRATION ===", ""]
-        for desc in [
-            "You realise the pointlessness of this mundane work",
-            "Perhaps there is more to life than work?",
-            f"[I]nspire for {format_number(calc_insp)} Inspiration",
-        ]:
-            wrapped = wrap_ui_text(desc)
-            top_left_lines += ["   " + line for line in wrapped]
-        top_left_lines.append("")
-    bottom_left_lines = []
-    if game.get("inspiration_unlocked", False):
-        bottom_left_lines += [""] + render_milestones_lines()
-    middle_lines = []
-    middle_lines += render_desk_table()
-    if game.get("focus_unlocked", False):
-        focus_max = config.FOCUS_MAX + game.get("focus_max_bonus", 0)
-        fprog = min(game.get("focus", 0) / float(focus_max), 1.0)
-        fbar_len = 36
-        ffilled = int(fprog * fbar_len)
-        middle_lines += [
-            f"FOCUS: {int(fprog * 100):3d}%",
-            "[" + "#" * ffilled + "-" * (fbar_len - ffilled) + "]",
-            "",
-        ]
-    owned_motiv, _ = get_inspire_info("inspire_motiv")
-    middle_lines.append(
-        f"MONEY: ${format_number(game.get('money', 0))}   GAIN: {format_number(effective_gain)} / cycle"
-        + (
-            f"   DELAY: {effective_delay:.2f}s"
-            if game.get("auto_work_unlocked", False)
-            else ""
-        )
-    )
-    middle_lines.append(work_bar)
-    middle_lines.append(
-        (
-            "Auto-work: ENABLED"
-            if game.get("auto_work_unlocked", False)
-            else "Press W to work"
-        )
-        + (
-            f"   Motivation: {int((game.get('motivation', config.MOTIVATION_MAX)/config.MOTIVATION_MAX)*100)}%"
-            if owned_motiv
-            else ""
-        )
-    )
-    owned_names = [u["name"] for u in all_upgrades if u["id"] in game.get("owned", [])]
-    middle_lines += [
-        "",
-        "Owned Upgrades: " + (", ".join(owned_names) if owned_names else "(none)"),
-    ]
-    options = "[W]ork  [U]pgrade"
-    if game.get("focus_unlocked", False):
-        options += "  [F]ocus"
-    if game.get("inspiration_unlocked", False):
-        options += "  [I]nspire"
-    options += "  [Q]uit"
-    middle_lines += ["", "Options: " + options]
-    term_width, term_height = get_term_size()
-    top_height = len(top_left_lines)
-    desired_midpoint = term_height // 2
-    gap_lines = max(0, desired_midpoint - top_height)
-    left_lines = top_left_lines + ([""] * gap_lines) + bottom_left_lines
-    right_content_height = len(middle_lines)
-    total_box_height_middle = right_content_height + 1 + 1 + 2
-    empty_lines_needed_middle = max(term_height - total_box_height_middle, 0)
-    middle_lines = ([""] * empty_lines_needed_middle) + middle_lines
-    right_lines = []
-    col_width = int(term_width * 0.25)
-    if game.get("charge_unlocked", False):
-        right_lines.append("=== BATTERY ===".center(col_width))
-        battery_art = render_battery(game.get("charge", 0), tier=game.get("battery_tier", 1))
-        right_lines += [line.center(col_width) for line in battery_art]
-        buff_mult = get_charge_bonus()
-        right_lines.append(f"Buffs all charge thresholds by x{buff_mult:.2f}".center(col_width))
-        right_lines.append("Milestones:".center(col_width))
-        for t in config.CHARGE_THRESHOLDS:
-            req = t["amount"]
-            status = "✓" if req in game.get("charge_threshold", []) else "✗"
-            eff_value = t["reward_value"] * buff_mult
-            desc = f"{status} {req}Ω → {t['reward_type']} {eff_value:.2f}"
-            right_lines.append(desc.center(col_width))
-    max_lines = max(len(left_lines), len(middle_lines), len(right_lines))
-    while len(left_lines) < max_lines:
-        left_lines.append("")
-    while len(middle_lines) < max_lines:
-        middle_lines.append("")
-    while len(right_lines) < max_lines:
-        right_lines.append("")
-    combined_lines = [
-        l.ljust(int(term_width * 0.25))
-        + " " * 2
-        + m.ljust(int(term_width * 0.35))
-        + " " * 2
-        + r.ljust(int(term_width * 0.25))
-        for l, m, r in zip(left_lines, middle_lines, right_lines)
-    ]
-    box = boxed_lines(
-        combined_lines, title=f" Layer {game.get('layer', 0)} ", pad_top=1, pad_bottom=1
-    )
-    if resized:
-        print("\033[2J\033[H", end="")
-        last_size = current_size
-        last_render = ""
-        view_offset_x = 0
-        view_offset_y = 0
-    visible_lines = box[view_offset_y : view_offset_y + term_h]
-    visible_lines = [
-        line[view_offset_x : view_offset_x + term_w] for line in visible_lines
-    ]
-    output = "\033[H" + "\n".join(visible_lines)
-    if output != last_render:
-        clear_screen()
-        print(output, end="", flush=True)
-        last_render = output
-
-
 def render_desk_table():
     global steam
     table = LAYER_0_DESK.copy()
-    owned_ids = [u["id"] for u in all_upgrades if u["id"] in game.get("owned", [])]
-    for new, old in config.UPGRADE_REPLACEMENT.items():
+    owned_ids = [u["id"] for u in config.UPGRADES if u["id"] in game.get("owned", [])]
+    for new, old in getattr(config, "UPGRADE_REPLACEMENT", {}).items():
         if new in owned_ids and old in owned_ids:
             owned_ids.remove(old)
     owned_ids.sort(
         key=lambda uid: (
-            config.DESK_ORDER.index(uid) if uid in config.DESK_ORDER else 999
+            config.DESK_ORDER.index(uid)
+            if uid in getattr(config, "DESK_ORDER", [])
+            else 999
         )
     )
     owned_arts = [UPGRADE_ART[uid] for uid in owned_ids if uid in UPGRADE_ART]
@@ -657,7 +467,8 @@ def render_desk_table():
                 life -= 1
                 if life > 0 and y >= 0:
                     stage_idx = min(
-                        len(config.STEAM_CHARS) - 1, (config.STEAM_LIFETIME - life) // 3
+                        len(config.STEAM_CHARS) - 1,
+                        (config.STEAM_LIFETIME - life) // 3,
                     )
                     new_steam.append((x, y, stage_idx, life))
             steam = new_steam
@@ -682,18 +493,10 @@ def perform_work(gain, eff_delay, manual=False):
     game["money"] += gain
     game["money_since_reset"] += gain
     if game.get("focus_unlocked", False) and now >= focus_active_until:
-        game["focus"] = min(
-            config.FOCUS_MAX, game.get("focus", 0) + config.FOCUS_CHARGE_PER_EARN
-        )
+        game["focus"] = min(FOCUS_MAX, game.get("focus", 0) + FOCUS_CHARGE_PER_EARN)
     if game.get("motivation_unlocked", False):
-        game["motivation"] = max(
-            0, game.get("motivation", 0) - config.MOTIVATION_DRAIN_PER_WORK
-        )
-    if "coffee" in game.get("owned", []):
-        game["caffeine_points"] = (
-            game.get("caffeine_points", 0.0) + eff_delay * config.CAFFEINE_POINT_RATE
-        )
-    if not manual:
+        game["motivation"] = max(0, game.get("motivation", 0) - 1)
+    if not manual and game.get("auto_work_unlocked", False):
         work_timer = max(0.0, work_timer - eff_delay)
     save_game()
 
@@ -717,20 +520,11 @@ def work_tick():
 def check_charge_thresholds():
     earned = game.setdefault("charge_threshold", [])
     total = game.get("best_charge", 0)
-    for t in config.CHARGE_THRESHOLDS:
+    for t in CHARGE_THRESHOLDS:
         req = t["amount"]
         if req not in earned and total >= req:
             earned.append(req)
-            if t["reward_type"] == "xmult":
-                game["money_mult"] *= t["reward_value"]
-            elif t["reward_type"] == "-cd":
-                game["work_delay_multiplier"] *= t["reward_value"]
 
-
-def get_charge_bonus():
-    charge = game.get("charge", 0)
-    scale = 1.5 ** (math.log10(charge+0.1))
-    return scale
 
 def activate_focus():
     global focus_active_until
@@ -739,199 +533,206 @@ def activate_focus():
     if game.get("focus", 0) < 10:
         return False, "Not enough focus charge."
     game["focus"] = 0
-    focus_active_until = time.time() + config.FOCUS_DURATION
+    focus_active_until = time.time() + FOCUS_DURATION
     save_game()
-    return True, f"Focus active for {config.FOCUS_DURATION}s."
-
-
-def open_upgrade_menu():
-    global KEY_PRESSED
-    while True:
-        work_tick()
-        unlocked = get_unlocked_upgrades()
-        lines = ["--- UPGRADE BAY ---"]
-        lines.append(f"Money: ${format_number(game.get('money', 0))}")
-        lines.append("")
-        for i, u in enumerate(unlocked, start=1):
-            level = game.get("upgrade_levels", {}).get(u["id"], 0)
-            owned_flag = (u["id"] in game.get("owned", [])) or (level > 0)
-            typ = u.get("type", "mult")
-            if typ == "mult":
-                base = float(u.get("base_value", u.get("value", 1)))
-                val_mult = float(u.get("value_mult", 1))
-                effective = base * (val_mult ** max(0, (level) - 1))
-                val_display = f"x{format_number(effective)}"
-            elif typ == "add":
-                base = float(u.get("base_value", u.get("value", 1)))
-                effective = base * (level + 1)
-                if level < u.get("max_level"):
-                    val_display = f"+{format_number(effective)}"
-                else:
-                    max_effective = base * level
-                    val_display = f"+{format_number(max_effective)}"
-            elif typ == "reduce_delay":
-                base = float(u.get("base_value", u.get("value", 1)))
-                val_mult = float(u.get("value_mult", 1))
-                effective = base * (val_mult**level)
-                val_display = f"/{format_number(effective)}"
-            else:
-                val_display = ""
-            cost = int(u.get("cost", 0) * (u.get("cost_mult", 1) ** level))
-            lines.append(
-                f"{i}. {u['name']} "
-                + (
-                    f"(Lv {level}/{u.get('max_level', 1)})"
-                    if level < u.get("max_level", 1)
-                    else "(MAX)"
-                )
-                + f" - Cost: ${format_number(cost)} [{val_display}]"
-            )
-        lines += ["", "Press number to buy, B to back."]
-        box = boxed_lines(lines, title=" UPGRADE BAY ", pad_top=1, pad_bottom=1)
-        clear_screen()
-        print("\n".join(box))
-        time.sleep(0.05)
-        if KEY_PRESSED:
-            k = KEY_PRESSED.lower()
-            KEY_PRESSED = None
-            if k == "b":
-                global last_render
-                last_render = ""
-                return
-            elif k.isdigit():
-                idx = int(k) - 1
-                if 0 <= idx < len(unlocked):
-                    buy_idx_upgrade(unlocked[idx])
-
-def apply_single_upgrade_effect(upg, level):
-    if upg.get("type") == "unlock_focus" and level > 0:
-        game["focus_unlocked"] = True
-    elif upg.get("type") == "unlock_charge" and level > 0:
-        game["charge_unlocked"] = True
-
-
-def buy_idx_upgrade(upg):
-    uid = upg["id"]
-    upg["base_value"] = float(upg.get("base_value", 1))
-    upg["value_mult"] = float(upg.get("value_mult", 1))
-    upg["cost_mult"] = float(upg.get("cost_mult", 1))
-    game.setdefault("owned", [])
-    game.setdefault("upgrade_levels", {})
-    current_level = game["upgrade_levels"].get(uid, 0)
-    max_level = upg.get("max_level", 1)
-    scaled_cost = int(upg["cost"] * (upg.get("cost_mult", 1) ** current_level))
-    if current_level >= max_level:
-        msg = f"{upg['name']} is already maxed (Lv {current_level}/{max_level})."
-    elif game.get("money", 0) < scaled_cost:
-        msg = f"Not enough money for {upg['name']} (cost ${scaled_cost})."
-    else:
-        game["money"] -= scaled_cost
-        current_level += 1
-        game["upgrade_levels"][uid] = current_level
-        if uid not in game["owned"]:
-            game["owned"].append(uid)
-        apply_single_upgrade_effect(upg, current_level)
-        msg = f"Purchased {upg['name']} Lv {current_level}/{max_level}!"
-        save_game()
-    clear_screen()
-    tmp = boxed_lines([msg], title=" Upgrade ", pad_top=1, pad_bottom=1)
-    print("\n".join(tmp))
-    time.sleep(1.2)
+    return True, f"Focus active for {FOCUS_DURATION}s."
 
 
 def get_unlocked_upgrades():
-    unlocked = []
-    levels = game.get("upgrade_levels", {})
-    owned = game.get("owned", [])
-
-    def is_unlocked(upg_id):
-        deps = config.UPGRADE_DEPENDENCIES.get(upg_id, [])
-        for dep in deps:
-            if dep == "auto_work":
-                if not game.get("auto_work_unlocked", False):
-                    return False
-            elif levels.get(dep, 0) < 1 and dep not in owned:
-                return False
-        return True
-
-    for upg in all_upgrades:
-        if is_unlocked(upg["id"]):
-            unlocked.append(upg)
-    return unlocked
+    return []
 
 
-def get_inspire_cost(upg, current_level=0):
-    return int(
-        upg.get("base_cost", upg.get("cost", 0))
-        * (upg.get("cost_mult", 1) ** current_level)
-    )
+def get_tree_selection(upgrades, page_key, digit):
+    term_w, term_h = get_term_size()
+    max_lines = term_h // 2 - 6
+    pages, current, used = [], [], 0
+    blocks = []
+    for i, u in enumerate(upgrades, start=1):
+        owned, level = (
+            get_inspire_info(u["id"])
+            if upgrades is INSPIRE_UPGRADES
+            else get_concept_info(u["id"])
+        )
+        max_level = u.get("max_level", 1)
+        cost = get_tree_cost(u, current_level=level)
+        base_value = u.get("base_value", u.get("value", 1.0))
+        value_mult = u.get("value_mult", 1.0)
+        total_mult = (
+            base_value * (value_mult ** max(0, (level - 1)))
+            if level > 0
+            else base_value
+        )
+        owned_text = (
+            "(MAX)"
+            if level >= max_level
+            else (f"(lvl {level}/{max_level})" if level > 0 else "")
+        )
+        cost_text = (
+            f" - Cost: {format_number(cost)}"
+            + ("i" if upgrades is INSPIRE_UPGRADES else "Co")
+            if level < max_level
+            else ""
+        )
+        head = f"{i}. {u['name']} {owned_text}{cost_text}"
+        block = [head]
+        if u.get("desc"):
+            desc_text = f"→ {u['desc']}"
+            if level > 0 and u["type"] not in ("unlock_motivation", "unlock_autowork"):
+                desc_text += f" (x{total_mult:.2f})"
+            wrapped = wrap_ui_text(desc_text)
+            block += ["     " + w for w in wrapped]
+        blocks.append(block)
+    for block in blocks:
+        if used + len(block) > max_lines and current:
+            pages.append(current)
+            current, used = [], 0
+        current += block
+        used += len(block)
+    if current:
+        pages.append(current)
+    page = game.get(page_key, 0)
+    idx = int(digit) - 1 + page * 10
+    return idx
 
 
-def buy_inspiration_upgrade_by_index(idx):
-    upgrades = INSPIRE_UPGRADES
+def buy_tree_upgrade(upgrades, idx):
     if not (0 <= idx < len(upgrades)):
         return
     upg = upgrades[idx]
-    owned, level = get_inspire_info(upg["id"])
+    owned, level = (
+        get_inspire_info(upg["id"])
+        if upgrades is INSPIRE_UPGRADES
+        else get_concept_info(upg["id"])
+    )
     max_level = upg.get("max_level", 1)
     if level >= max_level:
         msg = f"{upg['name']} is already at max level!"
-        tmp = boxed_lines([msg], title="Inspiration", pad_top=1, pad_bottom=1)
-        clear_screen()
-        print("\n".join(tmp))
-        time.sleep(1.0)
+        tmp = boxed_lines(
+            [msg],
+            title=("Inspiration" if upgrades is INSPIRE_UPGRADES else "Concepts"),
+            pad_top=1,
+            pad_bottom=1,
+        )
+        render_frame(tmp)
+        time.sleep(0.7)
         return
-    cost = get_inspire_cost(upg, current_level=level)
-    if game.get("inspiration", 0) < cost:
-        msg = f"Not enough Inspiration for {upg['name']} (cost {cost})!"
-        tmp = boxed_lines([msg], title="Inspiration", pad_top=1, pad_bottom=1)
-        clear_screen()
-        print("\n".join(tmp))
-        time.sleep(1.0)
+    cost = get_tree_cost(upg, current_level=level)
+    pool_key = "inspiration" if upgrades is INSPIRE_UPGRADES else "concepts"
+    if game.get(pool_key, 0) < cost:
+        msg = f"Not enough {('Inspiration' if pool_key=='inspiration' else 'Concepts')} for {upg['name']} (cost {cost})!"
+        tmp = boxed_lines(
+            [msg],
+            title=("Inspiration" if upgrades is INSPIRE_UPGRADES else "Concepts"),
+            pad_top=1,
+            pad_bottom=1,
+        )
+        render_frame(tmp)
+        time.sleep(0.7)
         return
-    game["inspiration"] -= cost
+    game[pool_key] -= cost
+    applied_list_key = (
+        "inspiration_upgrades" if upgrades is INSPIRE_UPGRADES else "concept_upgrades"
+    )
     applied = False
-    for i, u in enumerate(game.get("inspiration_upgrades", [])):
+    for i, u in enumerate(game.get(applied_list_key, [])):
         if isinstance(u, dict) and u.get("id") == upg["id"]:
             u["level"] = u.get("level", 1) + 1
             applied = True
             break
         elif isinstance(u, str) and u == upg["id"]:
-            game["inspiration_upgrades"][i] = {"id": u, "level": 2}
+            game[applied_list_key][i] = {"id": u, "level": 2}
             applied = True
             break
     if not applied:
-        game.setdefault("inspiration_upgrades", []).append(
-            {"id": upg["id"], "level": 1}
-        )
-    check_inspiration_milestones()
+        game.setdefault(applied_list_key, []).append({"id": upg["id"], "level": 1})
+    apply_inspiration_effects()
+    apply_concept_effects()
     save_game()
     msg = f"Purchased {upg['name']} level {level + 1}!"
-    tmp = boxed_lines([msg], title="Inspiration", pad_top=1, pad_bottom=1)
-    clear_screen()
-    print("\n".join(tmp))
-    time.sleep(0.7)
+    tmp = boxed_lines(
+        [msg],
+        title=("Inspiration" if upgrades is INSPIRE_UPGRADES else "Concepts"),
+        pad_top=1,
+        pad_bottom=1,
+    )
+    render_frame(tmp)
+    time.sleep(0.5)
+
+
+def calculate_inspiration(money_since_reset):
+    normalized = money_since_reset / 100_000
+    base_gain = math.floor(((normalized**0.35) * math.log(normalized + 1, 1.5)))
+    rate_mult = 1.0
+    final_mult = 1.0
+    for entry in game.get("inspiration_upgrades", []):
+        upg_id, level = (
+            (entry.get("id"), entry.get("level", 1))
+            if isinstance(entry, dict)
+            else (entry, 1)
+        )
+        u = next((x for x in INSPIRE_UPGRADES if x["id"] == upg_id), None)
+        if not u:
+            continue
+        base_val = float(u.get("base_value", u.get("value", 1)))
+        val_mult = float(u.get("value_mult", 1))
+        val = base_val * (val_mult ** max(0, (level - 1)))
+        if u["type"] == "inspire_rate":
+            rate_mult *= val
+        elif u["type"] == "inspire_mult":
+            final_mult *= val
+    return int(base_gain * rate_mult * final_mult)
+
+
+def calculate_concepts(money_since_reset):
+    normalized = money_since_reset / 1_000_000
+    base_gain = math.floor(((normalized**0.30) * math.log(normalized + 1, 1.4)))
+    rate_mult = 1.0
+    final_mult = 1.0
+    for entry in game.get("concept_upgrades", []):
+        upg_id, level = (
+            (entry.get("id"), entry.get("level", 1))
+            if isinstance(entry, dict)
+            else (entry, 1)
+        )
+        u = next((x for x in CONCEPT_UPGRADES if x["id"] == upg_id), None)
+        if not u:
+            continue
+        base_val = float(u.get("base_value", u.get("value", 1)))
+        val_mult = float(u.get("value_mult", 1))
+        val = base_val * (val_mult ** max(0, (level - 1)))
+        if u["type"] == "concept_rate":
+            rate_mult *= val
+        elif u["type"] == "concept_mult":
+            final_mult *= val
+    return int(base_gain * rate_mult * final_mult)
+
+
+def predict_next_inspiration_point():
+    current_money = game.get("money_since_reset", 0)
+    current_insp = calculate_inspiration(current_money)
+    next_insp = current_insp + 1
+    target_money = ((next_insp - 1) * 25) ** (1 / 0.4)
+    remaining = round(max(target_money - current_money, 0), 2)
+    return remaining
+
 
 def reset_for_inspiration():
     now = time.time()
     if now - game.get("last_inspiration_reset_time", 0) < 0.05:
         return
-    if game.get("money", 0) < 1000:
+    if game.get("money_since_reset", 0) < INSPIRATION_UNLOCK_MONEY:
         tmp = boxed_lines(
-            ["Not enough money to reset for Inspiration."],
+            [f"Reach ${format_number(INSPIRATION_UNLOCK_MONEY)} to Inspire."],
             title=" Inspire ",
             pad_top=1,
             pad_bottom=1,
         )
-        clear_screen()
-        print("\n".join(tmp))
-        time.sleep(1.2)
+        render_frame(tmp)
+        time.sleep(1.0)
         return
     gained = calculate_inspiration(game.get("money_since_reset", 0))
     play_inspiration_reset_animation()
-    total_inspiration(1)
     game["inspiration"] = game.get("inspiration", 0) + gained
-    check_inspiration_milestones()
     game.update(
         {
             "money": 0.0,
@@ -949,17 +750,179 @@ def reset_for_inspiration():
         }
     )
     if game.get("motivation_unlocked", False):
-        game.update({"motivation": config.MOTIVATION_MAX})
+        game.update({"motivation": MOTIVATION_MAX})
+    apply_inspiration_effects()
     save_game()
     done_msg = boxed_lines(
-        [f"You wake from a strange dream... Gained {gained} Inspiration!"],
+        [f"Awakening. Gained {gained} Inspiration."],
         title=" Inspiration Gained ",
         pad_top=1,
         pad_bottom=1,
     )
-    clear_screen()
-    print("\n".join(done_msg))
-    time.sleep(1.5)
+    render_frame(done_msg)
+    time.sleep(1.2)
+
+
+def reset_for_concepts():
+    now = time.time()
+    if now - game.get("last_concepts_reset_time", 0) < 0.05:
+        return
+    if game.get("money_since_reset", 0) < CONCEPTS_UNLOCK_MONEY:
+        tmp = boxed_lines(
+            [f"Reach ${format_number(CONCEPTS_UNLOCK_MONEY)} to crystallize Concepts."],
+            title=" Concepts ",
+            pad_top=1,
+            pad_bottom=1,
+        )
+        render_frame(tmp)
+        time.sleep(1.0)
+        return
+    gained = calculate_concepts(game.get("money_since_reset", 0))
+    game["concepts"] = game.get("concepts", 0) + gained
+    game.update(
+        {
+            "money": 0.0,
+            "money_since_reset": 0.0,
+            "fatigue": 0,
+            "focus": 0,
+            "owned": [],
+            "upgrade_levels": {},
+            "concepts_unlocked": True,
+            "layer": max(game.get("layer", 0), 2),
+            "inspiration_unlocked": False,
+            "inspiration_upgrades": [],
+            "inspiration": 0,
+        }
+    )
+    apply_concept_effects()
+    save_game()
+    done_msg = boxed_lines(
+        [f"You reorder your thoughts. Gained {gained} Concepts."],
+        title=" Concepts Gained ",
+        pad_top=1,
+        pad_bottom=1,
+    )
+    render_frame(done_msg)
+    time.sleep(1.2)
+
+
+def open_upgrade_menu():
+    global KEY_PRESSED
+    while True:
+        work_tick()
+        unlocked = [
+            u
+            for u in config.UPGRADES
+            if u.get("unlocked", False)
+            or all(
+                dep in game.get("owned", [])
+                for dep in config.UPGRADE_DEPENDENCIES.get(u["id"], [])
+            )
+        ]
+        lines = ["--- UPGRADE BAY ---"]
+        lines.append(f"Money: ${format_number(game.get('money', 0))}")
+        lines.append("")
+        for i, u in enumerate(unlocked, start=1):
+            term_w, _ = get_term_size()
+            box_w = max(config.MIN_BOX_WIDTH, term_w - config.BOX_MARGIN * 2)
+            inner_w = box_w - 2
+            panel_width = max(int(inner_w * 0.25), 20)
+            level = game.get("upgrade_levels", {}).get(u["id"], 0)
+            max_level = u.get("max_level", 1)
+            cost = int(u.get("cost", 0) * (u.get("cost_mult", 1) ** level))
+            status = (
+                f"(Lv {level}/{max_level}) - Cost: ${format_number(cost)}"
+                if level < max_level
+                else "(MAX)"
+            )
+            line = f"{i}. {u['name']} {status}"
+            lines.append(line.ljust(panel_width))
+            if u.get("desc"):
+                effect_text = f"→ {u['desc']}"
+                base_val = float(u.get("base_value", u.get("value", 1)))
+                val_mult = float(u.get("value_mult", 1))
+                val = base_val * (val_mult ** max(0, level - 1))
+                if u["type"] in ("mult", "money_mult"):
+                    effect_text += f" (x{val:.2f} income)"
+                elif u["type"] in ("work_mult", "reduce_delay"):
+                    effect_text += f" (×{val:.2f} delay)"
+                elif u["type"] == "add":
+                    effect_text += f" (+{val:.2f} flat)"
+                wrapped = wrap_ui_text(effect_text)
+                lines += ["   " + w for w in wrapped]
+        lines += ["", "Press number to buy, B to back."]
+        box = boxed_lines(lines, title=" UPGRADE BAY ", pad_top=1, pad_bottom=1)
+        render_frame(box)
+        time.sleep(0.05)
+        if KEY_PRESSED:
+            k = KEY_PRESSED.lower()
+            KEY_PRESSED = None
+            if k == "b":
+                return
+            elif k.isdigit():
+                idx = int(k) - 1
+                if 0 <= idx < len(unlocked):
+                    buy_idx_upgrade(unlocked[idx])
+
+
+def render_steam():
+    global steam
+    # spawn new steam particles if coffee owned
+    if "coffee" in game.get("owned", []):
+        if random.random() < config.STEAM_CHANCE:
+            steam.append(
+                {
+                    "x": random.randint(10, 20),
+                    "y": len(LAYER_0_DESK) - 5,
+                    "life": config.STEAM_LIFETIME,
+                    "char": random.choice(config.STEAM_CHARS),
+                }
+            )
+    # update particles
+    new_particles = []
+    for p in steam:
+        p["y"] -= 1
+        p["life"] -= 1
+        if p["life"] > 0:
+            new_particles.append(p)
+    steam = new_particles
+    table = LAYER_0_DESK.copy()
+    for p in steam:
+        if 0 <= p["y"] < len(table):
+            row = list(table[p["y"]])
+            if 0 <= p["x"] < len(row):
+                row[p["x"]] = p["char"]
+            table[p["y"]] = "".join(row)
+    return table
+
+
+def buy_idx_upgrade(upg):
+    uid = upg["id"]
+    game.setdefault("owned", [])
+    game.setdefault("upgrade_levels", {})
+    current_level = game["upgrade_levels"].get(uid, 0)
+    max_level = upg.get("max_level", 1)
+    scaled_cost = int(upg["cost"] * (upg.get("cost_mult", 1) ** current_level))
+
+    if current_level >= max_level:
+        msg = f"{upg['name']} is already maxed (Lv {current_level}/{max_level})."
+    elif game.get("money", 0) < scaled_cost:
+        msg = f"Not enough money for {upg['name']} (cost ${scaled_cost})."
+    else:
+        game["money"] -= scaled_cost
+        current_level += 1
+        game["upgrade_levels"][uid] = current_level
+        if uid not in game["owned"]:
+            game["owned"].append(uid)
+        if upg.get("type") == "unlock_focus" and current_level > 0:
+            game["focus_unlocked"] = True
+        elif upg.get("type") == "unlock_charge" and current_level > 0:
+            game["charge_unlocked"] = True
+        msg = f"Purchased {upg['name']} Lv {current_level}/{max_level}."
+    tmp = boxed_lines([msg], title=" UPGRADE BAY ", pad_top=1, pad_bottom=1)
+    render_frame(tmp)
+    time.sleep(0.7)
+    save_game()
 
 
 def play_inspiration_reset_animation():
@@ -1026,45 +989,179 @@ def key_listener():
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-def calculate_inspiration(money_since_reset):
-    normalized = money_since_reset / 100_000
-    base_gain = math.floor(((normalized**0.35) * math.log(normalized + 1, 1.5)))
-    rate_mult = 1.0
-    final_mult = 1.0
-    for entry in game.get("inspiration_upgrades", []):
-        upg_id, level = (
-            (entry.get("id"), entry.get("level", 1))
-            if isinstance(entry, dict)
-            else (entry, 1)
+
+def render_ui(screen="work"):
+    global last_render, last_size, view_offset_x, view_offset_y, Fore
+    term_w, term_h = get_term_size()
+    current_size = get_term_size()
+    resized = current_size != last_size
+    effective_gain, effective_delay = compute_gain_and_delay()
+    prog = (
+        min(work_timer / effective_delay, 1.0)
+        if game.get("auto_work_unlocked", False)
+        else 0
+    )
+    bar_len = 36
+    filled = int(prog * bar_len)
+    work_bar = f"[{'#' * filled}{'-' * (bar_len - filled)}] {int(prog * 100):3d}%"
+
+    calc_insp = calculate_inspiration(game.get("money_since_reset", 0))
+    calc_conc = calculate_concepts(game.get("money_since_reset", 0))
+    time_next = predict_next_inspiration_point()
+
+    # Inspiration panel
+    top_left_lines = []
+    if (
+        game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY // 2
+        or game.get("inspiration", 0) > 0
+    ):
+        top_left_lines += [
+            f"=== {Fore.YELLOW}INSPIRATION{Style.RESET_ALL} ===",
+            "",
+            f"Points: {Fore.YELLOW}{format_number(game.get('inspiration', 0))} i{Style.RESET_ALL}",
+            "",
+        ]
+        if game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY:
+            top_left_lines.append(
+                f"[I]nspire for {format_number(calc_insp)} Inspiration"
+            )
+            top_left_lines.append(f"{format_number(time_next)} until next point")
+        else:
+            top_left_lines.append(
+                f"Reach ${format_number(INSPIRATION_UNLOCK_MONEY)} to"
+                + (
+                    "unlock Inspiration"
+                    if not game.get("inspiration_unlocked", False)
+                    else " Inspire"
+                )
+            )
+        if screen == "inspiration":
+            visible_lines, footer, _ = build_tree_lines(
+                INSPIRE_UPGRADES, get_inspire_info, "insp_page"
+            )
+            top_left_lines += [
+                "",
+                "=== INSPIRATION TREE ===",
+                *visible_lines,
+                "",
+                footer,
+                "[B] Back to Work",
+            ]
+
+    # Concepts panel
+    bottom_left_lines = []
+    if (game.get("money_since_reset", 0) >= CONCEPTS_UNLOCK_MONEY // 2) or game.get(
+        "concepts_unlocked", False
+    ):
+        bottom_left_lines += [
+            f"=== {Fore.CYAN}CONCEPTS{Style.RESET_ALL} ===",
+            "",
+        ]
+        if game.get("concepts_unlocked", False):
+            bottom_left_lines.append(
+                f"Points: {format_number(game.get('concepts', 0))} Co"
+            )
+            bottom_left_lines.append("[2] Open concepts tree")
+            bottom_left_lines.append("")
+        if game.get("money_since_reset", 0) >= CONCEPTS_UNLOCK_MONEY:
+            bottom_left_lines.append(
+                f"[C]onceptualise for {format_number(calc_conc)} Concepts"
+            )
+        else:
+            bottom_left_lines.append(
+                (f"Reach ${format_number(CONCEPTS_UNLOCK_MONEY)} to ")
+                + ("unlock" if not game.get("concepts_unlocked", False) else "")
+                + (
+                    "Concepts"
+                    if not game.get("concepts_unlocked", False)
+                    else "Conceptualise"
+                )
+            )
+        if screen == "concepts":
+            visible_lines, footer, _ = build_tree_lines(
+                CONCEPT_UPGRADES, get_concept_info, "concept_page"
+            )
+            bottom_left_lines += [
+                "",
+                "=== CONCEPTS TREE ===",
+                *visible_lines,
+                "",
+                footer,
+                "[B] Back to Work",
+            ]
+
+    # Middle block anchored at bottom
+    middle_lines = []
+    middle_lines += render_desk_table()
+    if game.get("focus_unlocked", False):
+        focus_max = FOCUS_MAX + game.get("focus_max_bonus", 0)
+        fprog = min(game.get("focus", 0) / float(focus_max), 1.0)
+        fbar_len = 36
+        ffilled = int(fprog * fbar_len)
+        middle_lines += [
+            f"FOCUS: {int(fprog * 100):3d}%",
+            "[" + "#" * ffilled + "-" * (fbar_len - ffilled) + "]",
+            "",
+        ]
+    middle_lines.append(
+        f"MONEY: ${format_number(game.get('money', 0))}   GAIN: {format_number(effective_gain)} / cycle"
+        + (
+            f"   DELAY: {effective_delay:.2f}s"
+            if game.get("auto_work_unlocked", False)
+            else ""
         )
-        u = next((x for x in config.INSPIRE_UPGRADES if x["id"] == upg_id), None)
-        if not u:
-            continue
+    )
+    middle_lines.append(work_bar)
+    middle_lines.append(
+        "Auto-work: ENABLED"
+        if game.get("auto_work_unlocked", False)
+        else "Press W to work"
+    )
+    middle_lines += ["", "Options: [W]ork  [U]pgrades  [Q]uit"]
 
-        base_val = float(u.get("base_value", u.get("value", 1)))
-        val_mult = float(u.get("value_mult", 1))
-        val = base_val * (val_mult ** max(0, (level - 1)))
-        if u["type"] == "inspire_rate":
-            rate_mult *= val
-        elif u["type"] == "inspire_mult":
-            final_mult *= val
+    # Align columns
+    term_width, term_height = get_term_size()
+    max_lines = max(len(top_left_lines), len(bottom_left_lines), len(middle_lines))
+    while len(top_left_lines) < term_h - 4:
+        top_left_lines.append("")
+    while len(bottom_left_lines) < term_h - 4:
+        bottom_left_lines.append("")
+    while len(middle_lines) < term_h - 4:
+        middle_lines.insert(0, "")
 
-    return int(base_gain * rate_mult * final_mult)
+    combined_lines = [
+        ansi_center(l, int(term_width * 0.25))
+        + " " * 2
+        + ansi_center(m, int(term_width * 0.35))
+        + " " * 2
+        + ansi_center(r, int(term_width * 0.25))
+        for l, m, r in zip(top_left_lines, middle_lines, bottom_left_lines)
+    ]
+    box = boxed_lines(
+        combined_lines, title=f" Layer {game.get('layer', 0)} ", pad_top=1, pad_bottom=1
+    )
 
-def predict_next_point():
-    current_money = game.get("money_since_reset", 0)
-    current_insp = calculate_inspiration(current_money)
-    next_insp = current_insp + 1
-    target_money = ((next_insp - 1) * 25) ** (1 / 0.4)
-    remaining = round(max(target_money - current_money, 0), 2)
-    return remaining
+    if resized:
+        print("\033[2J\033[H", end="")
+        last_size = current_size
+        last_render = ""
+        view_offset_x = 0
+        view_offset_y = 0
+    visible_lines = box[view_offset_y : view_offset_y + term_h]
+    visible_lines = [
+        line[view_offset_x : view_offset_x + term_w] for line in visible_lines
+    ]
+    output = "\033[H" + "\n".join(visible_lines)
+    if output != last_render:
+        sys.stdout.write("\033[H")
+        sys.stdout.write(output)
+        sys.stdout.flush()
+        last_render = output
 
 
 def main_loop():
     global KEY_PRESSED, running, work_timer, last_tick_time, last_manual_time
     load_game()
-    convert_old_upgrades()
-    apply_upgrade_effects()
     last_tick_time = time.time()
     threading.Thread(target=key_listener, daemon=True).start()
     if game.get("layer", 0) >= 1 and not game.get("inspiration_unlocked", False):
@@ -1092,18 +1189,20 @@ def main_loop():
                         perform_work(gain, eff_delay, manual=True)
                         last_manual_time = now
                 elif k == "u":
-                    open_upgrade_menu()
                     current_screen = "work"
                     clear_screen()
+                    open_upgrade_menu()
                     render_ui(screen=current_screen)
                 elif k == "f":
                     ok, msg = activate_focus()
                     tmp = boxed_lines([msg], title=" Focus ", pad_top=1, pad_bottom=1)
-                    clear_screen()
-                    print("\n".join(tmp))
+                    render_frame(tmp)
                     time.sleep(1.0)
                 elif k == "i":
                     reset_for_inspiration()
+                    current_screen = "work"
+                elif k == "c":
+                    reset_for_concepts()
                     current_screen = "work"
                 elif (
                     current_screen == "work"
@@ -1111,6 +1210,15 @@ def main_loop():
                     and game.get("inspiration_unlocked", False)
                 ):
                     current_screen = "inspiration"
+                elif (
+                    current_screen == "work"
+                    and k == "2"
+                    and (
+                        game.get("concepts_unlocked", False)
+                        or game.get("money_since_reset", 0) >= CONCEPTS_UNLOCK_MONEY
+                    )
+                ):
+                    current_screen = "concepts"
                 elif current_screen == "inspiration":
                     if k == "b":
                         current_screen = "work"
@@ -1118,34 +1226,24 @@ def main_loop():
                         game["insp_page"] = max(0, game["insp_page"] - 1)
                     elif k == "x":
                         term_w, term_h = get_term_size()
-                        max_lines = term_h // 2 - 6
-                        pages, current, used = [], [], 0
-                        for i, u in enumerate(INSPIRE_UPGRADES, start=1):
-                            owned, level = get_inspire_info(u["id"])
-                            max_level = u.get("max_level", 1)
-                            cost = get_inspire_cost(u, current_level=level)
-                            base_value = u.get("base_value", u.get("value", 1.0))
-                            value_mult = u.get("value_mult", 1.0)
-                            total_mult = base_value * (value_mult ** max(0, (level - 1))) if level > 0 else base_value
-                            block = build_ip_lines(u, i, level, max_level, cost, total_mult)
-                            if used + len(block) > max_lines and current:
-                                pages.append(current)
-                                current, used = [], 0
-                            current += block
-                            used += len(block)
-                        if current:
-                            pages.append(current)
-
-                        total_pages = len(pages)
-                        game["insp_page"] = min(total_pages - 1, game["insp_page"] + 1)
+                        game["insp_page"] = game["insp_page"] + 1
                     elif k.isdigit():
-                        idx = int(k) - 1
-                        term_w, term_h = get_term_size()
-                        max_lines = term_h // 2 - 6
-                        global_index = idx + game["insp_page"] * 10 
-                        if 0 <= global_index < len(INSPIRE_UPGRADES):
-                            buy_inspiration_upgrade_by_index(INSPIRE_UPGRADES[global_index])
-                        time.sleep(0.3)
+                        idx = get_tree_selection(INSPIRE_UPGRADES, "insp_page", k)
+                        if 0 <= idx < len(INSPIRE_UPGRADES):
+                            buy_tree_upgrade(INSPIRE_UPGRADES, idx)
+                        time.sleep(0.2)
+                elif current_screen == "concepts":
+                    if k == "b":
+                        current_screen = "work"
+                    elif k == "z":
+                        game["concept_page"] = max(0, game["concept_page"] - 1)
+                    elif k == "x":
+                        game["concept_page"] = game["concept_page"] + 1
+                    elif k.isdigit():
+                        idx = get_tree_selection(CONCEPT_UPGRADES, "concept_page", k)
+                        if 0 <= idx < len(CONCEPT_UPGRADES):
+                            buy_tree_upgrade(CONCEPT_UPGRADES, idx)
+                        time.sleep(0.2)
             time.sleep(0.05)
     except KeyboardInterrupt:
         pass

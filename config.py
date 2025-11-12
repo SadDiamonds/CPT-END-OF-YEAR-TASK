@@ -1,68 +1,27 @@
-# config.py
+BASE_MONEY_GAIN = 1.0
+BASE_WORK_DELAY = 10.0
+BASE_MONEY_MULT = 10.0
 
-# Base resource values
-BASE_MONEY_GAIN = 1.0  # money gained per work cycle before modifiers
-BASE_WORK_DELAY = 10.0  # seconds per work cycle (base)
-BASE_MONEY_MULT = 1.0  # base multiplier (other multipliers multiply this)
-
-# Focus (temporary boost) config
-FOCUS_BOOST_FACTOR = (
-    0.5  # while focus active, work delay is multiplied by this (faster)
-)
-FOCUS_DURATION = 12  # how many seconds focus lasts
-FOCUS_CHARGE_PER_EARN = (
-    12  # how many 'focus points' earned per completed work (max 100)
-)
+FOCUS_BOOST_FACTOR = 0.5
+FOCUS_DURATION = 12
+FOCUS_CHARGE_PER_EARN = 12
 FOCUS_MAX = 100
 
-# Inspiration reset rates
-INSPIRATION_CONVERT_DIV = 50  # money // DIV gives inspiration when resetting
+INSPIRATION_UNLOCK_MONEY = 100_000
+CONCEPTS_UNLOCK_MONEY = 100_000_000
 
-# Motivation system
 MOTIVATION_MAX = 100
-MOTIVATION_DRAIN_PER_WORK = 1
 MAX_MOTIVATION_MULT = 3.0
 
-
-# COFFEEEEEE
-STEAM_SPEED = 0.1  # fraction of a line per tick (slower for Minecraft effect)
-STEAM_CHANCE = 0.2  # chance to emit a new puff per render
-STEAM_SPREAD = 3  # max horizontal offset from center
-STEAM_LIFETIME = 8  # number of lines before disappearing
+STEAM_SPEED = 0.1
+STEAM_CHANCE = 0.2
+STEAM_SPREAD = 3
+STEAM_LIFETIME = 8
 STEAM_CHARS = ["~", "^", "."]
-CAFFEINE_POINT_RATE = 1  # caffeine points gained per second when coffee is owned
+CAFFEINE_POINT_RATE = 1
 
-# UI / layout
-MIN_BOX_WIDTH = 50  # don't make the box narrower than this
-BOX_MARGIN = 4  # left/right margin in terminal columns
-
-# TEMPLATE {"id": "", "name":"", "cost": ,"type": "", "value": , "unlocked": False},
-
-UPGRADE_REPLACEMENT = {
-    "mech_keyboard": "keyboard",
-    "dual_monitors": "monitor",
-}
-
-DESK_ORDER = [
-    "ergonomic_chair",
-    "keyboard",
-    "mech_keyboard",  
-    "coffee",
-    "monitor",
-    "dual_monitors",  
-]
-
-UPGRADE_DEPENDENCIES = {
-    "keyboard": [],
-    "coffee": ["keyboard", "auto_work", "cup_holder"],
-    "cup_holder": ["keyboard"],
-    "monitor": ["cup_holder"], 
-    "ergonomic_chair": ["monitor"],
-    "dual_monitors": ["ergonomic_chair"],
-    "mech_keyboard": ["dual_monitors"],
-    "lamp": ["mech_keyboard"],
-    "whiteboard": ["lamp"],
-}
+MIN_BOX_WIDTH = 50
+BOX_MARGIN = 4
 
 UPGRADES = [
     {
@@ -70,10 +29,11 @@ UPGRADES = [
         "name": "Basic Keyboard",
         "cost": 100,
         "type": "mult",
-        "base_value": 1.2,
-        "value_mult": 1.15,
+        "base_value": 1.25,
+        "value_mult": 1.17,
         "max_level": 5,
         "cost_mult": 2.0,
+        "desc": "Your first upgrade!. $1.25x, +17% per level",
         "unlocked": True,
     },
     {
@@ -85,6 +45,7 @@ UPGRADES = [
         "value_mult": 0.95,
         "max_level": 3,
         "cost_mult": 2.5,
+        "desc": "Caffeine 4ever. Reduces autowork by 3%, -5% per level",
         "unlocked": False,
     },
     {
@@ -94,17 +55,19 @@ UPGRADES = [
         "type": "add",
         "base_value": 1.0,
         "max_level": 1,
+        "desc": "A lonely holder, that feels like its a part of something bigger...",
         "unlocked": False,
     },
     {
         "id": "monitor",
-        "name": "Second Monitor",
+        "name": "Dusty Monitor",
         "cost": 2000,
         "type": "add",
         "base_value": 5.0,
         "value_mult": 1.5,
         "max_level": 4,
         "cost_mult": 2.5,
+        "desc": "An old ahh monitor. +$5, +50% per level",
         "unlocked": False,
     },
     {
@@ -116,6 +79,7 @@ UPGRADES = [
         "value_mult": 1.25,
         "max_level": 3,
         "cost_mult": 2.5,
+        "desc": "Pro gamer chair. $1.5x base, +25% per level",
         "unlocked": False,
     },
     {
@@ -127,6 +91,7 @@ UPGRADES = [
         "value_mult": 1.5,
         "max_level": 3,
         "cost_mult": 2.5,
+        "desc": "2x the monitors, +$10, +50% per level",
         "unlocked": False,
     },
     {
@@ -138,6 +103,7 @@ UPGRADES = [
         "value_mult": 1.3,
         "max_level": 5,
         "cost_mult": 2.8,
+        "desc": "Clackety clack. $1.8x base, +30% per level",
         "unlocked": False,
     },
     {
@@ -164,6 +130,17 @@ UPGRADES = [
     },
 ]
 
+UPGRADE_DEPENDENCIES = {
+    "coffee": ["keyboard"],
+    "cup_holder": ["coffee"],
+    "monitor": ["keyboard"],
+    "ergonomic_chair": ["cup_holder"],
+    "dual_monitors": ["monitor"],
+    "mech_keyboard": ["keyboard"],
+    "lamp": ["monitor"],
+    "whiteboard": ["lamp"],
+}
+
 INSPIRE_UPGRADES = [
     {
         "id": "inspire_motiv",
@@ -172,96 +149,107 @@ INSPIRE_UPGRADES = [
         "type": "unlock_motivation",
         "value": 1,
         "max_level": 1,
-        "desc": "A buff that decays over work",
+        "desc": "Unlocks Motivation (buff that decays over work)",
     },
     {
-        "id": "inspire_2",
+        "id": "inspire_efficiency",
         "name": "Efficient Worker",
-        "base_cost": 1,
+        "base_cost": 2,
         "type": "money_mult",
-        "level": 0,
         "max_level": 10,
         "cost_mult": 1.75,
-        "base_value": 1.5,
-        "value_mult": 1.25,
-        "desc": "base $x1.5, $x1.25 compounding per lvl",
-    },
-    {
-        "id": "inspire_auto_work",
-        "name": "Auto-generation",
-        "cost": 1,
-        "type": "auto_work",
-        "value": 1,
-        "max_level": 1,
-        "desc": "Generates $ at a reduced rate",
-    },
-    {
-        "id": "inspire_charge",
-        "name": "Battery..?",
-        "cost": 1,
-        "type": "unlock_charge",
-        "value": 1,
-        "max_level": 1,
-        "desc": "Battery.",
-    },
-    {
-        "id": "battery_t2",
-        "name": "Battery Tier 2",
-        "cost": 50,
-        "type": "battery_t2",
-        "value": 2,
-        "max_level": 1,
-        "desc": "Unlocks Battery Tier 2 (100,000Ω cap)",
-    },
-    {
-        "id": "ip_boost",
-        "name": "PLACEHOLDER",
-        "cost": 75,
-        "type": "inspire_rate",
-        "level": 0,
-        "max_level": 10,
-        "cost_mult": 2.0,
-        "base_value": 2.0,
+        "base_value": 1.25,
         "value_mult": 1.15,
-        "desc": "x2ip, x1.15ip compounding per lvl",
+        "desc": "×1.25 base, +15% per level",
     },
     {
-        "id": "inspire_3",
-        "name": "Efficient Worker",
-        "cost": 100,
-        "type": "money_mult",
-        "value": 10000,
-        "max_level": 1,
-        "desc": "$xPLACEHOLDER",
-    },
-    {
-        "id": "inspire_4",
-        "name": "Master Mind",
-        "cost": 200,
+        "id": "inspire_focus_cap",
+        "name": "Mindspace",
+        "base_cost": 5,
         "type": "focus_max",
-        "value": 200,
-        "max_level": 1,
-        "desc": "xPLACEHOLDER focus cap",
+        "max_level": 3,
+        "cost_mult": 2.0,
+        "value": 100,
+        "desc": "+100 Focus cap per level",
+    },
+    {
+        "id": "inspire_scaling",
+        "name": "Creative Momentum",
+        "base_cost": 10,
+        "type": "money_mult",
+        "max_level": 8,
+        "cost_mult": 1.9,
+        "base_value": 1.2,
+        "value_mult": 1.12,
+        "desc": "Stacking income boost",
+    },
+    {
+        "id": "ip_rate",
+        "name": "Insight Flow",
+        "base_cost": 15,
+        "type": "inspire_rate",
+        "max_level": 6,
+        "cost_mult": 2.2,
+        "base_value": 1.5,
+        "value_mult": 1.12,
+        "desc": "×1.5 Inspiration gain, +12% per level",
     },
 ]
 
-INSPIRATION_MILESTONES = [
+CONCEPT_UPGRADES = [
     {
-        "inspirations_required": 1,
-        "reward_type": "xmult",
-        "reward_value": 3.0
+        "id": "concept_autowork",
+        "name": "Auto‑Work",
+        "cost": 1,
+        "type": "unlock_autowork",
+        "value": 1,
+        "max_level": 1,
+        "desc": "Unlocks automatic work cycles",
     },
     {
-        "inspirations_required": 2,
-        "reward_type": "+mult",
-        "reward_value": 50.0
+        "id": "concept_autospeed",
+        "name": "Automation Speed",
+        "base_cost": 5,
+        "type": "work_mult",
+        "max_level": 10,
+        "cost_mult": 2.0,
+        "base_value": 0.95,
+        "value_mult": 0.95,
+        "desc": "Reduces auto‑work delay",
     },
     {
-        "inspirations_required": 5,
-        "reward_type": "-cd",
-        "reward_value": 0.75
+        "id": "concept_autoeff",
+        "name": "Automation Efficiency",
+        "base_cost": 10,
+        "type": "money_mult",
+        "max_level": 10,
+        "cost_mult": 2.0,
+        "base_value": 1.2,
+        "value_mult": 1.1,
+        "desc": "Boosts auto‑work money gain",
     },
-    # add more milestones as needed
+    {
+        "id": "concept_rate",
+        "name": "Conceptual Drift",
+        "base_cost": 20,
+        "type": "concept_rate",
+        "max_level": 6,
+        "cost_mult": 2.2,
+        "base_value": 1.5,
+        "value_mult": 1.12,
+        "desc": "×1.5 Concepts gain, +12% per level",
+    },
+    {
+        "id": "concept_mastery",
+        "name": "System Mastery",
+        "base_cost": 25,
+        "type": "money_mult",
+        "max_level": 8,
+        "cost_mult": 2.3,
+        "base_value": 1.3,
+        "value_mult": 1.15,
+        "desc": "Global income boost from systems understanding",
+    },
 ]
 
 CHARGE_THRESHOLDS = [
@@ -284,36 +272,28 @@ BORDERS = {
 }
 
 
-# FORMATTING NUMBERS CUZ FUNNY
 def format_number(n):
     neg = n < 0
     n = abs(n)
-
-    # Named tiers up to 1e33
     suffixes = [
-        (1e33, "De"),  # Decillion
-        (1e30, "No"),  # Nonillion
-        (1e27, "Oc"),  # Octillion
-        (1e24, "Sp"),  # Septillion
-        (1e21, "Sx"),  # Sextillion
-        (1e18, "Qn"),  # Quintillion
-        (1e15, "Qd"),  # Quadrillion
-        (1e12, "T"),  # Trillion
-        (1e9, "B"),  # Billion
-        (1e6, "M"),  # Million
-        (1e3, "K"),  # Thousand
+        (1e33, "De"),
+        (1e30, "No"),
+        (1e27, "Oc"),
+        (1e24, "Sp"),
+        (1e21, "Sx"),
+        (1e18, "Qn"),
+        (1e15, "Qd"),
+        (1e12, "T"),
+        (1e9, "B"),
+        (1e6, "M"),
+        (1e3, "K"),
     ]
-
     for value, symbol in suffixes:
         if n >= value:
             s = f"{n / value:.2f}".rstrip("0").rstrip(".")
             return f"-{s}{symbol}" if neg else f"{s}{symbol}"
-
-    # Once it goes past 1e33, show exponent form (like 1.23e45)
     if n >= 1e33:
-        s = f"{n:.2e}"  # scientific notation
+        s = f"{n:.2e}"
         return f"-{s}" if neg else s
-
-    # Small numbers
     s = f"{n:.2f}".rstrip("0").rstrip(".")
     return f"-{s}" if neg else s
