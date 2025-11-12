@@ -858,6 +858,8 @@ def open_upgrade_menu():
             k = KEY_PRESSED.lower()
             KEY_PRESSED = None
             if k == "b":
+                global last_render
+                last_render = ""
                 return
             elif k.isdigit():
                 idx = int(k) - 1
