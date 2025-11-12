@@ -298,6 +298,7 @@ def compute_gain_and_delay():
     gain_add = 0.0
     gain_mult = 1.0
     delay_mult = 1.0
+    gain_add, gain_mult, delay_mult = apply_normal_upgrades()
     for entry in game.get("inspiration_upgrades", []):
         upg_id, level = (
             (entry.get("id"), entry.get("level", 1))
@@ -895,6 +896,26 @@ def render_steam():
             table[p["y"]] = "".join(row)
     return table
 
+
+def apply_normal_upgrades():
+    gain_add = 0.0
+    gain_mult = 1.0
+    delay_mult = 1.0
+    for uid, level in game.get("upgrade_levels", {}).items():
+        upg = next((u for u in config.UPGRADES if u["id"] == uid), None)
+        if not upg:
+            continue
+        base_val = float(upg.get("base_value", upg.get("value", 1)))
+        val_mult = float(upg.get("value_mult", 1))
+        val = base_val * (val_mult ** max(0, level - 1))
+        t = upg["type"]
+        if t in ("mult", "money_mult"):
+            gain_mult *= val
+        elif t in ("work_mult", "reduce_delay"):
+            delay_mult *= val
+        elif t == "add":
+            gain_add += val
+    return gain_add, gain_mult, delay_mult
 
 def buy_idx_upgrade(upg):
     uid = upg["id"]
