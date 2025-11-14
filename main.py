@@ -13,7 +13,7 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "colorama"])
     import colorama
     from colorama import Fore, Back, Style
-colorama.init()
+colorama.init(autoreset=True)
 
 from ascii_art import LAYER_0_DESK, UPGRADE_ART
 import config
@@ -197,7 +197,8 @@ def wrap_ui_text(text):
     box_w = max(config.MIN_BOX_WIDTH, term_w - config.BOX_MARGIN * 2)
     inner_w = box_w - 2
     panel_width = max(int(inner_w * 0.25) - 6, 20)
-    return textwrap.wrap(text, width=panel_width)
+    clean = ANSI_ESCAPE.sub("", text)
+    return textwrap.wrap(clean, width=panel_width)
 
 
 def build_tree_lines(upgrades, get_info_fn, page_key):
@@ -389,7 +390,7 @@ def boxed_lines(
         if raw is None:
             raw = ""
         segs = []
-        if len(raw) <= inner_w:
+        if visible_len(raw) <= inner_w:
             segs.append(raw)
         else:
             words = raw.split(" ")
@@ -409,7 +410,10 @@ def boxed_lines(
                 if cur:
                     segs.append(cur)
         for s in segs:
-            lines.append(v + s.center(inner_w) + v)
+            pad = inner_w - visible_len(raw)
+            left = pad // 2
+            right = pad - left
+            lines.append(v + " " * left + raw + " " * right + v)
     for _ in range(pad_bottom):
         lines.append(v + " " * inner_w + v)
     lines.append(bl + h * inner_w + br)
@@ -722,7 +726,7 @@ def reset_for_inspiration():
         return
     if game.get("money_since_reset", 0) < INSPIRATION_UNLOCK_MONEY:
         tmp = boxed_lines(
-            [f"Reach ${format_number(INSPIRATION_UNLOCK_MONEY)} to Inspire."],
+            [f"{Fore.YELLOW}Reach ${format_number(INSPIRATION_UNLOCK_MONEY)} to Inspire.{Style.RESET_ALL}"],
             title=" Inspire ",
             pad_top=1,
             pad_bottom=1,
