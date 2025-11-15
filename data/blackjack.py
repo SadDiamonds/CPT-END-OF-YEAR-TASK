@@ -1,7 +1,5 @@
 import random
 
-
-
 # ---------- Card + Deck logic ----------
 
 RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
@@ -9,19 +7,6 @@ SUITS = ["♠", "♥", "♦", "♣"]  # Change to "S", "H", "D", "C" if your ter
 
 BLACKJACK_PAYOUT = 1.5  # 3:2 payout
 
-
-def return_to_game(): 
-    if KEY_PRESSED:
-            k = KEY_PRESSED.lower()
-            KEY_PRESSED = None
-            if k == "b":
-                global last_render
-                last_render = ""
-                return
-            elif k.isdigit():
-                idx = int(k) - 1
-                if 0 <= idx < len(unlocked):
-                    buy_idx_upgrade(unlocked[idx])
 
 def create_deck():
     """Return a shuffled 52-card deck."""
@@ -237,7 +222,6 @@ def main():
     print("Try to get as close to 21 as possible without going over.")
     print("Dealer hits on 16 and stands on 17+.")
     print("Blackjack pays 3:2.\n")
-    print("Press B To Return\n")
 
     bankroll = get_starting_chips()
     print(f"\nYou are starting with {bankroll:.2f} chips.\n")
