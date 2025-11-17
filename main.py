@@ -199,10 +199,6 @@ def render_frame(lines):
     sys.stdout.flush()
 
 
-def has_colorama(line: str) -> bool:
-    return bool(ANSI_ESCAPE.search(line))
-
-
 def get_inspire_info(upg_id):
     for u in game.get("inspiration_upgrades", []):
         if isinstance(u, dict) and u.get("id") == upg_id:
@@ -637,14 +633,9 @@ def activate_focus():
     return True, f"Focus active for {FOCUS_DURATION}s."
 
 
-def get_unlocked_upgrades():
-    return []
-
-
 def get_tree_selection(upgrades, page_key, digit):
     term_w, term_h = get_term_size()
     max_lines = term_h // 2 - 6
-    pages, current, used = [], [], 0
     blocks = []
     for i, u in enumerate(upgrades, start=1):
         owned, level = (
@@ -681,17 +672,33 @@ def get_tree_selection(upgrades, page_key, digit):
             wrapped = wrap_ui_text(desc_text)
             block += ["     " + w for w in wrapped]
         blocks.append(block)
+
+    pages = []
+    items_per_page = []
+    current = []
+    used = 0
+    items_in_current = 0
     for block in blocks:
         if used + len(block) > max_lines and current:
             pages.append(current)
-            current, used = [], 0
+            items_per_page.append(items_in_current)
+            current, used, items_in_current = [], 0, 0
         current += block
         used += len(block)
+        items_in_current += 1
     if current:
         pages.append(current)
-    page = game.get(page_key, 0)
-    idx = int(digit) - 1 + page * 10
-    return idx
+        items_per_page.append(items_in_current)
+
+    page = max(0, min(game.get(page_key, 0), max(0, len(pages) - 1)))
+    try:
+        digit_idx = int(digit) - 1
+    except:
+        return -1
+    if digit_idx < 0:
+        return -1
+    start_idx = sum(items_per_page[:page]) if page > 0 else 0
+    return start_idx + digit_idx
 
 
 def buy_tree_upgrade(upgrades, idx):
@@ -966,37 +973,6 @@ def open_upgrade_menu():
                     buy_idx_upgrade(unlocked[idx])
 
 
-def render_steam():
-    global steam
-    # spawn new steam particles if coffee owned
-    if "coffee" in game.get("owned", []):
-        if random.random() < config.STEAM_CHANCE:
-            steam.append(
-                {
-                    "x": random.randint(10, 20),
-                    "y": len(LAYER_0_DESK) - 5,
-                    "life": config.STEAM_LIFETIME,
-                    "char": random.choice(config.STEAM_CHARS),
-                }
-            )
-    # update particles
-    new_particles = []
-    for p in steam:
-        p["y"] -= 1
-        p["life"] -= 1
-        if p["life"] > 0:
-            new_particles.append(p)
-    steam = new_particles
-    table = LAYER_0_DESK.copy()
-    for p in steam:
-        if 0 <= p["y"] < len(table):
-            row = list(table[p["y"]])
-            if 0 <= p["x"] < len(row):
-                row[p["x"]] = p["char"]
-            table[p["y"]] = "".join(row)
-    return table
-
-
 def buy_idx_upgrade(upg):
     uid = upg["id"]
     game.setdefault("owned", [])
@@ -1117,14 +1093,16 @@ def render_ui(screen="work"):
 
     # Inspiration panel
     top_left_lines = []
+    insp_title = f"=== {Fore.LIGHTYELLOW_EX}INSPIRATION{Style.RESET_ALL} ==="
+    insp_tree_title = f"=== {Fore.LIGHTYELLOW_EX}INSPIRATION TREE{Style.RESET_ALL} ==="
     if (
         game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY // 2
         or game.get("inspiration_unlocked", False) == True
     ):
         top_left_lines += [
-            f"=== {Fore.YELLOW}INSPIRATION{Style.RESET_ALL} ===",
+            insp_title,
             "",
-            f"Points: {Fore.YELLOW}{format_number(game.get('inspiration', 0))} i{Style.RESET_ALL}",
+            f"Points: {Fore.LIGHTYELLOW_EX}{format_number(game.get('inspiration', 0))} i{Style.RESET_ALL}",
             "",
         ]
         if game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY:
@@ -1132,6 +1110,7 @@ def render_ui(screen="work"):
                 f"[I]nspire for {format_number(calc_insp)} Inspiration"
             )
             top_left_lines.append(f"{format_number(time_next)} until next point")
+            top_left_lines.append("[1] to open Inspiration tree")
         else:
             top_left_lines.append(
                 f"Reach ${format_number(INSPIRATION_UNLOCK_MONEY)} to"
@@ -1141,17 +1120,23 @@ def render_ui(screen="work"):
                     else " Inspire"
                 )
             )
+            if screen == "inspiration":
+                top_left_lines.append("")
+            else:
+                top_left_lines.append("")
+                top_left_lines.append("[1] to open Inspiration tree")
         if screen == "inspiration":
             visible_lines, footer, _ = build_tree_lines(
                 INSPIRE_UPGRADES, get_inspire_info, "insp_page"
             )
             top_left_lines += [
                 "",
-                "=== INSPIRATION TREE ===",
+                insp_tree_title,
                 *visible_lines,
                 "",
                 footer,
-                "[B] Back to Work",
+                "",
+                "\033[1m[B] Back to Work\033[0m",
             ]
 
     # Concepts panel
@@ -1245,9 +1230,13 @@ def render_ui(screen="work"):
         vis = visible_len(t)
         pad_right = max(0, content_w - vis)
         return " " * pad_left + t + " " * pad_right
+    left_content_w = max(0, left_w - left_pad)
     combined_lines = []
     for l, m, r in zip(top_left_lines, middle_lines, bottom_left_lines):
-        left_part = _ljust_with_buffer(l, left_w, left_pad)
+        if l == insp_title or l == insp_tree_title:
+            left_part = " " * left_pad + ansi_center(l, left_content_w)
+        else:
+            left_part = _ljust_with_buffer(l, left_w, left_pad)
         mid_part = ansi_center(m, mid_w)
         right_part = _ljust_with_buffer(r, right_w, left_pad)
         combined_lines.append(left_part + " " * right_pad + mid_part + " " * right_pad + right_part)
