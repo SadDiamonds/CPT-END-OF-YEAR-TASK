@@ -1,9 +1,15 @@
-import json, os, time, sys, threading, shutil, math, select, random, textwrap, subprocess, re, wcwidth
+import json, os, time, sys, threading, shutil, math, select, random, textwrap, subprocess, re
 
 try:
     import msvcrt
 except:
     msvcrt = None
+
+try:
+    import wcwidth
+    _wcwidth = wcwidth.wcwidth
+except ImportError:
+    _wcwidth = None
 
 try:
     import colorama
@@ -130,7 +136,10 @@ def ansi_center(text, width):
 
 
 def visible_len(s):
-    return sum(wcwidth.wcwidth(c) for c in ANSI_ESCAPE.sub("", s))
+    clean = ANSI_ESCAPE.sub("", s)
+    if _wcwidth:
+        return sum(max(_wcwidth(c), 0) for c in clean)
+    return len(clean)
 
 
 def ansi_visible_slice(s: str, start: int, width: int) -> str:
