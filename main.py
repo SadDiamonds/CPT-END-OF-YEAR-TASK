@@ -1,4 +1,4 @@
-import json, os, time, sys, threading, shutil, math, select, random, textwrap, subprocess, re
+import json, os, time, sys, threading, shutil, math, select, random, textwrap, subprocess, re, wcwidth
 
 try:
     import msvcrt
@@ -13,7 +13,7 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "colorama"])
     import colorama
     from colorama import Fore, Back, Style
-colorama.init(autoreset=True)
+colorama.init(autoreset=False)
 
 from ascii_art import LAYER_0_DESK, UPGRADE_ART
 import config
@@ -44,6 +44,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 SAVE_PATH = os.path.join(DATA_DIR, "save.json")
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+RESET_SEQ = Style.RESET_ALL if "Style" in globals() else "\x1b[0m"
 
 last_tick_time = time.time()
 last_render, last_size = "", (0, 0)
@@ -129,7 +130,44 @@ def ansi_center(text, width):
 
 
 def visible_len(s):
-    return len(ANSI_ESCAPE.sub("", s))
+    return sum(wcwidth.wcwidth(c) for c in ANSI_ESCAPE.sub("", s))
+
+
+def ansi_visible_slice(s: str, start: int, width: int) -> str:
+    if width <= 0:
+        return ""
+    out = []
+    esc_buf = []
+    vis = 0
+    end = start + width
+    i = 0
+    had_esc = False
+    while i < len(s):
+        ch = s[i]
+        if ch == "\x1b":
+            m = ANSI_ESCAPE.match(s, i)
+            if m:
+                seq = m.group(0)
+                esc_buf.append(seq)
+                had_esc = True
+                i += len(seq)
+                continue
+            else:
+                i += 1
+                continue
+        if vis >= start and vis < end:
+            if esc_buf:
+                out.extend(esc_buf)
+                esc_buf = []
+            out.append(ch)
+        vis += 1
+        i += 1
+        if vis >= end:
+            break
+    result = "".join(out)
+    if had_esc and result and RESET_SEQ and RESET_SEQ not in result:
+        result += RESET_SEQ
+    return result
 
 
 def get_term_size():
@@ -150,6 +188,10 @@ def render_frame(lines):
     clear_screen()
     sys.stdout.write(frame)
     sys.stdout.flush()
+
+
+def has_colorama(line: str) -> bool:
+    return bool(ANSI_ESCAPE.search(line))
 
 
 def get_inspire_info(upg_id):
@@ -301,6 +343,7 @@ def compute_gain_and_delay():
     gain_add = 0.0
     gain_mult = 1.0
     delay_mult = 1.0
+    game["focus_max_bonus"] = 0
     for entry in game.get("inspiration_upgrades", []):
         upg_id, level = (
             (entry.get("id"), entry.get("level", 1))
@@ -313,10 +356,14 @@ def compute_gain_and_delay():
         base = float(u.get("base_value", u.get("value", 1)))
         step = float(u.get("value_mult", 1))
         val = base * (step ** max(0, level - 1))
-        t = u["type"]
-        if t == "money_mult":
+        t = u.get("type")
+        if t in ("money_mult", "mult", "money"):
             gain_mult *= val
-        elif t == "focus_max":
+        elif t in ("add", "value"):
+            gain_add += val
+        elif t in ("work_mult", "reduce_delay"):
+            delay_mult *= val
+        elif t in ("focus_max", "focus_max_bonus"):
             game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + val
     for entry in game.get("concept_upgrades", []):
         upg_id, level = (
@@ -330,11 +377,36 @@ def compute_gain_and_delay():
         base = float(u.get("base_value", u.get("value", 1)))
         step = float(u.get("value_mult", 1))
         val = base * (step ** max(0, level - 1))
-        t = u["type"]
-        if t == "money_mult":
+        t = u.get("type")
+        if t in ("money_mult", "mult", "money"):
             gain_mult *= val
-        elif t == "work_mult":
+        elif t in ("add", "value"):
+            gain_add += val
+        elif t in ("work_mult", "reduce_delay"):
             delay_mult *= val
+    for uid, lvl in game.get("upgrade_levels", {}).items():
+        if lvl <= 0:
+            continue
+        u = next((x for x in UPGRADES if x["id"] == uid), None)
+        if not u:
+            continue
+        base = float(u.get("base_value", u.get("value", 1)))
+        step = float(u.get("value_mult", 1))
+        val = base * (step ** max(0, lvl - 1))
+        t = u.get("type")
+        if t in ("money_mult", "mult", "money"):
+            gain_mult *= val
+        elif t in ("add", "value"):
+            gain_add += val
+        elif t in ("work_mult", "reduce_delay", "reduce_cd"):
+            delay_mult *= val
+        elif t in ("focus_max", "focus_max_bonus"):
+            game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + val
+        elif t == "unlock_focus" and lvl > 0:
+            game["focus_unlocked"] = True
+        elif t == "unlock_charge" and lvl > 0:
+            game["charge_unlocked"] = True
+
     if game.get("motivation_unlocked", False):
         motivation = game.get("motivation", MOTIVATION_MAX)
         motivation_mult = 1 + (motivation / max(1, MOTIVATION_MAX)) * (
@@ -358,15 +430,6 @@ def compute_gain_and_delay():
     return eff_gain, eff_delay
 
 
-def dual_header(left_text, right_text, inner_w):
-    half = inner_w // 2
-    left_vis = visible_len(left_text)
-    right_vis = visible_len(right_text)
-    left_pad = max(0, half - left_vis)
-    right_pad = max(0, half - right_vis)
-    return left_text + " " * left_pad + right_text + " " * right_pad
-
-
 def boxed_lines(
     content_lines, title=None, pad_top=1, pad_bottom=1, margin=config.BOX_MARGIN
 ):
@@ -377,18 +440,22 @@ def boxed_lines(
     style = config.BORDERS.get(layer, list(config.BORDERS.values())[-1])
     tl, tr, bl, br = style["tl"], style["tr"], style["bl"], style["br"]
     h, v = style["h"], style["v"]
+
     if title:
         t = f" {title} "
-        if len(t) >= inner_w:
+        vis_t = visible_len(t)
+        if vis_t >= inner_w:
             top = tl + h * inner_w + tr
         else:
-            left = (inner_w - len(t)) // 2
-            top = tl + h * left + t + h * (inner_w - left - len(t)) + tr
+            left = (inner_w - vis_t) // 2
+            top = tl + h * left + t + h * (inner_w - left - vis_t) + tr
     else:
         top = tl + h * inner_w + tr
     lines = [top]
+
     for _ in range(pad_top):
         lines.append(v + " " * inner_w + v)
+
     for raw in content_lines:
         if raw is None:
             raw = ""
@@ -412,16 +479,30 @@ def boxed_lines(
                     cur = cur[inner_w:]
                 if cur:
                     segs.append(cur)
+
         for s in segs:
-            pad = inner_w - visible_len(raw)
+            vis_len = visible_len(s)
+            pad = inner_w - vis_len
+            if pad < 0:
+                pad = 0
             left = pad // 2
             right = pad - left
-            lines.append(v + " " * left + raw + " " * right + v)
+            line_content = " " * left + s + " " * right
+            while visible_len(line_content) > inner_w:
+                line_content = line_content[:-1]
+            while visible_len(line_content) < inner_w:
+                line_content += " "
+            lines.append(v + line_content + v)
+
     for _ in range(pad_bottom):
         lines.append(v + " " * inner_w + v)
+
     lines.append(bl + h * inner_w + br)
     left_margin = max(0, (term_w - box_w) // 2)
     margin_str = " " * left_margin
+    assert all(
+        visible_len(line[1:-1]) == inner_w for line in lines[1:-1]
+    ), "Line width mismatch"
     return [margin_str + l for l in lines]
 
 
@@ -443,7 +524,7 @@ def render_desk_table():
     empty_indices = [
         i
         for i, line in enumerate(table)
-        if line.startswith("       ║") and line.endswith("║")
+        if line.startswith("║") and line.endswith("║")
     ]
     empty_idx_iter = reversed(empty_indices)
     for art in owned_arts:
@@ -453,7 +534,7 @@ def render_desk_table():
         except StopIteration:
             break
         for line_pos, art_line in zip(reversed(art_positions), art):
-            table[line_pos] = "       ║" + art_line.center(23) + "║"
+            table[line_pos] = "║" + art_line.center(23) + "║"
     if "coffee" in owned_ids:
         coffee_idx = None
         for i, art_id in enumerate(owned_ids):
@@ -468,7 +549,8 @@ def render_desk_table():
             coffee_line = coffee_art[0]
             first_char_idx = next((i for i, c in enumerate(coffee_line) if c != " "), 0)
             last_char_idx = len(coffee_line.rstrip()) - 1
-            cup_center = 9 + (first_char_idx + last_char_idx) // 2
+            desk_inner_w = 23
+            cup_center = (desk_inner_w // 2) + (first_char_idx + last_char_idx) // 2 - (len(coffee_line) // 2)
             new_steam = []
             for x, y, stage, life in steam:
                 y -= config.STEAM_SPEED
@@ -1133,8 +1215,6 @@ def render_ui(screen="work"):
         else "Press W to work"
     )
     middle_lines += ["", "Options: [W]ork  [U]pgrades  [Q]uit"]
-
-    # Align columns
     term_width, term_height = get_term_size()
     max_lines = max(len(top_left_lines), len(bottom_left_lines), len(middle_lines))
     while len(top_left_lines) < term_h - 4:
@@ -1143,15 +1223,25 @@ def render_ui(screen="work"):
         bottom_left_lines.append("")
     while len(middle_lines) < term_h - 4:
         middle_lines.insert(0, "")
-
-    combined_lines = [
-        ansi_center(l, int(term_width * 0.25))
-        + " " * 2
-        + ansi_center(m, int(term_width * 0.35))
-        + " " * 2
-        + ansi_center(r, int(term_width * 0.25))
-        for l, m, r in zip(top_left_lines, middle_lines, bottom_left_lines)
-    ]
+    left_w = int(term_width * 0.25)
+    mid_w = int(term_width * 0.35)
+    right_w = int(term_width * 0.25)
+    left_pad = 2
+    right_pad = 2
+    def _ljust_with_buffer(text, box_w, pad_left):
+        content_w = max(0, box_w - pad_left)
+        t = text
+        if visible_len(t) > content_w:
+            t = ansi_visible_slice(t, 0, content_w)
+        vis = visible_len(t)
+        pad_right = max(0, content_w - vis)
+        return " " * pad_left + t + " " * pad_right
+    combined_lines = []
+    for l, m, r in zip(top_left_lines, middle_lines, bottom_left_lines):
+        left_part = _ljust_with_buffer(l, left_w, left_pad)
+        mid_part = ansi_center(m, mid_w)
+        right_part = _ljust_with_buffer(r, right_w, left_pad)
+        combined_lines.append(left_part + " " * right_pad + mid_part + " " * right_pad + right_part)
     box = boxed_lines(
         combined_lines, title=f" Layer {game.get('layer', 0)} ", pad_top=1, pad_bottom=1
     )
@@ -1164,7 +1254,7 @@ def render_ui(screen="work"):
         view_offset_y = 0
     visible_lines = box[view_offset_y : view_offset_y + term_h]
     visible_lines = [
-        line[view_offset_x : view_offset_x + term_w] for line in visible_lines
+        ansi_visible_slice(line, view_offset_x, term_w) for line in visible_lines
     ]
     output = "\033[H" + "\n".join(visible_lines)
     if output != last_render:
