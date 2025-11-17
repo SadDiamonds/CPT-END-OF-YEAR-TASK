@@ -1119,7 +1119,7 @@ def render_ui(screen="work"):
     top_left_lines = []
     if (
         game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY // 2
-        or game.get("inspiration", 0) > 0
+        or game.get("inspiration_unlocked", False) == True
     ):
         top_left_lines += [
             f"=== {Fore.YELLOW}INSPIRATION{Style.RESET_ALL} ===",
