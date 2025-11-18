@@ -515,11 +515,11 @@ def boxed_lines(
     lines.append(bl + h * inner_w + br)
     if layer == 3 and pad_top >= 1:
         try:
-            p_count = getattr(config, "LAYER3_PARTICLE_COUNT", 0)
+            p_count = getattr(config, "LAYER2_PARTICLE_COUNT", 0)
             if p_count > 0:
-                p_chars = getattr(config, "LAYER3_PARTICLE_CHARS", ["·", "*", "."])
-                p_amp = getattr(config, "LAYER3_PARTICLE_AMPLITUDE", 8)
-                p_freq = getattr(config, "LAYER3_PARTICLE_FREQ", 3)
+                p_chars = getattr(config, "LAYER2_PARTICLE_CHARS", ["·", "*", "."])
+                p_amp = getattr(config, "LAYER2_PARTICLE_AMPLITUDE", 8)
+                p_freq = getattr(config, "LAYER2_PARTICLE_FREQ", 3) 
                 tick = int(time.time() * float(p_freq))
                 top_pad_idx = 1
                 if top_pad_idx < len(lines):
@@ -942,6 +942,8 @@ def reset_for_concepts():
             pad_bottom=1,
         )
         render_frame(tmp)
+        global last_render
+        last_render = ""
         time.sleep(1.0)
         return
     gained = calculate_concepts(game.get("money_since_reset", 0))
@@ -1426,12 +1428,9 @@ def main_loop():
                             view_offset_x = max(0, view_offset_x + 2)
                         elif k_raw == "\x1b[D":
                             view_offset_x = max(0, view_offset_x - 2)
-                        # skip normal key processing for escape sequences
                         continue
-                    # ignore other escape sequences
                     continue
 
-                # Normal single-character keys
                 try:
                     k = k_raw.lower()
                 except Exception:
@@ -1442,7 +1441,7 @@ def main_loop():
                     break
                 elif k == "w":
                     now = time.time()
-                    if now - last_manual_time > 0.2:
+                    if now - last_manual_time >= 0.1:
                         gain, eff_delay = compute_gain_and_delay(auto=False)
                         if not game.get("auto_work_unlocked", False):
                             work_timer = 0

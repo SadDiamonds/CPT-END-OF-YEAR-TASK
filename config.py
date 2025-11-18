@@ -63,7 +63,7 @@ UPGRADES = [
         "name": "Dusty Monitor",
         "cost": 2000,
         "type": "add",
-        "base_value": 5.0,
+        "base_value": 6.7,
         "value_mult": 1.5,
         "max_level": 4,
         "cost_mult": 2.5,
@@ -271,10 +271,10 @@ BORDERS = {
     4: {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "║"},
 }
 
-LAYER3_PARTICLE_CHARS = ["·", "*", "."]
-LAYER3_PARTICLE_COUNT = 3
-LAYER3_PARTICLE_AMPLITUDE = 12
-LAYER3_PARTICLE_FREQ = 3
+LAYER2_PARTICLE_CHARS = ["·", "*", ".", "'"]
+LAYER2_PARTICLE_COUNT = 3
+LAYER2_PARTICLE_AMPLITUDE = 12
+LAYER2_PARTICLE_FREQ = 3
 
 
 def format_number(n):
