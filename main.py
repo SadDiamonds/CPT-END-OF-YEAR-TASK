@@ -519,7 +519,7 @@ def boxed_lines(
             if p_count > 0:
                 p_chars = getattr(config, "LAYER2_PARTICLE_CHARS", ["·", "*", "."])
                 p_amp = getattr(config, "LAYER2_PARTICLE_AMPLITUDE", 8)
-                p_freq = getattr(config, "LAYER2_PARTICLE_FREQ", 3) 
+                p_freq = getattr(config, "LAYER2_PARTICLE_FREQ", 3)
                 tick = int(time.time() * float(p_freq))
                 top_pad_idx = 1
                 if top_pad_idx < len(lines):
@@ -977,6 +977,8 @@ def reset_for_concepts():
 
 def open_upgrade_menu():
     global KEY_PRESSED
+    last_box = None
+    last_size = get_term_size()
     while True:
         work_tick()
         unlocked = [
@@ -1021,7 +1023,12 @@ def open_upgrade_menu():
                 lines += ["   " + w for w in wrapped]
         lines += ["", "Press number to buy, B to back."]
         box = boxed_lines(lines, title=" UPGRADE BAY ", pad_top=1, pad_bottom=1)
-        render_frame(box)
+        cur_size = get_term_size()
+        box_str = "\n".join(box)
+        if box_str != last_box or cur_size != last_size:
+            render_frame(box)
+            last_box = box_str
+            last_size = cur_size
         time.sleep(0.05)
         if KEY_PRESSED:
             k = KEY_PRESSED.lower()
