@@ -1,5 +1,5 @@
 BASE_MONEY_GAIN = 1.0
-BASE_WORK_DELAY = 10.0
+BASE_WORK_DELAY = 6.7
 BASE_MONEY_MULT = 1.0
 
 FOCUS_BOOST_FACTOR = 0.5
@@ -221,7 +221,7 @@ CONCEPT_UPGRADES = [
         "id": "concept_autoeff",
         "name": "Automation Efficiency",
         "base_cost": 10,
-        "type": "money_mult",
+        "type": "auto_money_mult",
         "max_level": 10,
         "cost_mult": 2.0,
         "base_value": 1.2,
@@ -237,18 +237,18 @@ CONCEPT_UPGRADES = [
         "cost_mult": 2.2,
         "base_value": 1.5,
         "value_mult": 1.12,
-        "desc": "×1.5 Concepts gain, +12% per level",
+        "desc": "×1.5 Co gain, +12% per level",
     },
     {
         "id": "concept_mastery",
-        "name": "System Mastery",
+        "name": "Eureka",
         "base_cost": 25,
         "type": "money_mult",
         "max_level": 8,
         "cost_mult": 2.3,
         "base_value": 1.3,
         "value_mult": 1.15,
-        "desc": "Global income boost from systems understanding",
+        "desc": "BIG x$ boost",
     },
 ]
 
@@ -264,12 +264,17 @@ BATTERY_TIERS = {
 }
 
 BORDERS = {
-    0: {"tl": "+", "tr": "+", "bl": "+", "br": "+", "h": "-", "v": "|"},
-    1: {"tl": "╔", "tr": "╗", "bl": "╚", "br": "╝", "h": "═", "v": "║"},
-    2: {"tl": "▓", "tr": "▓", "bl": "▓", "br": "▓", "h": "█", "v": "█"},
-    3: {"tl": "◆", "tr": "◆", "bl": "◆", "br": "◆", "h": "─", "v": "│"},
-    4: {"tl": "▛", "tr": "▜", "bl": "▙", "br": "▟", "h": "▀", "v": "▌"},
+    0: {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "│"},
+    1: {"tl": "╭", "tr": "╮", "bl": "╰", "br": "╯", "h": "─", "v": "│"},
+    2: {"tl": "╔", "tr": "╗", "bl": "╚", "br": "╝", "h": "═", "v": "║"},
+    3: {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "│"},
+    4: {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "║"},
 }
+
+LAYER3_PARTICLE_CHARS = ["·", "*", "."]
+LAYER3_PARTICLE_COUNT = 3
+LAYER3_PARTICLE_AMPLITUDE = 12
+LAYER3_PARTICLE_FREQ = 3
 
 
 def format_number(n):
@@ -387,4 +392,3 @@ def format_number(n):
 
     s = f"{n:.2f}".rstrip("0").rstrip(".")
     return f"-{s}" if neg else s
-

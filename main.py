@@ -1,4 +1,4 @@
-import json, os, time, sys, threading, shutil, math, select, random, textwrap, subprocess, re
+import json, os, time, sys, threading, shutil, math, select, random, textwrap, subprocess, re, traceback
 
 try:
     import msvcrt
@@ -7,6 +7,7 @@ except:
 
 try:
     import wcwidth
+
     _wcwidth = wcwidth.wcwidth
 except ImportError:
     _wcwidth = None
@@ -342,7 +343,7 @@ def get_charge_bonus():
     return 1.5 ** (math.log10(charge + 0.1))
 
 
-def compute_gain_and_delay():
+def compute_gain_and_delay(auto=False):
     base_gain = BASE_MONEY_GAIN
     base_delay = BASE_WORK_DELAY
     gain_add = 0.0
@@ -385,6 +386,9 @@ def compute_gain_and_delay():
         t = u.get("type")
         if t in ("money_mult", "mult", "money"):
             gain_mult *= val
+        elif t == "auto_money_mult":
+            if auto:
+                gain_mult *= val
         elif t in ("add", "value"):
             gain_add += val
         elif t in ("work_mult", "reduce_delay"):
@@ -442,7 +446,13 @@ def boxed_lines(
     box_w = max(config.MIN_BOX_WIDTH, term_w - margin * 2)
     inner_w = box_w - 2
     layer = game.get("layer", 0)
-    style = config.BORDERS.get(layer, list(config.BORDERS.values())[-1])
+    if layer in (0, 1, 2):
+        style = config.BORDERS.get(0, list(config.BORDERS.values())[-1])
+    elif layer == 3:
+        style = config.BORDERS.get(3, config.BORDERS.get(0))
+    else:
+        style = config.BORDERS.get(layer, list(config.BORDERS.values())[-1])
+
     tl, tr, bl, br = style["tl"], style["tr"], style["bl"], style["br"]
     h, v = style["h"], style["v"]
 
@@ -503,6 +513,28 @@ def boxed_lines(
         lines.append(v + " " * inner_w + v)
 
     lines.append(bl + h * inner_w + br)
+    if layer == 3 and pad_top >= 1:
+        try:
+            p_count = getattr(config, "LAYER3_PARTICLE_COUNT", 0)
+            if p_count > 0:
+                p_chars = getattr(config, "LAYER3_PARTICLE_CHARS", ["·", "*", "."])
+                p_amp = getattr(config, "LAYER3_PARTICLE_AMPLITUDE", 8)
+                p_freq = getattr(config, "LAYER3_PARTICLE_FREQ", 3)
+                tick = int(time.time() * float(p_freq))
+                top_pad_idx = 1
+                if top_pad_idx < len(lines):
+                    row = list(lines[top_pad_idx])
+                    for i in range(p_count):
+                        offset = ((tick * 7 + i * 13) % max(1, p_amp)) - (p_amp // 2)
+                        pos = 1 + (inner_w // 2) + offset
+                        pos = max(1, min(1 + inner_w - 1, pos))
+                        ch = p_chars[(tick + i) % len(p_chars)]
+                        if row[pos] == " ":
+                            row[pos] = ch
+                    lines[top_pad_idx] = "".join(row)
+        except Exception:
+            pass
+
     left_margin = max(0, (term_w - box_w) // 2)
     margin_str = " " * left_margin
     assert all(
@@ -527,9 +559,7 @@ def render_desk_table():
     )
     owned_arts = [UPGRADE_ART[uid] for uid in owned_ids if uid in UPGRADE_ART]
     empty_indices = [
-        i
-        for i, line in enumerate(table)
-        if line.startswith("║") and line.endswith("║")
+        i for i, line in enumerate(table) if line.startswith("║") and line.endswith("║")
     ]
     empty_idx_iter = reversed(empty_indices)
     for art in owned_arts:
@@ -555,7 +585,11 @@ def render_desk_table():
             first_char_idx = next((i for i, c in enumerate(coffee_line) if c != " "), 0)
             last_char_idx = len(coffee_line.rstrip()) - 1
             desk_inner_w = 23
-            cup_center = (desk_inner_w // 2) + (first_char_idx + last_char_idx) // 2 - (len(coffee_line) // 2)
+            cup_center = (
+                (desk_inner_w // 2)
+                + (first_char_idx + last_char_idx) // 2
+                - (len(coffee_line) // 2)
+            )
             new_steam = []
             for x, y, stage, life in steam:
                 y -= config.STEAM_SPEED
@@ -601,7 +635,7 @@ def work_tick():
     now = time.time()
     delta = now - last_tick_time
     last_tick_time = now
-    gain, eff_delay = compute_gain_and_delay()
+    gain, eff_delay = compute_gain_and_delay(auto=True)
     if game.get("auto_work_unlocked", False):
         work_timer += delta
         if work_timer >= eff_delay:
@@ -822,13 +856,40 @@ def predict_next_inspiration_point():
     return remaining
 
 
+def predict_next_concept_point():
+    current_money = game.get("money_since_reset", 0)
+    current_conc = calculate_concepts(current_money)
+    target = current_conc + 1
+    if target <= 0:
+        return 0
+    if calculate_concepts(current_money) >= target:
+        return 0
+    low = int(current_money)
+    high = max(low + 1, 1_000_000)
+    cap = 10**18
+    while calculate_concepts(high) < target and high < cap:
+        high = min(high * 2, cap)
+    lo = low + 1
+    hi = high
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if calculate_concepts(mid) >= target:
+            hi = mid
+        else:
+            lo = mid + 1
+    remaining = max(lo - current_money, 0)
+    return round(remaining, 2)
+
+
 def reset_for_inspiration():
     now = time.time()
     if now - game.get("last_inspiration_reset_time", 0) < 0.05:
         return
     if game.get("money_since_reset", 0) < INSPIRATION_UNLOCK_MONEY:
         tmp = boxed_lines(
-            [f"{Fore.YELLOW}Reach ${format_number(INSPIRATION_UNLOCK_MONEY)} to Inspire.{Style.RESET_ALL}"],
+            [
+                f"{Fore.YELLOW}Reach ${format_number(INSPIRATION_UNLOCK_MONEY)} to Inspire.{Style.RESET_ALL}"
+            ],
             title=" Inspire ",
             pad_top=1,
             pad_bottom=1,
@@ -860,7 +921,7 @@ def reset_for_inspiration():
     apply_inspiration_effects()
     save_game()
     done_msg = boxed_lines(
-        [f"Awakening. Gained {gained} Inspiration."],
+        [f"Gained {Fore.LIGHTYELLOW_EX}{gained}{Style.RESET_ALL} Inspiration."],
         title=" Inspiration Gained ",
         pad_top=1,
         pad_bottom=1,
@@ -875,7 +936,7 @@ def reset_for_concepts():
         return
     if game.get("money_since_reset", 0) < CONCEPTS_UNLOCK_MONEY:
         tmp = boxed_lines(
-            [f"Reach ${format_number(CONCEPTS_UNLOCK_MONEY)} to crystallize Concepts."],
+            [f"Reach ${format_number(CONCEPTS_UNLOCK_MONEY)} to Conceptualise."],
             title=" Concepts ",
             pad_top=1,
             pad_bottom=1,
@@ -884,6 +945,7 @@ def reset_for_concepts():
         time.sleep(1.0)
         return
     gained = calculate_concepts(game.get("money_since_reset", 0))
+    play_concepts_animation()
     game["concepts"] = game.get("concepts", 0) + gained
     game.update(
         {
@@ -895,7 +957,6 @@ def reset_for_concepts():
             "upgrade_levels": {},
             "concepts_unlocked": True,
             "layer": max(game.get("layer", 0), 2),
-            "inspiration_unlocked": False,
             "inspiration_upgrades": [],
             "inspiration": 0,
         }
@@ -903,7 +964,7 @@ def reset_for_concepts():
     apply_concept_effects()
     save_game()
     done_msg = boxed_lines(
-        [f"You reorder your thoughts. Gained {gained} Concepts."],
+        [f"Gained {Fore.CYAN}{gained}{Style.RESET_ALL} Concepts."],
         title=" Concepts Gained ",
         pad_top=1,
         pad_bottom=1,
@@ -1036,6 +1097,47 @@ def play_inspiration_reset_animation():
     print("!".center(term_w))
     time.sleep(0.6)
 
+
+def play_concepts_animation():
+    term_w, term_h = shutil.get_terminal_size(fallback=(80, 24))
+    frames = 22
+    shards = []
+    for f in range(frames):
+        clear_screen()
+        screen = [" " * term_w for _ in range(term_h)]
+        if random.random() < 0.35:
+            shards.append(
+                {
+                    "y": term_h - 4,
+                    "x": term_w // 2 + random.randint(-14, 14),
+                    "life": random.randint(4, 8),
+                }
+            )
+        for s in shards:
+            y, x = int(s["y"]), int(s["x"])
+            if 0 <= y < term_h and 0 <= x < term_w:
+                ch = random.choice(["*", "o", "+", "·"])
+                row = screen[y]
+                screen[y] = row[:x] + ch + row[x + 1 :]
+        print("\n".join(screen))
+        new_shards = []
+        for s in shards:
+            s["y"] -= 1 + random.random() * 0.6
+            s["x"] += random.choice([-1, 0, 1])
+            s["life"] -= 1
+            if s["life"] > 0 and s["y"] >= 0:
+                new_shards.append(s)
+        shards = new_shards
+        time.sleep(0.09)
+    clear_screen()
+    mid = term_h // 2
+    lines = [" " * term_w for _ in range(term_h)]
+    title = "Ah HA"
+    lines[mid] = title.center(term_w)
+    print("\n".join(lines))
+    time.sleep(0.7)
+
+
 def key_listener():
     global KEY_PRESSED, running, listener_enabled
     if msvcrt is not None and os.name == "nt":
@@ -1066,7 +1168,20 @@ def key_listener():
                 if r:
                     ch = sys.stdin.read(1)
                     if ch:
-                        KEY_PRESSED = ch.lower()
+                        if ch == "\x1b":
+                            rest = ""
+                            while True:
+                                r2, _, _ = select.select([sys.stdin], [], [], 0.02)
+                                if r2:
+                                    more = sys.stdin.read(1)
+                                    if not more:
+                                        break
+                                    rest += more
+                                else:
+                                    break
+                            KEY_PRESSED = ch + rest
+                        else:
+                            KEY_PRESSED = ch.lower()
                 time.sleep(0.02)
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
@@ -1077,7 +1192,9 @@ def render_ui(screen="work"):
     term_w, term_h = get_term_size()
     current_size = get_term_size()
     resized = current_size != last_size
-    effective_gain, effective_delay = compute_gain_and_delay()
+    effective_gain, effective_delay = compute_gain_and_delay(
+        auto=game.get("auto_work_unlocked", False)
+    )
     prog = (
         min(work_timer / effective_delay, 1.0)
         if game.get("auto_work_unlocked", False)
@@ -1090,11 +1207,14 @@ def render_ui(screen="work"):
     calc_insp = calculate_inspiration(game.get("money_since_reset", 0))
     calc_conc = calculate_concepts(game.get("money_since_reset", 0))
     time_next = predict_next_inspiration_point()
+    conc_time_next = predict_next_concept_point()
 
     # Inspiration panel
     top_left_lines = []
     insp_title = f"=== {Fore.LIGHTYELLOW_EX}INSPIRATION{Style.RESET_ALL} ==="
     insp_tree_title = f"=== {Fore.LIGHTYELLOW_EX}INSPIRATION TREE{Style.RESET_ALL} ==="
+    conc_title = f"=== {Fore.CYAN}CONCEPTS{Style.RESET_ALL} ==="
+    conc_tree_title = f"=== {Fore.CYAN}CONCEPTS TREE{Style.RESET_ALL} ==="
     if (
         game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY // 2
         or game.get("inspiration_unlocked", False) == True
@@ -1107,9 +1227,12 @@ def render_ui(screen="work"):
         ]
         if game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY:
             top_left_lines.append(
-                f"[I]nspire for {format_number(calc_insp)} Inspiration"
+                f"[I]nspire for {Fore.LIGHTYELLOW_EX}{format_number(calc_insp)}{Style.RESET_ALL} Inspiration"
             )
-            top_left_lines.append(f"{format_number(time_next)} until next point")
+            top_left_lines.append(
+                f"{Fore.LIGHTYELLOW_EX}{format_number(time_next)}{Style.RESET_ALL} until next point"
+            )
+            top_left_lines.append("")
             top_left_lines.append("[1] to open Inspiration tree")
         else:
             top_left_lines.append(
@@ -1145,19 +1268,23 @@ def render_ui(screen="work"):
         "concepts_unlocked", False
     ):
         bottom_left_lines += [
-            f"=== {Fore.CYAN}CONCEPTS{Style.RESET_ALL} ===",
+            conc_title,
             "",
         ]
         if game.get("concepts_unlocked", False):
             bottom_left_lines.append(
-                f"Points: {format_number(game.get('concepts', 0))} Co"
+                f"Points: {Fore.CYAN}{format_number(game.get('concepts', 0))} Co{Style.RESET_ALL}"
             )
-            bottom_left_lines.append("[2] Open concepts tree")
             bottom_left_lines.append("")
         if game.get("money_since_reset", 0) >= CONCEPTS_UNLOCK_MONEY:
             bottom_left_lines.append(
-                f"[C]onceptualise for {format_number(calc_conc)} Concepts"
+                f"[C]onceptualise for {Fore.CYAN}{format_number(calc_conc)}{Style.RESET_ALL} Concepts"
             )
+            bottom_left_lines.append(
+                f"{Fore.CYAN}{format_number(conc_time_next)}{Style.RESET_ALL} until next point"
+            )
+            bottom_left_lines.append("")
+            bottom_left_lines.append("[2] to open Concepts tree")
         else:
             bottom_left_lines.append(
                 (f"Reach ${format_number(CONCEPTS_UNLOCK_MONEY)} to ")
@@ -1168,20 +1295,20 @@ def render_ui(screen="work"):
                     else "Conceptualise"
                 )
             )
+            bottom_left_lines.append("")
+            bottom_left_lines.append("[2] to open Concepts tree")
         if screen == "concepts":
             visible_lines, footer, _ = build_tree_lines(
                 CONCEPT_UPGRADES, get_concept_info, "concept_page"
             )
             bottom_left_lines += [
                 "",
-                "=== CONCEPTS TREE ===",
+                conc_tree_title,
                 *visible_lines,
                 "",
                 footer,
-                "[B] Back to Work",
+                "\033[1m[B] Back to Work\033[0m",
             ]
-
-    # Middle block anchored at bottom
     middle_lines = []
     middle_lines += render_desk_table()
     if game.get("focus_unlocked", False):
@@ -1222,6 +1349,7 @@ def render_ui(screen="work"):
     right_w = int(term_width * 0.25)
     left_pad = 2
     right_pad = 2
+
     def _ljust_with_buffer(text, box_w, pad_left):
         content_w = max(0, box_w - pad_left)
         t = text
@@ -1230,16 +1358,24 @@ def render_ui(screen="work"):
         vis = visible_len(t)
         pad_right = max(0, content_w - vis)
         return " " * pad_left + t + " " * pad_right
+
     left_content_w = max(0, left_w - left_pad)
+    right_content_w = max(0, right_w - left_pad)
     combined_lines = []
     for l, m, r in zip(top_left_lines, middle_lines, bottom_left_lines):
-        if l == insp_title or l == insp_tree_title:
+        if l in (insp_title, insp_tree_title, conc_title, conc_tree_title):
             left_part = " " * left_pad + ansi_center(l, left_content_w)
         else:
             left_part = _ljust_with_buffer(l, left_w, left_pad)
         mid_part = ansi_center(m, mid_w)
-        right_part = _ljust_with_buffer(r, right_w, left_pad)
-        combined_lines.append(left_part + " " * right_pad + mid_part + " " * right_pad + right_part)
+
+        if r in (insp_title, insp_tree_title, conc_title, conc_tree_title):
+            right_part = " " * left_pad + ansi_center(r, right_content_w)
+        else:
+            right_part = _ljust_with_buffer(r, right_w, left_pad)
+        combined_lines.append(
+            left_part + " " * right_pad + mid_part + " " * right_pad + right_part
+        )
     box = boxed_lines(
         combined_lines, title=f" Layer {game.get('layer', 0)} ", pad_top=1, pad_bottom=1
     )
@@ -1278,15 +1414,36 @@ def main_loop():
             work_tick()
             render_ui(screen=current_screen)
             if KEY_PRESSED:
-                k = KEY_PRESSED.lower()
+                k_raw = KEY_PRESSED
                 KEY_PRESSED = None
+                if isinstance(k_raw, str) and k_raw.startswith("\x1b"):
+                    if k_raw in ("\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"):
+                        if k_raw == "\x1b[A":
+                            view_offset_y = max(0, view_offset_y - 1)
+                        elif k_raw == "\x1b[B":
+                            view_offset_y = max(0, view_offset_y + 1)
+                        elif k_raw == "\x1b[C":
+                            view_offset_x = max(0, view_offset_x + 2)
+                        elif k_raw == "\x1b[D":
+                            view_offset_x = max(0, view_offset_x - 2)
+                        # skip normal key processing for escape sequences
+                        continue
+                    # ignore other escape sequences
+                    continue
+
+                # Normal single-character keys
+                try:
+                    k = k_raw.lower()
+                except Exception:
+                    k = k_raw
+
                 if k == "q":
                     running = False
                     break
                 elif k == "w":
                     now = time.time()
                     if now - last_manual_time > 0.2:
-                        gain, eff_delay = compute_gain_and_delay()
+                        gain, eff_delay = compute_gain_and_delay(auto=False)
                         if not game.get("auto_work_unlocked", False):
                             work_timer = 0
                         perform_work(gain, eff_delay, manual=True)
