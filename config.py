@@ -29,11 +29,11 @@ UPGRADES = [
         "name": "Basic Keyboard",
         "cost": 100,
         "type": "mult",
-        "base_value": 1.25,
-        "value_mult": 1.17,
+        "base_value": 1.5,
+        "value_mult": 1.25,
         "max_level": 5,
         "cost_mult": 2.0,
-        "desc": "Your first upgrade!. $1.25x, +17% per level",
+        "desc": "Your first upgrade!. $1.5x, +25% per level",
         "unlocked": True,
     },
     {
@@ -53,8 +53,9 @@ UPGRADES = [
         "name": "Cup Holder",
         "cost": 400,
         "type": "add",
-        "base_value": 1.0,
+        "base_value": 2.0,
         "max_level": 1,
+        "cost_mult": 3.3,
         "desc": "A lonely holder, that feels like its a part of something bigger...",
         "unlocked": False,
     },
@@ -63,11 +64,11 @@ UPGRADES = [
         "name": "Dusty Monitor",
         "cost": 2000,
         "type": "add",
-        "base_value": 6.7,
+        "base_value": 3,
         "value_mult": 1.5,
         "max_level": 4,
         "cost_mult": 2.5,
-        "desc": "An old ahh monitor. +$5, +50% per level",
+        "desc": "An old ahh monitor. +$3, +$50% per level",
         "unlocked": False,
     },
     {
@@ -132,7 +133,7 @@ UPGRADES = [
 
 UPGRADE_DEPENDENCIES = {
     "coffee": ["keyboard"],
-    "cup_holder": ["coffee"],
+    "cup_holder": ["keyboard"],
     "monitor": ["keyboard"],
     "ergonomic_chair": ["cup_holder"],
     "dual_monitors": ["monitor"],
@@ -149,6 +150,7 @@ INSPIRE_UPGRADES = [
         "type": "unlock_motivation",
         "value": 1,
         "max_level": 1,
+        "cost_mult": 1.3,
         "desc": "Unlocks Motivation (buff that decays over work)",
     },
     {
@@ -204,6 +206,7 @@ CONCEPT_UPGRADES = [
         "type": "unlock_autowork",
         "value": 1,
         "max_level": 1,
+        "cost_mult": 1.3,
         "desc": "Unlocks automatic work cycles",
     },
     {
@@ -392,3 +395,108 @@ def format_number(n):
 
     s = f"{n:.2f}".rstrip("0").rstrip(".")
     return f"-{s}" if neg else s
+
+
+def _normalize_upgrade_costs():
+    def effect_strength_for(u):
+        vm = u.get("value_mult")
+        if vm is not None:
+            try:
+                f = float(vm)
+                return f if f >= 1.0 else (1.0 / f if f > 0 else 1.0)
+            except Exception:
+                pass
+        for key in ("base_value", "value"):
+            if key in u:
+                try:
+                    f = float(u[key])
+                    return f if f >= 1.0 else (1.0 / f if f > 0 else 1.0)
+                except Exception:
+                    pass
+        return 1.0
+
+    def ensure_list(lst):
+        for u in lst:
+            try:
+                strength = effect_strength_for(u)
+                desired = round(strength + 0.3, 2)
+                cur = float(u.get("cost_mult", desired))
+                if cur < desired:
+                    u["cost_mult"] = desired
+            except Exception:
+                continue
+
+    ensure_list(UPGRADES)
+    ensure_list(INSPIRE_UPGRADES)
+    ensure_list(CONCEPT_UPGRADES)
+
+
+AUTO_BALANCE_UPGRADES = True
+BALANCE_DELTA = 0.3
+BALANCE_MIN_MULT = 1.07
+BALANCE_MAX_MULT = 5.0
+PRINT_BALANCE_CHANGES = False
+
+BALANCE_ADJUSTMENTS = []
+
+
+def _normalize_upgrade_costs():
+    if not AUTO_BALANCE_UPGRADES:
+        return
+
+    def effect_strength_for(u):
+        try:
+            vm = u.get("value_mult")
+            if vm is not None:
+                f = float(vm)
+                return f if f >= 1.0 else (1.0 / f if f > 0 else 1.0)
+        except Exception:
+            pass
+
+        for key in ("base_value", "value"):
+            if key in u:
+                try:
+                    f = float(u[key])
+                    if u.get("type") in ("add", "value"):
+                        denom = max(1.0, BASE_MONEY_GAIN)
+                        return max(1.0, 1.0 + (f / denom))
+                    if u.get("type") in ("work_mult", "reduce_delay"):
+                        return f if f >= 1.0 else (1.0 / f if f > 0 else 1.0)
+                    return f if f >= 1.0 else 1.0
+                except Exception:
+                    pass
+        return 1.0
+
+    def ensure_list(lst, table_name):
+        adjustments = []
+        for u in lst:
+            try:
+                strength = effect_strength_for(u)
+                desired = round(
+                    max(
+                        BALANCE_MIN_MULT,
+                        min(BALANCE_MAX_MULT, strength + BALANCE_DELTA),
+                    ),
+                    2,
+                )
+                cur = float(u.get("cost_mult", desired))
+                if cur < desired:
+                    u["cost_mult"] = desired
+                    adjustments.append((u.get("id"), cur, desired))
+            except Exception:
+                continue
+        if adjustments:
+            BALANCE_ADJUSTMENTS.extend(
+                [(table_name, aid, old, new) for (aid, old, new) in adjustments]
+            )
+        if PRINT_BALANCE_CHANGES and adjustments:
+            print(f"[BALANCE] Adjusted cost_mult in {table_name}:")
+            for aid, old, new in adjustments:
+                print(f"  {aid}: {old} -> {new}")
+
+    ensure_list(UPGRADES, "UPGRADES")
+    ensure_list(INSPIRE_UPGRADES, "INSPIRE_UPGRADES")
+    ensure_list(CONCEPT_UPGRADES, "CONCEPT_UPGRADES")
+
+
+_normalize_upgrade_costs()

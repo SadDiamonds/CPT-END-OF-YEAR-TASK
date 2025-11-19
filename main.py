@@ -432,7 +432,7 @@ def compute_gain_and_delay(auto=False):
                 delay_mult *= rval**buff_mult
     if time.time() < focus_active_until:
         delay_mult *= FOCUS_BOOST_FACTOR
-    eff_gain = (base_gain + gain_add) * gain_mult
+    eff_gain = base_gain * gain_mult + gain_add
     eff_gain *= BASE_MONEY_MULT
     eff_gain *= game.get("money_mult", 1.0)
     eff_delay = max(base_delay * delay_mult, 0.01)
@@ -927,7 +927,9 @@ def reset_for_inspiration():
         pad_bottom=1,
     )
     render_frame(done_msg)
-    time.sleep(1.2)
+    global last_render
+    last_render=""
+    time.sleep(1.0)
 
 
 def reset_for_concepts():
@@ -1410,6 +1412,18 @@ def render_ui(screen="work"):
 def main_loop():
     global KEY_PRESSED, running, work_timer, last_tick_time, last_manual_time
     load_game()
+    try:
+        if getattr(config, "AUTO_BALANCE_UPGRADES", False) and getattr(
+            config, "BALANCE_ADJUSTMENTS", None
+        ):
+            lines = ["The balancer adjusted upgrade costs:"]
+            for table_name, aid, old, new in config.BALANCE_ADJUSTMENTS:
+                lines.append(f"{table_name}: {aid}: {old} -> {new}")
+            tmp = boxed_lines(lines, title=" Balancer " , pad_top=1, pad_bottom=1)
+            render_frame(tmp)
+            time.sleep(1.2)
+    except Exception:
+        pass
     last_tick_time = time.time()
     threading.Thread(target=key_listener, daemon=True).start()
     if game.get("layer", 0) >= 1 and not game.get("inspiration_unlocked", False):
@@ -1448,7 +1462,7 @@ def main_loop():
                     break
                 elif k == "w":
                     now = time.time()
-                    if now - last_manual_time >= 0.1:
+                    if now - last_manual_time > 0.1:
                         gain, eff_delay = compute_gain_and_delay(auto=False)
                         if not game.get("auto_work_unlocked", False):
                             work_timer = 0
