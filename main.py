@@ -1383,7 +1383,7 @@ def render_ui(screen="work"):
         else "Press W to work"
     )
     # UPDATED: add blackjack to options
-    middle_lines += ["", "Options: [W]ork  [U]pgrades  [J]ackjack  [Q]uit"]
+    middle_lines += ["", "Options: [W] Work  [U] Upgrades  [J] Backjack  [Q] Quit"]
 
     term_width, term_height = get_term_size()
     while len(top_left_lines) < term_height - 4:
