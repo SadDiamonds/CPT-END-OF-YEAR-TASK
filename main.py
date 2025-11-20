@@ -1240,6 +1240,8 @@ def render_ui(screen="work"):
     term_w, term_h = get_term_size()
     current_size = get_term_size()
     resized = current_size != last_size
+
+    # Compute current gain/delay as before
     effective_gain, effective_delay = compute_gain_and_delay(
         auto=game.get("auto_work_unlocked", False)
     )
@@ -1252,11 +1254,46 @@ def render_ui(screen="work"):
     filled = int(prog * bar_len)
     work_bar = f"[{'#' * filled}{'-' * (bar_len - filled)}] {int(prog * 100):3d}%"
 
+    # 🔹 SPECIAL CASE: MINIGAMES SCREEN
+    if screen == "minigames":
+        lines = [
+            "--- MINIGAMES ---",
+            "",
+            "[1] Blackjack",
+            "",
+            f"Current money: ${format_number(game.get('money', 0))}",
+            "",
+            "[B] Back to work",
+        ]
+        box = boxed_lines(lines, title=" Minigames ", pad_top=1, pad_bottom=1)
+
+        if resized:
+            print("\033[2J\033[H", end="")
+            last_size = current_size
+            last_render = ""
+            view_offset_x = 0
+            view_offset_y = 0
+
+        visible_lines = box[view_offset_y : view_offset_y + term_h]
+        visible_lines = [
+            ansi_visible_slice(line, view_offset_x, term_w) for line in visible_lines
+        ]
+        output = "\033[H" + "\n".join(visible_lines)
+        if output != last_render:
+            sys.stdout.write("\033[H")
+            sys.stdout.write(output)
+            sys.stdout.flush()
+            last_render = output
+        return  # ⬅️ don't render the normal desk UI
+
+    # ---------- NORMAL UI BELOW (unchanged logic) ----------
+
     calc_insp = calculate_inspiration(game.get("money_since_reset", 0))
     calc_conc = calculate_concepts(game.get("money_since_reset", 0))
     time_next = predict_next_inspiration_point()
     conc_time_next = predict_next_concept_point()
 
+    # Inspiration panel
     top_left_lines = []
     insp_title = f"=== {Fore.LIGHTYELLOW_EX}INSPIRATION{Style.RESET_ALL} ==="
     insp_tree_title = f"=== {Fore.LIGHTYELLOW_EX}INSPIRATION TREE{Style.RESET_ALL} ==="
@@ -1264,7 +1301,7 @@ def render_ui(screen="work"):
     conc_tree_title = f"=== {Fore.CYAN}CONCEPTS TREE{Style.RESET_ALL} ==="
     if (
         game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY // 2
-        or game.get("inspiration_unlocked", False) is True
+        or game.get("inspiration_unlocked", False) == True
     ):
         top_left_lines += [
             insp_title,
@@ -1309,6 +1346,7 @@ def render_ui(screen="work"):
                 "\033[1m[B] Back to Work\033[0m",
             ]
 
+    # Concepts panel
     bottom_left_lines = []
     if (game.get("money_since_reset", 0) >= CONCEPTS_UNLOCK_MONEY // 2) or game.get(
         "concepts_unlocked", False
@@ -1355,7 +1393,6 @@ def render_ui(screen="work"):
                 footer,
                 "\033[1m[B] Back to Work\033[0m",
             ]
-
     middle_lines = []
     middle_lines += render_desk_table()
     if game.get("focus_unlocked", False):
@@ -1382,17 +1419,17 @@ def render_ui(screen="work"):
         if game.get("auto_work_unlocked", False)
         else "Press W to work"
     )
-    # UPDATED: add blackjack to options
-    middle_lines += ["", "Options: [W] Work  [U] Upgrades  [J] Backjack  [Q] Quit"]
+    # 🔹 UPDATED OPTIONS to include Minigames
+    middle_lines += ["", "Options: [W]ork  [U]pgrades  [M]inigames  [Q]uit"]
 
     term_width, term_height = get_term_size()
-    while len(top_left_lines) < term_height - 4:
+    max_lines = max(len(top_left_lines), len(bottom_left_lines), len(middle_lines))
+    while len(top_left_lines) < term_h - 4:
         top_left_lines.append("")
-    while len(bottom_left_lines) < term_height - 4:
+    while len(bottom_left_lines) < term_h - 4:
         bottom_left_lines.append("")
-    while len(middle_lines) < term_height - 4:
+    while len(middle_lines) < term_h - 4:
         middle_lines.insert(0, "")
-
     left_w = int(term_width * 0.25)
     mid_w = int(term_width * 0.35)
     right_w = int(term_width * 0.25)
@@ -1417,6 +1454,7 @@ def render_ui(screen="work"):
         else:
             left_part = _ljust_with_buffer(l, left_w, left_pad)
         mid_part = ansi_center(m, mid_w)
+
         if r in (insp_title, insp_tree_title, conc_title, conc_tree_title):
             right_part = " " * left_pad + ansi_center(r, right_content_w)
         else:
@@ -1434,9 +1472,9 @@ def render_ui(screen="work"):
         last_render = ""
         view_offset_x = 0
         view_offset_y = 0
-    visible_lines = box[view_offset_y : view_offset_y + term_height]
+    visible_lines = box[view_offset_y : view_offset_y + term_h]
     visible_lines = [
-        ansi_visible_slice(line, view_offset_x, term_width) for line in visible_lines
+        ansi_visible_slice(line, view_offset_x, term_w) for line in visible_lines
     ]
     output = "\033[H" + "\n".join(visible_lines)
     if output != last_render:
@@ -1446,8 +1484,9 @@ def render_ui(screen="work"):
         last_render = output
 
 
+
 def main_loop():
-    global KEY_PRESSED, running, work_timer, last_tick_time, last_manual_time
+    global KEY_PRESSED, running, work_timer, last_tick_time, last_manual_time, listener_enabled, last_render
     load_game()
     try:
         if getattr(config, "AUTO_BALANCE_UPGRADES", False) and getattr(
@@ -1510,9 +1549,6 @@ def main_loop():
                     clear_screen()
                     open_upgrade_menu()
                     render_ui(screen=current_screen)
-                elif k == "j" and current_screen == "work":
-                    open_blackjack_layer()
-                    current_screen = "work"
                 elif k == "f":
                     ok, msg = activate_focus()
                     tmp = boxed_lines([msg], title=" Focus ", pad_top=1, pad_bottom=1)
@@ -1524,12 +1560,48 @@ def main_loop():
                 elif k == "c":
                     reset_for_concepts()
                     current_screen = "work"
+                elif k == "m":
+                    # 🔹 open minigames menu
+                    current_screen = "minigames"
+
+                # ---------- MINIGAMES SCREEN HANDLING ----------
+                elif current_screen == "minigames":
+                    if k == "b":
+                        current_screen = "work"
+                    elif k == "1":
+                        # Launch Blackjack
+                        listener_enabled = False  # pause key listener so it doesn't fight with input()
+                        clear_screen()
+                        try:
+                            starting_money = float(game.get("money", 0.0))
+                            new_money = blackjack.run_blackjack(starting_money)
+                        except Exception:
+                            traceback.print_exc()
+                            input(
+                                "An error occurred in Blackjack. Press Enter to return to the main game..."
+                            )
+                            new_money = game.get("money", 0.0)
+                        finally:
+                            listener_enabled = True
+
+                        try:
+                            if isinstance(new_money, (int, float)):
+                                game["money"] = float(new_money)
+                        except Exception:
+                            pass
+                        save_game()
+                        last_render = ""
+                        current_screen = "minigames"
+
+                # ---------- INSPIRATION TREE ----------
                 elif (
                     current_screen == "work"
                     and k == "1"
                     and game.get("inspiration_unlocked", False)
                 ):
                     current_screen = "inspiration"
+
+                # ---------- CONCEPTS TREE ----------
                 elif (
                     current_screen == "work"
                     and k == "2"
@@ -1539,18 +1611,23 @@ def main_loop():
                     )
                 ):
                     current_screen = "concepts"
+
+                # Inspiration screen input
                 elif current_screen == "inspiration":
                     if k == "b":
                         current_screen = "work"
                     elif k == "z":
                         game["insp_page"] = max(0, game["insp_page"] - 1)
                     elif k == "x":
+                        term_w, term_h = get_term_size()
                         game["insp_page"] = game["insp_page"] + 1
                     elif k.isdigit():
                         idx = get_tree_selection(INSPIRE_UPGRADES, "insp_page", k)
                         if 0 <= idx < len(INSPIRE_UPGRADES):
                             buy_tree_upgrade(INSPIRE_UPGRADES, idx)
                         time.sleep(0.2)
+
+                # Concepts screen input
                 elif current_screen == "concepts":
                     if k == "b":
                         current_screen = "work"
@@ -1563,6 +1640,7 @@ def main_loop():
                         if 0 <= idx < len(CONCEPT_UPGRADES):
                             buy_tree_upgrade(CONCEPT_UPGRADES, idx)
                         time.sleep(0.2)
+
             time.sleep(0.05)
     except KeyboardInterrupt:
         pass
@@ -1570,6 +1648,7 @@ def main_loop():
         save_game()
         clear_screen()
         print("Saved. Bye!")
+
 
 
 if __name__ == "__main__":
