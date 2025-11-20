@@ -397,40 +397,6 @@ def format_number(n):
     return f"-{s}" if neg else s
 
 
-def _normalize_upgrade_costs():
-    def effect_strength_for(u):
-        vm = u.get("value_mult")
-        if vm is not None:
-            try:
-                f = float(vm)
-                return f if f >= 1.0 else (1.0 / f if f > 0 else 1.0)
-            except Exception:
-                pass
-        for key in ("base_value", "value"):
-            if key in u:
-                try:
-                    f = float(u[key])
-                    return f if f >= 1.0 else (1.0 / f if f > 0 else 1.0)
-                except Exception:
-                    pass
-        return 1.0
-
-    def ensure_list(lst):
-        for u in lst:
-            try:
-                strength = effect_strength_for(u)
-                desired = round(strength + 0.3, 2)
-                cur = float(u.get("cost_mult", desired))
-                if cur < desired:
-                    u["cost_mult"] = desired
-            except Exception:
-                continue
-
-    ensure_list(UPGRADES)
-    ensure_list(INSPIRE_UPGRADES)
-    ensure_list(CONCEPT_UPGRADES)
-
-
 AUTO_BALANCE_UPGRADES = True
 BALANCE_DELTA = 0.3
 BALANCE_MIN_MULT = 1.07

@@ -45,7 +45,6 @@ from config import (
     format_number,
 )
 
-# NEW: import blackjack minigame module
 import blackjack
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -449,13 +448,9 @@ def boxed_lines(
     box_w = max(config.MIN_BOX_WIDTH, term_w - margin * 2)
     inner_w = box_w - 2
     layer = game.get("layer", 0)
-    if layer in (0, 1, 2):
-        style = config.BORDERS.get(0, list(config.BORDERS.values())[-1])
-    elif layer == 3:
-        style = config.BORDERS.get(3, config.BORDERS.get(0))
-    else:
-        style = config.BORDERS.get(layer, list(config.BORDERS.values())[-1])
-
+    style = config.BORDERS.get(layer)
+    if style is None:
+        style = list(config.BORDERS.values())[0]
     tl, tr, bl, br = style["tl"], style["tr"], style["bl"], style["br"]
     h, v = style["h"], style["v"]
 
@@ -553,13 +548,7 @@ def render_desk_table():
     for new, old in getattr(config, "UPGRADE_REPLACEMENT", {}).items():
         if new in owned_ids and old in owned_ids:
             owned_ids.remove(old)
-    owned_ids.sort(
-        key=lambda uid: (
-            config.DESK_ORDER.index(uid)
-            if uid in getattr(config, "DESK_ORDER", [])
-            else 999
-        )
-    )
+    owned_ids.sort()
     owned_arts = [UPGRADE_ART[uid] for uid in owned_ids if uid in UPGRADE_ART]
     empty_indices = [
         i for i, line in enumerate(table) if line.startswith("║") and line.endswith("║")
@@ -1152,12 +1141,7 @@ def play_concepts_animation():
     time.sleep(0.7)
 
 
-# NEW: blackjack layer integration
 def open_blackjack_layer():
-    """
-    Temporarily leave the main UI and play blackjack as a separate 'layer'.
-    Uses current money as chips and writes back the result.
-    """
     global listener_enabled, last_render, view_offset_x, view_offset_y
 
     listener_enabled = False
@@ -1382,7 +1366,6 @@ def render_ui(screen="work"):
         if game.get("auto_work_unlocked", False)
         else "Press W to work"
     )
-    # UPDATED: add blackjack to options
     middle_lines += ["", "Options: [W] Work  [U] Upgrades  [J] Backjack  [Q] Quit"]
 
     term_width, term_height = get_term_size()
