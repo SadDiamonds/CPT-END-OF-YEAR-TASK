@@ -1,7 +1,5 @@
 import random
 
-
-
 # ---------- Card + Deck logic ----------
 
 RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
@@ -9,19 +7,6 @@ SUITS = ["♠", "♥", "♦", "♣"]  # Change to "S", "H", "D", "C" if your ter
 
 BLACKJACK_PAYOUT = 1.5  # 3:2 payout
 
-
-def return_to_game(): 
-    if KEY_PRESSED:
-            k = KEY_PRESSED.lower()
-            KEY_PRESSED = None
-            if k == "b":
-                global last_render
-                last_render = ""
-                return
-            elif k.isdigit():
-                idx = int(k) - 1
-                if 0 <= idx < len(unlocked):
-                    buy_idx_upgrade(unlocked[idx])
 
 def create_deck():
     """Return a shuffled 52-card deck."""
@@ -83,7 +68,10 @@ def card_ascii(card):
 def join_cards(cards):
     """Take a list of cards and return a single multi-line string of them next to each other."""
     lines_per_card = [card_ascii(c) for c in cards]
-    joined_lines = ["  ".join(line[i] for line in lines_per_card) for i in range(len(lines_per_card[0]))]
+    joined_lines = [
+        "  ".join(line[i] for line in lines_per_card)
+        for i in range(len(lines_per_card[0]))
+    ]
     return "\n".join(joined_lines)
 
 
@@ -186,7 +174,7 @@ def play_round(bet):
         return 0.0
 
 
-# ---------- UI + Main loop ----------
+# ---------- UI + Integration entrypoint ----------
 
 def print_title():
     title = r"""
@@ -199,21 +187,6 @@ def print_title():
           ASCII Blackjack (with betting)
     """
     print(title)
-
-
-def get_starting_chips():
-    while True:
-        starting = input("Enter starting chips (default 100): ").strip()
-        if starting == "":
-            return 100.0
-        try:
-            val = float(starting)
-            if val <= 0:
-                print("Please enter a positive number.")
-                continue
-            return val
-        except ValueError:
-            print("Please enter a valid number.")
 
 
 def get_bet(bankroll):
@@ -231,20 +204,32 @@ def get_bet(bankroll):
             print("Please enter a valid number.")
 
 
-def main():
+def run_blackjack(starting_chips):
+    """
+    Main entrypoint for the blackjack 'layer'.
+
+    starting_chips: float – your current money from the main game.
+    Returns: float – updated money after gambling.
+    """
+    bankroll = float(starting_chips)
+
     print_title()
     print("Welcome to ASCII Blackjack with betting!")
+    print("Your chips are your current money from the main game.")
     print("Try to get as close to 21 as possible without going over.")
     print("Dealer hits on 16 and stands on 17+.")
     print("Blackjack pays 3:2.\n")
-    print("Press B To Return\n")
+    print("Type 'y' at the end of a round to play again, anything else to return.\n")
+    print(f"You are entering the casino with {bankroll:.2f} chips.\n")
 
-    bankroll = get_starting_chips()
-    print(f"\nYou are starting with {bankroll:.2f} chips.\n")
+    if bankroll <= 0:
+        print("You have no money to gamble with. Press Enter to return.")
+        input()
+        return starting_chips
 
     while True:
         if bankroll <= 0:
-            print("You are out of chips. Game over!")
+            print("You are out of chips. The house wins this time.\n")
             break
 
         print(f"Current chips: {bankroll:.2f}")
@@ -259,12 +244,12 @@ def main():
             print("You have no chips left. The house wins this time.\n")
             break
 
-        again = input("Play another round? [y/n] ").strip().lower()
+        again = input("Play another round? [y to continue / anything else to return] ").strip().lower()
         if again != "y":
-            print("\nThanks for playing. Cashing you out with "
-                  f"{bankroll:.2f} chips. Goodbye!")
+            print("\nLeaving the casino with "
+                  f"{bankroll:.2f} chips. Returning to main game...")
+            input("\nPress Enter to return to the main game...")
             break
 
-
-if __name__ == "__main__":
-    main()
+    # Never return negative to the main game
+    return max(0.0, bankroll)

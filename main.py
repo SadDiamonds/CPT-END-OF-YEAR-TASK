@@ -45,6 +45,9 @@ from config import (
     format_number,
 )
 
+# NEW: import blackjack minigame module
+import blackjack
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -928,7 +931,7 @@ def reset_for_inspiration():
     )
     render_frame(done_msg)
     global last_render
-    last_render=""
+    last_render = ""
     time.sleep(1.0)
 
 
@@ -1149,6 +1152,40 @@ def play_concepts_animation():
     time.sleep(0.7)
 
 
+# NEW: blackjack layer integration
+def open_blackjack_layer():
+    """
+    Temporarily leave the main UI and play blackjack as a separate 'layer'.
+    Uses current money as chips and writes back the result.
+    """
+    global listener_enabled, last_render, view_offset_x, view_offset_y
+
+    listener_enabled = False
+    clear_screen()
+
+    starting_money = float(game.get("money", 0.0))
+    try:
+        print("Entering blackjack casino...\n")
+        print(f"You are bringing ${starting_money:.2f} from the main game.\n")
+        new_money = blackjack.run_blackjack(starting_money)
+        game["money"] = max(0.0, float(new_money))
+        save_game()
+    except Exception as e:
+        err_lines = [
+            "Blackjack crashed. Returning to main game.",
+            f"Error: {e!r}",
+        ]
+        tmp = boxed_lines(err_lines, title=" Casino Error ", pad_top=1, pad_bottom=1)
+        render_frame(tmp)
+        time.sleep(1.5)
+    finally:
+        listener_enabled = True
+        last_render = ""
+        view_offset_x = 0
+        view_offset_y = 0
+        clear_screen()
+
+
 def key_listener():
     global KEY_PRESSED, running, listener_enabled
     if msvcrt is not None and os.name == "nt":
@@ -1220,7 +1257,6 @@ def render_ui(screen="work"):
     time_next = predict_next_inspiration_point()
     conc_time_next = predict_next_concept_point()
 
-    # Inspiration panel
     top_left_lines = []
     insp_title = f"=== {Fore.LIGHTYELLOW_EX}INSPIRATION{Style.RESET_ALL} ==="
     insp_tree_title = f"=== {Fore.LIGHTYELLOW_EX}INSPIRATION TREE{Style.RESET_ALL} ==="
@@ -1228,7 +1264,7 @@ def render_ui(screen="work"):
     conc_tree_title = f"=== {Fore.CYAN}CONCEPTS TREE{Style.RESET_ALL} ==="
     if (
         game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY // 2
-        or game.get("inspiration_unlocked", False) == True
+        or game.get("inspiration_unlocked", False) is True
     ):
         top_left_lines += [
             insp_title,
@@ -1273,7 +1309,6 @@ def render_ui(screen="work"):
                 "\033[1m[B] Back to Work\033[0m",
             ]
 
-    # Concepts panel
     bottom_left_lines = []
     if (game.get("money_since_reset", 0) >= CONCEPTS_UNLOCK_MONEY // 2) or game.get(
         "concepts_unlocked", False
@@ -1320,6 +1355,7 @@ def render_ui(screen="work"):
                 footer,
                 "\033[1m[B] Back to Work\033[0m",
             ]
+
     middle_lines = []
     middle_lines += render_desk_table()
     if game.get("focus_unlocked", False):
@@ -1346,15 +1382,17 @@ def render_ui(screen="work"):
         if game.get("auto_work_unlocked", False)
         else "Press W to work"
     )
-    middle_lines += ["", "Options: [W]ork  [U]pgrades  [Q]uit"]
+    # UPDATED: add blackjack to options
+    middle_lines += ["", "Options: [W]ork  [U]pgrades  [J]ackjack  [Q]uit"]
+
     term_width, term_height = get_term_size()
-    max_lines = max(len(top_left_lines), len(bottom_left_lines), len(middle_lines))
-    while len(top_left_lines) < term_h - 4:
+    while len(top_left_lines) < term_height - 4:
         top_left_lines.append("")
-    while len(bottom_left_lines) < term_h - 4:
+    while len(bottom_left_lines) < term_height - 4:
         bottom_left_lines.append("")
-    while len(middle_lines) < term_h - 4:
+    while len(middle_lines) < term_height - 4:
         middle_lines.insert(0, "")
+
     left_w = int(term_width * 0.25)
     mid_w = int(term_width * 0.35)
     right_w = int(term_width * 0.25)
@@ -1379,7 +1417,6 @@ def render_ui(screen="work"):
         else:
             left_part = _ljust_with_buffer(l, left_w, left_pad)
         mid_part = ansi_center(m, mid_w)
-
         if r in (insp_title, insp_tree_title, conc_title, conc_tree_title):
             right_part = " " * left_pad + ansi_center(r, right_content_w)
         else:
@@ -1397,9 +1434,9 @@ def render_ui(screen="work"):
         last_render = ""
         view_offset_x = 0
         view_offset_y = 0
-    visible_lines = box[view_offset_y : view_offset_y + term_h]
+    visible_lines = box[view_offset_y : view_offset_y + term_height]
     visible_lines = [
-        ansi_visible_slice(line, view_offset_x, term_w) for line in visible_lines
+        ansi_visible_slice(line, view_offset_x, term_width) for line in visible_lines
     ]
     output = "\033[H" + "\n".join(visible_lines)
     if output != last_render:
@@ -1419,7 +1456,7 @@ def main_loop():
             lines = ["The balancer adjusted upgrade costs:"]
             for table_name, aid, old, new in config.BALANCE_ADJUSTMENTS:
                 lines.append(f"{table_name}: {aid}: {old} -> {new}")
-            tmp = boxed_lines(lines, title=" Balancer " , pad_top=1, pad_bottom=1)
+            tmp = boxed_lines(lines, title=" Balancer ", pad_top=1, pad_bottom=1)
             render_frame(tmp)
             time.sleep(1.2)
     except Exception:
@@ -1473,6 +1510,9 @@ def main_loop():
                     clear_screen()
                     open_upgrade_menu()
                     render_ui(screen=current_screen)
+                elif k == "j" and current_screen == "work":
+                    open_blackjack_layer()
+                    current_screen = "work"
                 elif k == "f":
                     ok, msg = activate_focus()
                     tmp = boxed_lines([msg], title=" Focus ", pad_top=1, pad_bottom=1)
@@ -1505,7 +1545,6 @@ def main_loop():
                     elif k == "z":
                         game["insp_page"] = max(0, game["insp_page"] - 1)
                     elif k == "x":
-                        term_w, term_h = get_term_size()
                         game["insp_page"] = game["insp_page"] + 1
                     elif k.isdigit():
                         idx = get_tree_selection(INSPIRE_UPGRADES, "insp_page", k)
