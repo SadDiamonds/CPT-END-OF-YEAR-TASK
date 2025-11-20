@@ -397,38 +397,64 @@ def format_number(n):
     return f"-{s}" if neg else s
 
 
+# Only keep the improved balancer (with table_name, delta/min/max, printing, and adjustments)
 def _normalize_upgrade_costs():
+    if not AUTO_BALANCE_UPGRADES:
+        return
+
     def effect_strength_for(u):
-        vm = u.get("value_mult")
-        if vm is not None:
-            try:
+        try:
+            vm = u.get("value_mult")
+            if vm is not None:
                 f = float(vm)
                 return f if f >= 1.0 else (1.0 / f if f > 0 else 1.0)
-            except Exception:
-                pass
+        except Exception:
+            pass
+
         for key in ("base_value", "value"):
             if key in u:
                 try:
                     f = float(u[key])
-                    return f if f >= 1.0 else (1.0 / f if f > 0 else 1.0)
+                    if u.get("type") in ("add", "value"):
+                        denom = max(1.0, BASE_MONEY_GAIN)
+                        return max(1.0, 1.0 + (f / denom))
+                    if u.get("type") in ("work_mult", "reduce_delay"):
+                        return f if f >= 1.0 else (1.0 / f if f > 0 else 1.0)
+                    return f if f >= 1.0 else 1.0
                 except Exception:
                     pass
         return 1.0
 
-    def ensure_list(lst):
+    def ensure_list(lst, table_name):
+        adjustments = []
         for u in lst:
             try:
                 strength = effect_strength_for(u)
-                desired = round(strength + 0.3, 2)
+                desired = round(
+                    max(
+                        BALANCE_MIN_MULT,
+                        min(BALANCE_MAX_MULT, strength + BALANCE_DELTA),
+                    ),
+                    2,
+                )
                 cur = float(u.get("cost_mult", desired))
                 if cur < desired:
                     u["cost_mult"] = desired
+                    adjustments.append((u.get("id"), cur, desired))
             except Exception:
                 continue
+        if adjustments:
+            BALANCE_ADJUSTMENTS.extend(
+                [(table_name, aid, old, new) for (aid, old, new) in adjustments]
+            )
+        if PRINT_BALANCE_CHANGES and adjustments:
+            print(f"[BALANCE] Adjusted cost_mult in {table_name}:")
+            for aid, old, new in adjustments:
+                print(f"  {aid}: {old} -> {new}")
 
-    ensure_list(UPGRADES)
-    ensure_list(INSPIRE_UPGRADES)
-    ensure_list(CONCEPT_UPGRADES)
+    ensure_list(UPGRADES, "UPGRADES")
+    ensure_list(INSPIRE_UPGRADES, "INSPIRE_UPGRADES")
+    ensure_list(CONCEPT_UPGRADES, "CONCEPT_UPGRADES")
 
 
 AUTO_BALANCE_UPGRADES = True

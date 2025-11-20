@@ -93,24 +93,7 @@ game = {
 
 
 def load_game():
-    global game
-    if os.path.exists(SAVE_PATH):
-        try:
-            with open(SAVE_PATH, "r") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                game.update(data)
-        except:
-            pass
-    game.setdefault("money_mult", BASE_MONEY_MULT)
-    game.setdefault("focus_unlocked", False)
-    game.setdefault("auto_work_unlocked", False)
-    game.setdefault("inspiration_unlocked", False)
-    game.setdefault("concepts_unlocked", False)
-    game.setdefault("inspiration_upgrades", [])
-    game.setdefault("concept_upgrades", [])
-    game.setdefault("upgrade_levels", {})
-    game.setdefault("focus_max_bonus", 0)
+    load_game()
     game.setdefault("motivation", 0)
     game.setdefault("charge", 0.0)
     game.setdefault("best_charge", 0.0)
@@ -446,13 +429,10 @@ def boxed_lines(
     box_w = max(config.MIN_BOX_WIDTH, term_w - margin * 2)
     inner_w = box_w - 2
     layer = game.get("layer", 0)
-    if layer in (0, 1, 2):
-        style = config.BORDERS.get(0, list(config.BORDERS.values())[-1])
-    elif layer == 3:
-        style = config.BORDERS.get(3, config.BORDERS.get(0))
-    else:
-        style = config.BORDERS.get(layer, list(config.BORDERS.values())[-1])
-
+    style = config.BORDERS.get(layer)
+    if style is None:
+        # fallback to default border if layer is not found
+        style = list(config.BORDERS.values())[0]
     tl, tr, bl, br = style["tl"], style["tr"], style["bl"], style["br"]
     h, v = style["h"], style["v"]
 
@@ -550,13 +530,8 @@ def render_desk_table():
     for new, old in getattr(config, "UPGRADE_REPLACEMENT", {}).items():
         if new in owned_ids and old in owned_ids:
             owned_ids.remove(old)
-    owned_ids.sort(
-        key=lambda uid: (
-            config.DESK_ORDER.index(uid)
-            if uid in getattr(config, "DESK_ORDER", [])
-            else 999
-        )
-    )
+    # Sort owned_ids as-is (no DESK_ORDER in config)
+    owned_ids.sort()
     owned_arts = [UPGRADE_ART[uid] for uid in owned_ids if uid in UPGRADE_ART]
     empty_indices = [
         i for i, line in enumerate(table) if line.startswith("║") and line.endswith("║")
@@ -928,7 +903,7 @@ def reset_for_inspiration():
     )
     render_frame(done_msg)
     global last_render
-    last_render=""
+    last_render = ""
     time.sleep(1.0)
 
 
@@ -1419,7 +1394,7 @@ def main_loop():
             lines = ["The balancer adjusted upgrade costs:"]
             for table_name, aid, old, new in config.BALANCE_ADJUSTMENTS:
                 lines.append(f"{table_name}: {aid}: {old} -> {new}")
-            tmp = boxed_lines(lines, title=" Balancer " , pad_top=1, pad_bottom=1)
+            tmp = boxed_lines(lines, title=" Balancer ", pad_top=1, pad_bottom=1)
             render_frame(tmp)
             time.sleep(1.2)
     except Exception:
