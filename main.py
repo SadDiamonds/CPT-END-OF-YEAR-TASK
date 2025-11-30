@@ -120,6 +120,9 @@ def load_game():
     game.setdefault("battery_tier", 1)
     game.setdefault("insp_page", 0)
     game.setdefault("concept_page", 0)
+    game.setdefault("mystery_revealed", False)
+    if game.get("money_since_reset", 0) >= 100:
+        game["mystery_revealed"] = True
     save_game()
 
 
@@ -544,20 +547,68 @@ def boxed_lines(
 def render_desk_table():
     global steam
     table = LAYER_0_DESK.copy()
+    total_money = game.get("money_since_reset", 0)
+    
+    if total_money < 10:
+        table[1] = "║     Where am I?       ║"
+    elif total_money < 30:
+        table[1] = "║      A desk...        ║"
+    elif total_money < 100:
+        table[1] = "║     A workspace       ║"
+    elif total_money < 1000:
+        table[1] = "║    System Terminal    ║"
+    elif total_money < 5000:
+        table[1] = "║    Command Center     ║"
+        
     owned_ids = [u["id"] for u in config.UPGRADES if u["id"] in game.get("owned", [])]
     for new, old in getattr(config, "UPGRADE_REPLACEMENT", {}).items():
         if new in owned_ids and old in owned_ids:
             owned_ids.remove(old)
-    owned_ids.sort()
-    owned_arts = [UPGRADE_ART[uid] for uid in owned_ids if uid in UPGRADE_ART]
+    # keep the order from config.UPGRADES (don't sort) so placement is predictable
+    owned_arts = [uid for uid in owned_ids if uid in UPGRADE_ART]
+
     empty_indices = [
         i for i, line in enumerate(table) if line.startswith("║") and line.endswith("║")
     ]
-    empty_idx_iter = reversed(empty_indices)
-    for art in owned_arts:
+    available = list(empty_indices)
+    used_indices = set()
+    if "coffee" in owned_arts:
+        coffee_h = len(UPGRADE_ART["coffee"])
+        best_seq = None
+        if available:
+            center_val = available[len(available) // 2]
+        else:
+            center_val = None
+        for j in range(0, len(available) - coffee_h + 1):
+            seq = available[j : j + coffee_h]
+            ok = True
+            for k in range(coffee_h):
+                if seq[k] != available[j] + k:
+                    ok = False
+                    break
+            if not ok:
+                continue
+            seq_center = seq[coffee_h // 2]
+            dist = abs(seq_center - center_val) if center_val is not None else 0
+            if best_seq is None or dist < best_seq[0]:
+                best_seq = (dist, seq)
+        if best_seq:
+            _, seq = best_seq
+            for line_pos, art_line in zip(seq, UPGRADE_ART["coffee"]):
+                table[line_pos] = "║" + art_line.center(23) + "║"
+                used_indices.add(line_pos)
+            owned_arts.remove("coffee")
+    remaining_slots = [i for i in empty_indices if i not in used_indices]
+    empty_idx_iter = iter(reversed(remaining_slots))
+    for uid in owned_arts:
+        art = UPGRADE_ART.get(uid)
+        if not art:
+            continue
         art_height = len(art)
+        art_positions = []
         try:
-            art_positions = [next(empty_idx_iter) for _ in range(art_height)]
+            for _ in range(art_height):
+                art_positions.append(next(empty_idx_iter))
         except StopIteration:
             break
         for line_pos, art_line in zip(reversed(art_positions), art):
@@ -1352,21 +1403,73 @@ def render_ui(screen="work"):
             "[" + "#" * ffilled + "-" * (fbar_len - ffilled) + "]",
             "",
         ]
-    middle_lines.append(
-        f"MONEY: ${format_number(game.get('money', 0))}   GAIN: {format_number(effective_gain)} / cycle"
-        + (
-            f"   DELAY: {effective_delay:.2f}s"
-            if game.get("auto_work_unlocked", False)
-            else ""
+
+    total_money = game.get("money_since_reset", 0)
+    mystery_phase = total_money < 100
+
+    # Progressive Unobfuscation Logic
+    show_money = total_money >= 10
+    show_gain = total_money >= 30
+    show_options_hint = total_money >= 60
+
+    # Extended Ambiguity
+    # < 10: ???
+    # 10 - 100: Signal
+    # 100 - 1000: Data
+    # 1000 - 5000: Credits
+    # > 5000: Money
+    
+    currency_name = "MONEY"
+    if total_money < 100:
+        currency_name = "SIGNAL"
+    elif total_money < 1000:
+        currency_name = "DATA"
+    elif total_money < 5000:
+        currency_name = "CREDITS"
+
+    money_str = f"{currency_name}: ${format_number(game.get('money', 0))}" if show_money else f"{currency_name}: ???"
+    
+    if mystery_phase:
+        if show_gain:
+             middle_lines.append(f"{money_str}   GAIN: {format_number(effective_gain)} / cycle")
+        else:
+             middle_lines.append(money_str)
+    else:
+        middle_lines.append(
+            f"{money_str}   GAIN: {format_number(effective_gain)} / cycle"
+            + (
+                f"   DELAY: {effective_delay:.2f}s"
+                if game.get("auto_work_unlocked", False)
+                else ""
+            )
         )
-    )
-    middle_lines.append(work_bar)
-    middle_lines.append(
-        "Auto-work: ENABLED"
-        if game.get("auto_work_unlocked", False)
-        else "Press W to work"
-    )
-    middle_lines += ["", "Options: [W] Work  [U] Upgrades  [J] Backjack  [Q] Quit"]
+    
+    if total_money >= 10:
+        middle_lines.append(work_bar)
+    else:
+        middle_lines.append("") # Empty line instead of bar initially
+
+    if mystery_phase:
+        if total_money < 10:
+            middle_lines.append("Press W...")
+        elif total_money < 30:
+            middle_lines.append("Press W to work...")
+        else:
+            middle_lines.append("Press W to work")
+    else:
+        middle_lines.append(
+            "Auto-work: ENABLED"
+            if game.get("auto_work_unlocked", False)
+            else "Press W to work"
+        )
+    
+    if mystery_phase:
+        if show_options_hint:
+            middle_lines += ["", "Options: [W] Work  [Q] Quit"]
+        else:
+            middle_lines += ["", "Options: [W] ???"]
+    else:
+        middle_lines += ["", "Options: [W] Work  [U] Upgrades  [J] Backjack  [Q] Quit"]
 
     term_width, term_height = get_term_size()
     while len(top_left_lines) < term_height - 4:
@@ -1407,8 +1510,12 @@ def render_ui(screen="work"):
         combined_lines.append(
             left_part + " " * right_pad + mid_part + " " * right_pad + right_part
         )
+    
+    layer_title = f" Layer {game.get('layer', 0)} "
+    if mystery_phase:
+        layer_title = " ??? "
     box = boxed_lines(
-        combined_lines, title=f" Layer {game.get('layer', 0)} ", pad_top=1, pad_bottom=1
+        combined_lines, title=layer_title, pad_top=1, pad_bottom=1
     )
 
     if resized:
@@ -1429,8 +1536,65 @@ def render_ui(screen="work"):
         last_render = output
 
 
+def typewriter_message(lines, title, speed=0.03):
+    """
+    Renders a message box with a typewriter effect.
+    """
+    # Prepare the full content to know the final layout
+    # But we want to reveal character by character.
+    # Since boxed_lines handles wrapping, we need to be careful.
+    # We will assume the lines passed are already pre-wrapped or short enough,
+    # OR we rely on boxed_lines to wrap them, but that might cause jumping if we feed partial words.
+    # To be safe, let's pre-wrap them using the same logic as boxed_lines or just trust the input.
+    # The input `lines` is usually a list of strings.
+    
+    # We will iterate through the lines and characters.
+    # We maintain a list of "current lines" to display.
+    
+    display_lines = [""] * len(lines)
+    
+    for i, line in enumerate(lines):
+        # If it's an empty line, just set it and continue (no delay for empty lines)
+        if not line:
+            display_lines[i] = ""
+            # Render once to show the empty line appearing? 
+            # Actually, let's just skip delay for empty lines but we still need to render the frame
+            # if we want the box to grow?
+            # But boxed_lines expects a list of all lines.
+            # If we pass ["", "", ""] it renders a box with 3 empty lines.
+            # If we pass ["H", "", ""] it renders 'H' on first line.
+            
+            # Let's just fill it.
+            continue
+            
+        for char in line:
+            display_lines[i] += char
+            
+            # Construct the full list for boxed_lines.
+            # We want to show the full height of the box from the start?
+            # Or grow it?
+            # Let's show full height to avoid jitter.
+            
+            # We need to pass the full list of lines, but some are still empty strings.
+            # display_lines already has empty strings for future lines.
+            
+            frame = boxed_lines(display_lines, title=title, pad_top=1, pad_bottom=1)
+            render_frame(frame)
+            time.sleep(speed)
+            
+            # Check for skip
+            if KEY_PRESSED:
+                # If user presses a key, we could speed up?
+                # For now, let's just let it play.
+                pass
+                
+    # Ensure final render
+    frame = boxed_lines(lines, title=title, pad_top=1, pad_bottom=1)
+    render_frame(frame)
+
+
 def main_loop():
-    global KEY_PRESSED, running, work_timer, last_tick_time, last_manual_time
+    global KEY_PRESSED, running, work_timer, last_tick_time, last_manual_time, last_render
     load_game()
     try:
         if getattr(config, "AUTO_BALANCE_UPGRADES", False) and getattr(
@@ -1446,6 +1610,18 @@ def main_loop():
         pass
     last_tick_time = time.time()
     threading.Thread(target=key_listener, daemon=True).start()
+
+    if game.get("money_since_reset", 0) == 0 and game.get("money", 0) == 0:
+        msg = [
+            "You wake up at a desk.",
+            "It's dark.",
+            "You don't remember how you got here.",
+            "",
+            "...",
+        ]
+        typewriter_message(msg, title=" ??? ", speed=0.05)
+        time.sleep(1.0)
+
     if game.get("layer", 0) >= 1 and not game.get("inspiration_unlocked", False):
         game["inspiration_unlocked"] = True
         game["layer"] = 1
@@ -1455,6 +1631,20 @@ def main_loop():
     try:
         while running:
             work_tick()
+
+            if not game.get("mystery_revealed", False) and game.get("money_since_reset", 0) >= 100:
+                game["mystery_revealed"] = True
+                msg = [
+                    "You found a way to make money.",
+                    "Or at least, something that looks like money.",
+                    "",
+                    "Upgrades unlocked."
+                ]
+                typewriter_message(msg, title=" Discovery ", speed=0.04)
+                time.sleep(1.5)
+                save_game()
+                last_render = ""
+
             render_ui(screen=current_screen)
             if KEY_PRESSED:
                 k_raw = KEY_PRESSED
