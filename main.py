@@ -563,8 +563,77 @@ def play_slot_select_animation(selected_idx, frames=6, delay=0.08):
         time.sleep(delay)
 
 
+def finalize_slot_choice(selected):
+    global ACTIVE_SLOT_INDEX
+    summaries = collect_slot_summaries()
+    summary = summaries[selected]
+    if summary["legacy"] and summary.get("source_path"):
+        try:
+            shutil.copy(summary["source_path"], summary["target_path"])
+        except Exception:
+            pass
+    ACTIVE_SLOT_INDEX = selected
+    clear_screen()
+
+
+def choose_save_slot_windows():
+    selected = 0
+    phase = 0
+    while True:
+        summaries = collect_slot_summaries()
+        render_slot_menu(summaries, highlight_idx=selected, phase=phase)
+        phase = (phase + 1) % 8
+        frame_end = time.time() + 0.08
+        while time.time() < frame_end:
+            if not msvcrt.kbhit():
+                time.sleep(0.01)
+                continue
+            ch = msvcrt.getwch()
+            if not ch:
+                break
+            if ch in ("\x00", "\xe0"):
+                code = msvcrt.getwch()
+                if code == "H":
+                    selected = (selected - 2) % SAVE_SLOT_COUNT
+                elif code == "P":
+                    selected = (selected + 2) % SAVE_SLOT_COUNT
+                elif code == "M":
+                    selected = (selected + 1) % SAVE_SLOT_COUNT
+                elif code == "K":
+                    selected = (selected - 1) % SAVE_SLOT_COUNT
+                break
+            lower = ch.lower()
+            if lower == "q":
+                clear_screen()
+                print("Exiting.")
+                sys.exit(0)
+            if lower == "d":
+                confirm = input(f"Erase slot {selected + 1}? Type YES to confirm: ")
+                if confirm.strip().lower() == "yes":
+                    path = slot_save_path(selected)
+                    if os.path.exists(path):
+                        os.remove(path)
+                    if selected == 0 and os.path.exists(LEGACY_SAVE_PATH):
+                        os.remove(LEGACY_SAVE_PATH)
+                break
+            if ch in ("\r", "\n"):
+                play_slot_select_animation(selected)
+                finalize_slot_choice(selected)
+                return
+            if ch.isdigit():
+                idx = int(ch) - 1
+                if 0 <= idx < SAVE_SLOT_COUNT:
+                    play_slot_select_animation(idx)
+                    finalize_slot_choice(idx)
+                    return
+            break
+
+
 def choose_save_slot():
     global ACTIVE_SLOT_INDEX
+    if msvcrt is not None and os.name == "nt":
+        choose_save_slot_windows()
+        return
     selected = 0
     phase = 0
     deleting = False
@@ -607,15 +676,7 @@ def choose_save_slot():
                 continue
             if ch == "\r" or ch == "\n":
                 play_slot_select_animation(selected)
-                summaries = collect_slot_summaries()
-                summary = summaries[selected]
-                if summary["legacy"] and summary["source_path"]:
-                    try:
-                        shutil.copy(summary["source_path"], summary["target_path"])
-                    except Exception:
-                        pass
-                ACTIVE_SLOT_INDEX = selected
-                clear_screen()
+                finalize_slot_choice(selected)
                 return
     except Exception:
         # fallback to simple input if arrow handling fails
@@ -628,8 +689,7 @@ def choose_save_slot():
             if choice.isdigit():
                 idx = int(choice) - 1
                 if 0 <= idx < SAVE_SLOT_COUNT:
-                    ACTIVE_SLOT_INDEX = idx
-                    clear_screen()
+                    finalize_slot_choice(idx)
                     return
 
 
