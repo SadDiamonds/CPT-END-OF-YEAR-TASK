@@ -116,6 +116,7 @@ game = {
     "veils": 0,
     "sigils": 0,
     "knowledge": {},
+    "upgrades_unlocked": False,
     "inspiration_resets": 0,
     "concept_resets": 0,
     "stability_currency": 0.0,
@@ -368,6 +369,7 @@ def load_game():
     game.setdefault("veils", 0)
     game.setdefault("sigils", 0)
     game.setdefault("knowledge", {})
+    game.setdefault("upgrades_unlocked", False)
     game.setdefault("inspiration_resets", 0)
     game.setdefault("concept_resets", 0)
     game.setdefault("stability_currency", 0.0)
@@ -384,6 +386,8 @@ def load_game():
     if game.get("money_since_reset", 0) >= 100:
         game["mystery_revealed"] = True
     recalc_wake_timer_state()
+    if not game.get("upgrades_unlocked", False) and game.get("owned"):
+        game["upgrades_unlocked"] = True
     refresh_knowledge_flags()
     save_game()
 
@@ -766,8 +770,12 @@ def get_term_size():
 
 
 def clear_screen():
-    sys.stdout.write("\033[H\033[J")
-    sys.stdout.flush()
+    if os.name == "nt":
+        os.system("cls")
+        sys.stdout.flush()
+    else:
+        sys.stdout.write("\033[H\033[J")
+        sys.stdout.flush()
 
 
 def render_frame(lines):
@@ -1731,7 +1739,11 @@ def open_wake_timer_menu(auto_invoked=False):
             desc = upg.get("desc")
             if desc:
                 lines.append(f"   {desc}")
-            lines.append(f"   {bonus}")
+            effect_lines = [bonus]
+            if upg.get("unlock_upgrades"):
+                effect_lines.append("Unlocks the upgrade bay")
+            for info in effect_lines:
+                lines.append(f"   {info}")
         lines += ["", "Press number to install, B to back."]
         box = boxed_lines(lines, title=" Stabilize ", pad_top=1, pad_bottom=1)
         cur_size = get_term_size()
@@ -1771,18 +1783,39 @@ def buy_wake_timer_upgrade(upg):
     purchased.append(upg["id"])
     if upg.get("grant_infinite"):
         game["wake_timer_infinite"] = True
+    extras = []
+    if upg.get("unlock_upgrades") and not game.get("upgrades_unlocked", False):
+        game["upgrades_unlocked"] = True
+        extras.append("Upgrade bay rebooted.")
     recalc_wake_timer_state()
     game["wake_timer"] = game.get("wake_timer_cap", WAKE_TIMER_START)
     game["wake_timer_locked"] = False
     game["wake_timer_notified"] = False
     save_game()
     if game.get("wake_timer_infinite", False):
-        return f"{upg['name']} sealed the loop. Time is yours now."
-    return f"{upg['name']} installed. Stability restored."
+        base_msg = f"{upg['name']} sealed the loop. Time is yours now."
+    else:
+        base_msg = f"{upg['name']} installed. Stability restored."
+    if extras:
+        base_msg += " " + " ".join(extras)
+    return base_msg
 
 
 def open_upgrade_menu():
     global KEY_PRESSED
+    if not game.get("upgrades_unlocked", False):
+        tmp = boxed_lines(
+            [
+                "The upgrade bay is dark.",
+                f"Restore power via the Stabilizer console ({STABILITY_CURRENCY_NAME}).",
+            ],
+            title=" Upgrade Bay Offline ",
+            pad_top=1,
+            pad_bottom=1,
+        )
+        render_frame(tmp)
+        time.sleep(1.2)
+        return
     if mark_known("ui_options_full"):
         save_game()
     last_box = None
@@ -2212,20 +2245,24 @@ def render_ui(screen="work"):
     else:
         middle_lines.append(work_prompt)
 
+    option_payload = "Options: [W] Work  "
+    if game.get("upgrades_unlocked", False):
+        option_payload += "[U] Upgrades  "
+    else:
+        option_payload += "[U] Offline  "
+    option_payload += "[J] Blackjack  [Q] Quit"
     if mystery_phase:
         option_line = reveal_text(
             "ui_options_hint", "Options: [W] Work  [Q] Quit", "Options: [W] ???"
         )
     else:
-        option_line = reveal_text(
-            "ui_options_full",
-            "Options: [W] Work  [U] Upgrades  [J] Blackjack  [Q] Quit",
-            "Options: [W] ???",
-        )
+        option_line = reveal_text("ui_options_full", option_payload, "Options: [W] ???")
     option_line += ""
     middle_lines += ["", option_line]
     if wake_timer_blocked():
-        middle_lines.append("(Unconscious) Spend clicks in Stabilize menu (T).")
+        middle_lines.append("(Unconscious) Spend Sparks in Stabilize menu (T).")
+    elif not game.get("upgrades_unlocked", False):
+        middle_lines.append("??? offline.")
 
     term_width, term_height = get_term_size()
     while len(top_left_lines) < term_height - 4:

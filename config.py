@@ -10,6 +10,14 @@ STABILITY_REWARD_EXP = 0.42
 WAKE_TIMER_START = 90
 WAKE_TIMER_UPGRADES = [
     {
+        "id": "wake_console",
+        "name": "Power Relay",
+        "cost": 5,
+        "time_bonus": 0,
+        "unlock_upgrades": True,
+        "desc": "Unlocks upgrades",
+    },
+    {
         "id": "wake_breath",
         "name": "Steady Breath",
         "cost": 80,
