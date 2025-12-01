@@ -2193,7 +2193,7 @@ def render_ui(screen="work"):
         f"{STABILITY_CURRENCY_NAME}: {Fore.MAGENTA}{sparks_amount}{Style.RESET_ALL}",
     ]
     if not game.get("wake_timer_infinite", False):
-        middle_lines.append("[T] Spend stabilizers")
+        middle_lines.append("[T] Buy stabilizers")
     middle_lines.append("")
     middle_lines += render_desk_table()
     if game.get("focus_unlocked", False):
