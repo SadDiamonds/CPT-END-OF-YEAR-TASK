@@ -2,7 +2,7 @@ import json, os, time, sys, threading, shutil, math, select, random, textwrap, s
 
 try:
     import msvcrt
-except:
+except ImportError:
     msvcrt = None
 
 try:
@@ -42,6 +42,15 @@ from config import (
     BATTERY_TIERS,
     BORDERS,
     UPGRADES,
+    LAYER_FLOW,
+    LAYER_BY_KEY,
+    LAYER_BY_ID,
+    CURRENCY_SYMBOL,
+    WAKE_TIMER_START,
+    WAKE_TIMER_UPGRADES,
+    STABILITY_CURRENCY_NAME,
+    STABILITY_REWARD_MULT,
+    STABILITY_REWARD_EXP,
     format_number,
 )
 
@@ -50,7 +59,19 @@ import blackjack
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
-SAVE_PATH = os.path.join(DATA_DIR, "save.json")
+LEGACY_SAVE_PATH = os.path.join(DATA_DIR, "save.json")
+SAVE_SLOT_COUNT = 4
+ACTIVE_SLOT_INDEX = 0
+
+
+def slot_save_path(idx):
+    idx = max(0, min(SAVE_SLOT_COUNT - 1, int(idx)))
+    return os.path.join(DATA_DIR, f"save_slot_{idx + 1}.json")
+
+
+def current_save_path():
+    return slot_save_path(ACTIVE_SLOT_INDEX)
+
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 RESET_SEQ = Style.RESET_ALL if "Style" in globals() else "\x1b[0m"
@@ -91,14 +112,236 @@ game = {
     "battery_tier": 1,
     "insp_page": 0,
     "concept_page": 0,
+    "pulses": 0,
+    "veils": 0,
+    "sigils": 0,
+    "knowledge": {},
+    "inspiration_resets": 0,
+    "concept_resets": 0,
+    "stability_currency": 0.0,
+    "stability_resets": 0,
+    "wake_timer": WAKE_TIMER_START,
+    "wake_timer_cap": WAKE_TIMER_START,
+    "wake_timer_infinite": False,
+    "wake_timer_locked": False,
+    "wake_timer_upgrades": [],
+    "wake_timer_notified": False,
+    "needs_stability_reset": False,
+    "play_time": 0.0,
+    "last_save_timestamp": 0.0,
 }
+
+
+def knowledge_store():
+    return game.setdefault("knowledge", {})
+
+
+def is_known(tag):
+    if not tag:
+        return False
+    return bool(knowledge_store().get(tag))
+
+
+def mark_known(tag):
+    if not tag:
+        return False
+    known = knowledge_store()
+    if known.get(tag):
+        return False
+    known[tag] = True
+    return True
+
+
+def reveal_text(tag, text, placeholder="???"):
+    return text if is_known(tag) else placeholder
+
+
+def layer_name(key, placeholder="???"):
+    layer_def = LAYER_BY_KEY.get(key)
+    if not layer_def:
+        return placeholder
+    fallback = layer_def.get("name", placeholder)
+    return reveal_text(f"layer_{key}", fallback, placeholder)
+
+
+def layer_currency_name(key, placeholder="???"):
+    layer_def = LAYER_BY_KEY.get(key)
+    if not layer_def:
+        return placeholder
+    return reveal_text(
+        f"currency_{key}", layer_def.get("currency_name", placeholder), placeholder
+    )
+
+
+def layer_currency_suffix(key, placeholder=""):
+    layer_def = LAYER_BY_KEY.get(key)
+    if not layer_def:
+        return placeholder
+    return reveal_text(
+        f"currency_{key}", layer_def.get("currency_suffix", placeholder), placeholder
+    )
+
+
+def current_layer_label():
+    layer_idx = game.get("layer", 0)
+    layer_def = LAYER_BY_ID.get(layer_idx)
+    if not layer_def:
+        return f"Layer {layer_idx}"
+    fallback = f"Layer {layer_idx}"
+    return reveal_text(
+        f"layer_{layer_def['key']}", layer_def.get("name", fallback), fallback
+    )
+
+
+KNOWLEDGE_REQUIREMENTS = {
+    "layer_wake": {"money_since_reset": 2_500, "play_time": 120},
+    "ui_options_hint": {"money_since_reset": 4_000, "play_time": 180},
+    "currency_wake": {"inspiration_resets": 1},
+    "ui_currency_clear": {"inspiration_resets": 1},
+    "ui_upgrade_catalogue": {"inspiration_resets": 1},
+    "ui_auto_prompt": {"concept_resets": 1, "play_time": 480},
+    "layer_corridor": {"inspiration_resets": 2},
+    "currency_corridor": {"inspiration_resets": 3},
+    "layer_archive": {"concept_resets": 2},
+    "currency_archive": {"concept_resets": 3},
+}
+
+
+def knowledge_requirements_met(tag):
+    reqs = KNOWLEDGE_REQUIREMENTS.get(tag)
+    if not reqs:
+        return True
+    for metric, threshold in reqs.items():
+        if metric == "money_since_reset":
+            current = game.get("money_since_reset", 0)
+        elif metric == "play_time":
+            current = game.get("play_time", 0.0)
+        elif metric == "inspiration_resets":
+            current = game.get("inspiration_resets", 0)
+        elif metric == "concept_resets":
+            current = game.get("concept_resets", 0)
+        else:
+            current = game.get(metric, 0)
+        if current < threshold:
+            return False
+    return True
+
+
+def attempt_reveal(tag):
+    if not knowledge_requirements_met(tag):
+        return False
+    return mark_known(tag)
+
+
+def recalc_wake_timer_state():
+    purchased = set(game.get("wake_timer_upgrades", []))
+    cap = WAKE_TIMER_START
+    infinite = game.get("wake_timer_infinite", False)
+    for upg in WAKE_TIMER_UPGRADES:
+        if upg["id"] in purchased:
+            cap += upg.get("time_bonus", 0)
+            if upg.get("grant_infinite"):
+                infinite = True
+    game["wake_timer_cap"] = cap
+    game["wake_timer_infinite"] = infinite
+    if infinite:
+        game["wake_timer_locked"] = False
+        game["wake_timer_notified"] = False
+        game["wake_timer"] = cap
+    else:
+        remaining = max(0.0, min(game.get("wake_timer", cap), cap))
+        game["wake_timer"] = remaining
+        game["wake_timer_locked"] = remaining <= 0
+
+
+def wake_timer_blocked():
+    return (not game.get("wake_timer_infinite", False)) and game.get("wake_timer", 0) <= 0
+
+
+def format_clock(seconds):
+    seconds = max(0, int(seconds))
+    minutes = seconds // 60
+    sec = seconds % 60
+    return f"{minutes:02d}:{sec:02d}"
+
+
+def show_wake_timer_warning():
+    if game.get("wake_timer_infinite", False) or not wake_timer_blocked():
+        return
+    if game.get("wake_timer_notified", False):
+        return
+    msg = [
+        "Your vision tunnels as the loop crushes in.",
+        f"Collapse is inevitable. The implosion will mint {STABILITY_CURRENCY_NAME}.",
+    ]
+    tmp = boxed_lines(msg, title=" Collapse Imminent ", pad_top=1, pad_bottom=1)
+    render_frame(tmp)
+    time.sleep(0.9)
+    game["wake_timer_notified"] = True
+
+
+def build_wake_timer_line():
+    if game.get("wake_timer_infinite", False):
+        return "Stability: ∞ (secured)"
+    remaining = max(0, int(game.get("wake_timer", WAKE_TIMER_START)))
+    cap = max(1, int(game.get("wake_timer_cap", WAKE_TIMER_START)))
+    ratio = remaining / cap if cap else 0
+    if ratio > 0.45:
+        status = "steady"
+    elif ratio > 0.2:
+        status = "faltering"
+    else:
+        status = "critical"
+    label = f"Stability: {format_clock(remaining)} ({status})"
+    if wake_timer_blocked():
+        label += "  collapsing"
+    return label
+
+
+def veil_text(text, min_visible=1, placeholder="?"):
+    if not text:
+        return placeholder * 3
+    result = []
+    visible_in_word = 0
+    for ch in text:
+        if ch.isalnum():
+            if visible_in_word < min_visible:
+                result.append(ch)
+                visible_in_word += 1
+            else:
+                result.append(placeholder)
+        else:
+            result.append(ch)
+            visible_in_word = 0
+    return "".join(result)
+
+
+def veil_numeric_string(text, reveal_ratio=0.35, placeholder="?"):
+    if not text:
+        return placeholder * 3
+    chars = list(text)
+    signal_indices = [i for i, ch in enumerate(chars) if ch.isalnum()]
+    reveal_count = max(1, int(len(signal_indices) * reveal_ratio))
+    for offset, idx in enumerate(signal_indices):
+        if offset >= reveal_count:
+            chars[idx] = placeholder
+    return "".join(chars)
+
+
+def format_currency(amount):
+    rendered = format_number(amount)
+    return f"{CURRENCY_SYMBOL}{rendered}"
 
 
 def load_game():
     global game
-    if os.path.exists(SAVE_PATH):
+    slot_path = current_save_path()
+    source_path = slot_path
+    if (not os.path.exists(slot_path)) and ACTIVE_SLOT_INDEX == 0 and os.path.exists(LEGACY_SAVE_PATH):
+        source_path = LEGACY_SAVE_PATH
+    if os.path.exists(source_path):
         try:
-            with open(SAVE_PATH, "r") as f:
+            with open(source_path, "r") as f:
                 data = json.load(f)
             if isinstance(data, dict):
                 game.update(data)
@@ -121,17 +364,286 @@ def load_game():
     game.setdefault("insp_page", 0)
     game.setdefault("concept_page", 0)
     game.setdefault("mystery_revealed", False)
+    game.setdefault("pulses", 0)
+    game.setdefault("veils", 0)
+    game.setdefault("sigils", 0)
+    game.setdefault("knowledge", {})
+    game.setdefault("inspiration_resets", 0)
+    game.setdefault("concept_resets", 0)
+    game.setdefault("stability_currency", 0.0)
+    game.setdefault("stability_resets", 0)
+    game.setdefault("wake_timer", WAKE_TIMER_START)
+    game.setdefault("wake_timer_cap", WAKE_TIMER_START)
+    game.setdefault("wake_timer_infinite", False)
+    game.setdefault("wake_timer_locked", False)
+    game.setdefault("wake_timer_upgrades", [])
+    game.setdefault("wake_timer_notified", False)
+    game.setdefault("needs_stability_reset", False)
+    game.setdefault("play_time", 0.0)
+    game.setdefault("last_save_timestamp", 0.0)
     if game.get("money_since_reset", 0) >= 100:
         game["mystery_revealed"] = True
+    recalc_wake_timer_state()
+    refresh_knowledge_flags()
     save_game()
 
 
 def save_game():
     try:
-        with open(SAVE_PATH, "w") as f:
+        game["last_save_timestamp"] = time.time()
+    except Exception:
+        game["last_save_timestamp"] = time.time()
+    target_path = current_save_path()
+    try:
+        with open(target_path, "w") as f:
             json.dump(game, f)
     except:
         pass
+
+
+def format_duration(seconds):
+    seconds = int(seconds or 0)
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    return f"{hours:02d}h {minutes:02d}m"
+
+
+def estimate_progress(snapshot):
+    if not snapshot:
+        return 0
+    layer_max = max(1, len(LAYER_FLOW) - 1)
+    layer_score = min(snapshot.get("layer", 0), layer_max) / layer_max
+    money = max(snapshot.get("money_since_reset", 0), snapshot.get("money", 0))
+    wealth_score = min(1.0, math.log10(money + 1) / 8.0)
+    progress = (layer_score * 0.7 + wealth_score * 0.3) * 100
+    return int(max(0, min(100, round(progress))))
+
+
+def build_progress_bar(pct, width=16):
+    pct = max(0, min(100, pct))
+    filled = int((pct / 100) * width)
+    return f"[{'#' * filled}{'-' * (width - filled)}] {pct:3d}%"
+
+
+def load_slot_payload(path):
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def collect_slot_summaries():
+    summaries = []
+    legacy_exists = os.path.exists(LEGACY_SAVE_PATH)
+    for idx in range(SAVE_SLOT_COUNT):
+        target_path = slot_save_path(idx)
+        data = None
+        source_path = None
+        legacy = False
+        if os.path.exists(target_path):
+            data = load_slot_payload(target_path)
+            source_path = target_path
+        elif idx == 0 and legacy_exists:
+            data = load_slot_payload(LEGACY_SAVE_PATH)
+            source_path = LEGACY_SAVE_PATH
+            legacy = data is not None
+        layer_idx = data.get("layer", 0) if data else 0
+        layer_info = LAYER_BY_ID.get(layer_idx, {})
+        layer_label = layer_info.get("name", f"Layer {layer_idx}")
+        border_id = layer_info.get("border_id", layer_idx)
+        progress_pct = estimate_progress(data)
+        last_ts = data.get("last_save_timestamp") if data else None
+        last_seen = (
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(last_ts))
+            if last_ts
+            else "--"
+        )
+        play_time = format_duration(data.get("play_time", 0)) if data else "00h 00m"
+        money_label = format_currency(data.get("money", 0)) if data else "0"
+        summaries.append(
+            {
+                "index": idx,
+                "display_index": idx + 1,
+                "data": data,
+                "exists": data is not None,
+                "layer_label": layer_label,
+                "progress": progress_pct,
+                "last_seen": last_seen,
+                "play_time": play_time,
+                "money": money_label,
+                "target_path": target_path,
+                "source_path": source_path,
+                "legacy": legacy,
+                "status": "Legacy" if legacy else ("Active" if data else "Empty"),
+                "border_id": border_id,
+            }
+        )
+    return summaries
+
+
+def build_slot_card(summary, width, height, highlight=False, phase=0):
+    layer_border_id = summary.get("border_id", 0)
+    style = BORDERS.get(layer_border_id, list(BORDERS.values())[0])
+    inner_w = width - 2
+    glow_seq = ["·", "*", "o", "+"]
+    glow_char = glow_seq[phase % len(glow_seq)] if highlight else style["h"]
+
+    def frame_line(text=""):
+        raw = text[:inner_w]
+        padded = raw.center(inner_w)
+        return f"{style['v']}{padded}{style['v']}"
+
+    lines = []
+    top = style["tl"] + glow_char * inner_w + style["tr"]
+    lines.append(top)
+    header = f"Slot {summary['display_index']}"
+    lines.append(frame_line(header))
+    if summary["exists"]:
+        lines.append(frame_line(summary["layer_label"]))
+        bar_width = max(6, inner_w - 2)
+        lines.append(frame_line(build_progress_bar(summary["progress"], bar_width)))
+        lines.append(frame_line(f"Time {summary['play_time']}"))
+        lines.append(frame_line(f"Funds {summary['money']}"))
+        lines.append(frame_line(f"Last {summary['last_seen']}"))
+        footer_text = "(legacy copy)" if summary["legacy"] else summary["status"]
+        lines.append(frame_line(footer_text))
+    else:
+        lines.append(frame_line("Empty"))
+        lines.append(frame_line(""))
+        lines.append(frame_line("Ready"))
+        lines.append(frame_line(""))
+        lines.append(frame_line(""))
+        lines.append(frame_line(""))
+    while len(lines) < height - 1:
+        lines.append(frame_line(""))
+    accent = glow_char * inner_w if highlight else style["h"] * inner_w
+    bottom = style["bl"] + accent + style["br"]
+    lines.append(bottom)
+    return lines
+
+
+def render_slot_menu(summaries, highlight_idx=None, phase=0):
+    term_w, term_h = get_term_size()
+    cols = 2
+    rows = 2
+    card_w = max(30, term_w // cols - 6)
+    card_h = max(12, (term_h - 8) // rows)
+    cards = [
+        build_slot_card(s, card_w, card_h, highlight=(highlight_idx == i), phase=phase)
+        for i, s in enumerate(summaries)
+    ]
+    grid = []
+    for r in range(rows):
+        row_cards = cards[r * cols : (r + 1) * cols]
+        if not row_cards:
+            continue
+        for line_idx in range(card_h):
+            parts = [card[line_idx] if line_idx < len(card) else " " * card_w for card in row_cards]
+            grid.append("   ".join(parts))
+        grid.append("")
+    clear_screen()
+    title = "Select Relay File"
+    print()
+    print(title.center(term_w))
+    print()
+    for line in grid:
+        print(line.center(term_w))
+    print()
+    print("Use arrows to move, Enter to load, D to delete, Q to quit.".center(term_w))
+
+
+def play_slot_select_animation(selected_idx, frames=6, delay=0.08):
+    for phase in range(frames):
+        summaries = collect_slot_summaries()
+        render_slot_menu(summaries, highlight_idx=selected_idx, phase=phase)
+        time.sleep(delay)
+
+
+def choose_save_slot():
+    global ACTIVE_SLOT_INDEX
+    selected = 0
+    phase = 0
+    deleting = False
+    try:
+        import termios, tty
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+        while True:
+            summaries = collect_slot_summaries()
+            render_slot_menu(summaries, highlight_idx=selected, phase=phase)
+            phase = (phase + 1) % 8
+            ch = sys.stdin.read(1)
+            if ch == "\x1b":
+                seq = sys.stdin.read(2)
+                if seq == "[A":  # up
+                    selected = (selected - 2) % SAVE_SLOT_COUNT
+                elif seq == "[B":  # down
+                    selected = (selected + 2) % SAVE_SLOT_COUNT
+                elif seq == "[C":  # right
+                    selected = (selected + 1) % SAVE_SLOT_COUNT
+                elif seq == "[D":  # left
+                    selected = (selected - 1) % SAVE_SLOT_COUNT
+                continue
+            if ch.lower() == "q":
+                clear_screen()
+                print("Exiting.")
+                sys.exit(0)
+            if ch.lower() == "d":
+                deleting = True
+                confirm = input(f"Erase slot {selected + 1}? Type YES to confirm: ")
+                if confirm.strip().lower() == "yes":
+                    path = slot_save_path(selected)
+                    if os.path.exists(path):
+                        os.remove(path)
+                    if selected == 0 and os.path.exists(LEGACY_SAVE_PATH):
+                        os.remove(LEGACY_SAVE_PATH)
+                deleting = False
+                continue
+            if ch == "\r" or ch == "\n":
+                play_slot_select_animation(selected)
+                summaries = collect_slot_summaries()
+                summary = summaries[selected]
+                if summary["legacy"] and summary["source_path"]:
+                    try:
+                        shutil.copy(summary["source_path"], summary["target_path"])
+                    except Exception:
+                        pass
+                ACTIVE_SLOT_INDEX = selected
+                clear_screen()
+                return
+    except Exception:
+        # fallback to simple input if arrow handling fails
+        while True:
+            summaries = collect_slot_summaries()
+            render_slot_menu(summaries, highlight_idx=selected)
+            choice = input(">> ").strip().lower()
+            if choice == "q":
+                sys.exit(0)
+            if choice.isdigit():
+                idx = int(choice) - 1
+                if 0 <= idx < SAVE_SLOT_COUNT:
+                    ACTIVE_SLOT_INDEX = idx
+                    clear_screen()
+                    return
+
+
+def refresh_knowledge_flags():
+    updated = False
+    if game.get("mystery_revealed"):
+        updated |= attempt_reveal("layer_wake")
+        updated |= attempt_reveal("ui_options_hint")
+        updated |= attempt_reveal("currency_wake")
+        updated |= attempt_reveal("ui_currency_clear")
+        updated |= attempt_reveal("ui_upgrade_catalogue")
+    if game.get("auto_work_unlocked"):
+        updated |= attempt_reveal("ui_auto_prompt")
+    return updated
 
 
 def ansi_center(text, width):
@@ -259,6 +771,11 @@ def wrap_ui_text(text):
 def build_tree_lines(upgrades, get_info_fn, page_key):
     term_w, term_h = get_term_size()
     max_lines = term_h // 2 - 6
+    pool_suffix = (
+        layer_currency_suffix("corridor")
+        if upgrades is INSPIRE_UPGRADES
+        else layer_currency_suffix("archive")
+    )
     pages, current, used = [], [], 0
     for i, u in enumerate(upgrades, start=1):
         owned, level = get_info_fn(u["id"])
@@ -276,9 +793,9 @@ def build_tree_lines(upgrades, get_info_fn, page_key):
             if level >= max_level
             else (f"(lvl {level}/{max_level})" if level > 0 else "")
         )
+        suffix_text = f" {pool_suffix}" if pool_suffix else ""
         cost_text = (
-            f" - Cost: {format_number(cost)}"
-            + ("i" if upgrades is INSPIRE_UPGRADES else "Co")
+            f" - Cost: {format_number(cost)}{suffix_text}"
             if level < max_level
             else ""
         )
@@ -431,7 +948,7 @@ def compute_gain_and_delay(auto=False):
     for t in CHARGE_THRESHOLDS:
         if t["amount"] in game.get("charge_threshold", []):
             rtype, rval = t["reward_type"], t["reward_value"]
-            if rtype in ("x$", "xmult"):
+            if rtype in ("x¤", "xmult"):
                 gain_mult *= rval * buff_mult
             elif rtype == "-cd":
                 delay_mult *= rval**buff_mult
@@ -451,9 +968,11 @@ def boxed_lines(
     box_w = max(config.MIN_BOX_WIDTH, term_w - margin * 2)
     inner_w = box_w - 2
     layer = game.get("layer", 0)
-    style = config.BORDERS.get(layer)
+    layer_def = LAYER_BY_ID.get(layer, {})
+    border_key = layer_def.get("border_id", layer)
+    style = BORDERS.get(border_key)
     if style is None:
-        style = list(config.BORDERS.values())[0]
+        style = list(BORDERS.values())[0]
     tl, tr, bl, br = style["tl"], style["tr"], style["bl"], style["br"]
     h, v = style["h"], style["v"]
 
@@ -662,15 +1181,70 @@ def render_desk_table():
 def perform_work(gain, eff_delay, manual=False):
     global work_timer
     now = time.time()
+    if wake_timer_blocked():
+        if manual:
+            show_wake_timer_warning()
+        return False
     game["money"] += gain
     game["money_since_reset"] += gain
-    if game.get("focus_unlocked", False) and now >= focus_active_until:
-        game["focus"] = min(FOCUS_MAX, game.get("focus", 0) + FOCUS_CHARGE_PER_EARN)
+    if manual:
+        mark_known("ui_work_prompt")
     if game.get("motivation_unlocked", False):
         game["motivation"] = max(0, game.get("motivation", 0) - 1)
     if not manual and game.get("auto_work_unlocked", False):
         work_timer = max(0.0, work_timer - eff_delay)
     save_game()
+    return True
+
+
+
+def calculate_stability_reward(money_pool):
+    pool = max(0.0, float(money_pool)) + 1.0
+    reward = int((pool**STABILITY_REWARD_EXP) * STABILITY_REWARD_MULT)
+    return max(1, reward)
+
+
+def perform_stability_collapse():
+    global work_timer, last_render
+    if game.get("wake_timer_infinite", False):
+        return
+    money_pool = max(game.get("money", 0.0), game.get("money_since_reset", 0.0))
+    reward = calculate_stability_reward(money_pool)
+    game["stability_currency"] = game.get("stability_currency", 0.0) + reward
+    game["stability_resets"] = game.get("stability_resets", 0) + 1
+    lines = [
+        "The desk roars and everything folds inward.",
+        f"You claw back {format_number(reward)} {STABILITY_CURRENCY_NAME}.",
+        "Permanent stabilizers await.",
+    ]
+    tmp = boxed_lines(lines, title=" Collapse ", pad_top=1, pad_bottom=1)
+    render_frame(tmp)
+    time.sleep(1.2)
+    work_timer = 0.0
+    game.update(
+        {
+            "money": 0.0,
+            "money_since_reset": 0.0,
+            "fatigue": 0,
+            "focus": 0,
+            "charge": 0.0,
+            "best_charge": 0.0,
+            "charge_threshold": [],
+            "motivation": 0,
+        }
+    )
+    game["wake_timer"] = game.get("wake_timer_cap", WAKE_TIMER_START)
+    game["wake_timer_locked"] = False
+    game["wake_timer_notified"] = False
+    game["needs_stability_reset"] = False
+    recalc_wake_timer_state()
+    refresh_knowledge_flags()
+    save_game()
+    last_render = ""
+    if game.get("wake_timer_infinite", False):
+        return
+    open_wake_timer_menu(auto_invoked=True)
+    last_render = ""
 
 
 def work_tick():
@@ -678,8 +1252,20 @@ def work_tick():
     now = time.time()
     delta = now - last_tick_time
     last_tick_time = now
+    game["play_time"] = game.get("play_time", 0.0) + delta
+    if not game.get("wake_timer_infinite", False):
+        current_timer = game.get("wake_timer", WAKE_TIMER_START)
+        if current_timer > 0:
+            current_timer = max(0.0, current_timer - delta)
+            game["wake_timer"] = current_timer
+        if wake_timer_blocked():
+            if not game.get("needs_stability_reset", False):
+                game["needs_stability_reset"] = True
+                perform_stability_collapse()
+            return
+    game["wake_timer_locked"] = wake_timer_blocked()
     gain, eff_delay = compute_gain_and_delay(auto=True)
-    if game.get("auto_work_unlocked", False):
+    if game.get("auto_work_unlocked", False) and not wake_timer_blocked():
         work_timer += delta
         if work_timer >= eff_delay:
             perform_work(gain, eff_delay, manual=False)
@@ -687,6 +1273,8 @@ def work_tick():
         game["charge"] += delta
         game["best_charge"] = max(game["best_charge"], game["charge"])
         check_charge_thresholds()
+    if refresh_knowledge_flags():
+        save_game()
 
 
 def check_charge_thresholds():
@@ -788,11 +1376,16 @@ def buy_tree_upgrade(upgrades, idx):
         else get_concept_info(upg["id"])
     )
     max_level = upg.get("max_level", 1)
+    layer_key = "corridor" if upgrades is INSPIRE_UPGRADES else "archive"
+    pool_name = layer_name(layer_key)
+    pool_currency = layer_currency_name(layer_key)
+    pool_suffix = layer_currency_suffix(layer_key)
+    suffix_text = f" {pool_suffix}" if pool_suffix else ""
     if level >= max_level:
         msg = f"{upg['name']} is already at max level!"
         tmp = boxed_lines(
             [msg],
-            title=("Inspiration" if upgrades is INSPIRE_UPGRADES else "Concepts"),
+            title=f" {pool_name} ",
             pad_top=1,
             pad_bottom=1,
         )
@@ -802,10 +1395,10 @@ def buy_tree_upgrade(upgrades, idx):
     cost = get_tree_cost(upg, current_level=level)
     pool_key = "inspiration" if upgrades is INSPIRE_UPGRADES else "concepts"
     if game.get(pool_key, 0) < cost:
-        msg = f"Not enough {('Inspiration' if pool_key=='inspiration' else 'Concepts')} for {upg['name']} (cost {cost})!"
+        msg = f"Not enough {pool_currency} for {upg['name']} (cost {cost}{suffix_text})."
         tmp = boxed_lines(
             [msg],
-            title=("Inspiration" if upgrades is INSPIRE_UPGRADES else "Concepts"),
+            title=f" {pool_name} ",
             pad_top=1,
             pad_bottom=1,
         )
@@ -834,7 +1427,7 @@ def buy_tree_upgrade(upgrades, idx):
     msg = f"Purchased {upg['name']} level {level + 1}!"
     tmp = boxed_lines(
         [msg],
-        title=("Inspiration" if upgrades is INSPIRE_UPGRADES else "Concepts"),
+        title=f" {pool_name} ",
         pad_top=1,
         pad_bottom=1,
     )
@@ -928,12 +1521,14 @@ def reset_for_inspiration():
     now = time.time()
     if now - game.get("last_inspiration_reset_time", 0) < 0.05:
         return
+    corridor_name = layer_name("corridor")
+    corridor_currency = layer_currency_name("corridor")
     if game.get("money_since_reset", 0) < INSPIRATION_UNLOCK_MONEY:
         tmp = boxed_lines(
             [
-                f"{Fore.YELLOW}Reach ${format_number(INSPIRATION_UNLOCK_MONEY)} to Inspire.{Style.RESET_ALL}"
+                f"{Fore.YELLOW}Reach {format_currency(INSPIRATION_UNLOCK_MONEY)} to enter {corridor_name}.{Style.RESET_ALL}"
             ],
-            title=" Inspire ",
+            title=f" {corridor_name} ",
             pad_top=1,
             pad_bottom=1,
         )
@@ -943,6 +1538,7 @@ def reset_for_inspiration():
     gained = calculate_inspiration(game.get("money_since_reset", 0))
     play_inspiration_reset_animation()
     game["inspiration"] = game.get("inspiration", 0) + gained
+    previous_resets = game.get("inspiration_resets", 0)
     game.update(
         {
             "money": 0.0,
@@ -959,13 +1555,31 @@ def reset_for_inspiration():
             "charge_threshold": [],
         }
     )
+    game["inspiration_resets"] = previous_resets + 1
+    game["last_inspiration_reset_time"] = now
+    attempt_reveal("layer_corridor")
+    attempt_reveal("currency_corridor")
+    if previous_resets == 0:
+        attempt_reveal("currency_wake")
+        attempt_reveal("ui_currency_clear")
+        attempt_reveal("ui_upgrade_catalogue")
+        memory_lines = [
+            "A fissure opens in your memory as the Hall answers.",
+            "The desk stops hissing long enough to whisper names back to you.",
+            "Values sharpen. Schematics regain a few letters.",
+            "Someone else sounds relieved that you remember at all.",
+        ]
+        typewriter_message(memory_lines, title=" Memory Thread ", speed=0.04)
+        time.sleep(0.8)
+        clear_screen()
     if game.get("motivation_unlocked", False):
         game.update({"motivation": MOTIVATION_MAX})
+    refresh_knowledge_flags()
     apply_inspiration_effects()
     save_game()
     done_msg = boxed_lines(
-        [f"Gained {Fore.LIGHTYELLOW_EX}{gained}{Style.RESET_ALL} Inspiration."],
-        title=" Inspiration Gained ",
+        [f"Gained {Fore.LIGHTYELLOW_EX}{gained}{Style.RESET_ALL} {corridor_currency}."],
+        title=f" {corridor_name} Gained ",
         pad_top=1,
         pad_bottom=1,
     )
@@ -979,10 +1593,12 @@ def reset_for_concepts():
     now = time.time()
     if now - game.get("last_concepts_reset_time", 0) < 0.05:
         return
+    archive_name = layer_name("archive")
+    archive_currency = layer_currency_name("archive")
     if game.get("money_since_reset", 0) < CONCEPTS_UNLOCK_MONEY:
         tmp = boxed_lines(
-            [f"Reach ${format_number(CONCEPTS_UNLOCK_MONEY)} to Conceptualise."],
-            title=" Concepts ",
+            [f"Reach {format_currency(CONCEPTS_UNLOCK_MONEY)} to access {archive_name}."],
+            title=f" {archive_name} ",
             pad_top=1,
             pad_bottom=1,
         )
@@ -1008,11 +1624,14 @@ def reset_for_concepts():
             "inspiration": 0,
         }
     )
+    game["concept_resets"] = game.get("concept_resets", 0) + 1
+    attempt_reveal("layer_archive")
+    attempt_reveal("currency_archive")
     apply_concept_effects()
     save_game()
     done_msg = boxed_lines(
-        [f"Gained {Fore.CYAN}{gained}{Style.RESET_ALL} Concepts."],
-        title=" Concepts Gained ",
+        [f"Gained {Fore.CYAN}{gained}{Style.RESET_ALL} {archive_currency}."],
+        title=f" {archive_name} Gained ",
         pad_top=1,
         pad_bottom=1,
     )
@@ -1020,12 +1639,97 @@ def reset_for_concepts():
     time.sleep(1.2)
 
 
+def open_wake_timer_menu(auto_invoked=False):
+    global KEY_PRESSED, last_render
+    last_box = None
+    last_size = get_term_size()
+    while True:
+        if not auto_invoked:
+            work_tick()
+        remaining = "∞" if game.get("wake_timer_infinite", False) else format_clock(game.get("wake_timer", WAKE_TIMER_START))
+        lines = [
+            "--- STABILIZER ---" if not game.get("wake_timer_infinite", False) else "--- TIMER SEALED ---",
+            f"Remaining: {remaining}",
+            f"Capacity: {format_clock(game.get('wake_timer_cap', WAKE_TIMER_START))}",
+            f"{STABILITY_CURRENCY_NAME}: {format_number(game.get('stability_currency', 0))}",
+            "",
+        ]
+        if auto_invoked and not game.get("wake_timer_infinite", False):
+            lines.append("Collapse complete. Spend sparks to anchor the loop.")
+            lines.append("")
+        purchased = set(game.get("wake_timer_upgrades", []))
+        for i, upg in enumerate(WAKE_TIMER_UPGRADES, start=1):
+            owned = upg["id"] in purchased
+            cost_label = format_number(upg.get("cost", 0))
+            status = (
+                "INSTALLED"
+                if owned
+                else f"Cost {cost_label} {STABILITY_CURRENCY_NAME}"
+            )
+            bonus = "Grants infinite time" if upg.get("grant_infinite") else f"+{upg.get('time_bonus', 0)}s stability"
+            lines.append(f"{i}. {upg['name']} - {status}")
+            desc = upg.get("desc")
+            if desc:
+                lines.append(f"   {desc}")
+            lines.append(f"   {bonus}")
+        lines += ["", "Press number to install, B to back."]
+        box = boxed_lines(lines, title=" Stabilize ", pad_top=1, pad_bottom=1)
+        cur_size = get_term_size()
+        box_str = "\n".join(box)
+        if box_str != last_box or cur_size != last_size:
+            render_frame(box)
+            last_box = box_str
+            last_size = cur_size
+        time.sleep(0.05)
+        if KEY_PRESSED:
+            k_input = KEY_PRESSED
+            KEY_PRESSED = None
+            try:
+                k = k_input.lower()
+            except Exception:
+                continue
+            if k == "b":
+                last_render = ""
+                return
+            if k.isdigit():
+                idx = int(k) - 1
+                if 0 <= idx < len(WAKE_TIMER_UPGRADES):
+                    message = buy_wake_timer_upgrade(WAKE_TIMER_UPGRADES[idx])
+                    tmp = boxed_lines([message], title=" Stabilize ", pad_top=1, pad_bottom=1)
+                    render_frame(tmp)
+                    time.sleep(0.8)
+
+
+def buy_wake_timer_upgrade(upg):
+    purchased = game.setdefault("wake_timer_upgrades", [])
+    if upg["id"] in purchased:
+        return f"{upg['name']} already installed."
+    cost = upg.get("cost", 0)
+    if game.get("stability_currency", 0) < cost:
+        return f"Need {format_number(cost)} {STABILITY_CURRENCY_NAME} to install {upg['name']}"
+    game["stability_currency"] -= cost
+    purchased.append(upg["id"])
+    if upg.get("grant_infinite"):
+        game["wake_timer_infinite"] = True
+    recalc_wake_timer_state()
+    game["wake_timer"] = game.get("wake_timer_cap", WAKE_TIMER_START)
+    game["wake_timer_locked"] = False
+    game["wake_timer_notified"] = False
+    save_game()
+    if game.get("wake_timer_infinite", False):
+        return f"{upg['name']} sealed the loop. Time is yours now."
+    return f"{upg['name']} installed. Stability restored."
+
+
 def open_upgrade_menu():
     global KEY_PRESSED
+    if mark_known("ui_options_full"):
+        save_game()
     last_box = None
     last_size = get_term_size()
     while True:
         work_tick()
+        catalogue_known = is_known("ui_upgrade_catalogue")
         unlocked = [
             u
             for u in config.UPGRADES
@@ -1035,8 +1739,8 @@ def open_upgrade_menu():
                 for dep in config.UPGRADE_DEPENDENCIES.get(u["id"], [])
             )
         ]
-        lines = ["--- UPGRADE BAY ---"]
-        lines.append(f"Money: ${format_number(game.get('money', 0))}")
+        lines = ["--- UPGRADE BAY ---" if catalogue_known else "--- [REDACTED] ---"]
+        lines.append(f"Money: {format_currency(game.get('money', 0))}")
         lines.append("")
         for i, u in enumerate(unlocked, start=1):
             term_w, _ = get_term_size()
@@ -1047,11 +1751,14 @@ def open_upgrade_menu():
             max_level = u.get("max_level", 1)
             cost = int(u.get("cost", 0) * (u.get("cost_mult", 1) ** level))
             status = (
-                f"(Lv {level}/{max_level}) - Cost: ${format_number(cost)}"
+                f"(Lv {level}/{max_level}) - Cost: {format_currency(cost)}"
                 if level < max_level
                 else "(MAX)"
             )
-            line = f"{i}. {u['name']} {status}"
+            uid = u["id"]
+            known_upgrade = catalogue_known or is_known(f"upgrade_{uid}")
+            display_name = u["name"] if known_upgrade else veil_text(u["name"])
+            line = f"{i}. {display_name} {status if known_upgrade else status}"
             lines.append(line.ljust(panel_width))
             if u.get("desc"):
                 effect_text = f"→ {u['desc']}"
@@ -1099,13 +1806,14 @@ def buy_idx_upgrade(upg):
     if current_level >= max_level:
         msg = f"{upg['name']} is already maxed (Lv {current_level}/{max_level})."
     elif game.get("money", 0) < scaled_cost:
-        msg = f"Not enough money for {upg['name']} (cost ${scaled_cost})."
+        msg = f"Not enough money for {upg['name']} (cost {format_currency(scaled_cost)})."
     else:
         game["money"] -= scaled_cost
         current_level += 1
         game["upgrade_levels"][uid] = current_level
         if uid not in game["owned"]:
             game["owned"].append(uid)
+        mark_known(f"upgrade_{uid}")
         if upg.get("type") == "unlock_focus" and current_level > 0:
             game["focus_unlocked"] = True
         elif upg.get("type") == "unlock_charge" and current_level > 0:
@@ -1201,7 +1909,7 @@ def open_blackjack_layer():
     starting_money = float(game.get("money", 0.0))
     try:
         print("Entering blackjack casino...\n")
-        print(f"You are bringing ${starting_money:.2f} from the main game.\n")
+        print(f"You are bringing {format_currency(starting_money)} from the main game.\n")
         new_money = blackjack.run_blackjack(starting_money)
         game["money"] = max(0.0, float(new_money))
         save_game()
@@ -1293,10 +2001,16 @@ def render_ui(screen="work"):
     conc_time_next = predict_next_concept_point()
 
     top_left_lines = []
-    insp_title = f"=== {Fore.LIGHTYELLOW_EX}INSPIRATION{Style.RESET_ALL} ==="
-    insp_tree_title = f"=== {Fore.LIGHTYELLOW_EX}INSPIRATION TREE{Style.RESET_ALL} ==="
-    conc_title = f"=== {Fore.CYAN}CONCEPTS{Style.RESET_ALL} ==="
-    conc_tree_title = f"=== {Fore.CYAN}CONCEPTS TREE{Style.RESET_ALL} ==="
+    corridor_name = layer_name("corridor")
+    corridor_currency = layer_currency_name("corridor")
+    archive_name = layer_name("archive")
+    archive_currency = layer_currency_name("archive")
+    insp_title = f"=== {Fore.LIGHTYELLOW_EX}{corridor_name}{Style.RESET_ALL} ==="
+    insp_tree_title = (
+        f"=== {Fore.LIGHTYELLOW_EX}{corridor_name} board{Style.RESET_ALL} ==="
+    )
+    conc_title = f"=== {Fore.CYAN}{archive_name}{Style.RESET_ALL} ==="
+    conc_tree_title = f"=== {Fore.CYAN}{archive_name} board{Style.RESET_ALL} ==="
     if (
         game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY // 2
         or game.get("inspiration_unlocked", False) is True
@@ -1304,32 +2018,27 @@ def render_ui(screen="work"):
         top_left_lines += [
             insp_title,
             "",
-            f"Points: {Fore.LIGHTYELLOW_EX}{format_number(game.get('inspiration', 0))} i{Style.RESET_ALL}",
+            f"Holdings: {Fore.LIGHTYELLOW_EX}{format_number(game.get('inspiration', 0))}{Style.RESET_ALL} {corridor_currency}",
             "",
         ]
         if game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY:
             top_left_lines.append(
-                f"[I]nspire for {Fore.LIGHTYELLOW_EX}{format_number(calc_insp)}{Style.RESET_ALL} Inspiration"
+                f"[I] Step into {corridor_name} for {Fore.LIGHTYELLOW_EX}{format_number(calc_insp)}{Style.RESET_ALL} {corridor_currency}"
             )
             top_left_lines.append(
-                f"{Fore.LIGHTYELLOW_EX}{format_number(time_next)}{Style.RESET_ALL} until next point"
+                f"{Fore.LIGHTYELLOW_EX}{format_number(time_next)}{Style.RESET_ALL} until next {corridor_currency}"
             )
             top_left_lines.append("")
-            top_left_lines.append("[1] to open Inspiration tree")
+            top_left_lines.append(f"[1] Open {corridor_name} board")
         else:
             top_left_lines.append(
-                f"Reach ${format_number(INSPIRATION_UNLOCK_MONEY)} to"
-                + (
-                    "unlock Inspiration"
-                    if not game.get("inspiration_unlocked", False)
-                    else " Inspire"
-                )
+                f"Reach {format_currency(INSPIRATION_UNLOCK_MONEY)} to approach {corridor_name}."
             )
             if screen == "inspiration":
                 top_left_lines.append("")
             else:
                 top_left_lines.append("")
-                top_left_lines.append("[1] to open Inspiration tree")
+                top_left_lines.append(f"[1] Open {corridor_name} board")
         if screen == "inspiration":
             visible_lines, footer, _ = build_tree_lines(
                 INSPIRE_UPGRADES, get_inspire_info, "insp_page"
@@ -1354,30 +2063,24 @@ def render_ui(screen="work"):
         ]
         if game.get("concepts_unlocked", False):
             bottom_left_lines.append(
-                f"Points: {Fore.CYAN}{format_number(game.get('concepts', 0))} Co{Style.RESET_ALL}"
+                f"Holdings: {Fore.CYAN}{format_number(game.get('concepts', 0))}{Style.RESET_ALL} {archive_currency}"
             )
             bottom_left_lines.append("")
         if game.get("money_since_reset", 0) >= CONCEPTS_UNLOCK_MONEY:
             bottom_left_lines.append(
-                f"[C]onceptualise for {Fore.CYAN}{format_number(calc_conc)}{Style.RESET_ALL} Concepts"
+                f"[C] Enter {archive_name} for {Fore.CYAN}{format_number(calc_conc)}{Style.RESET_ALL} {archive_currency}"
             )
             bottom_left_lines.append(
-                f"{Fore.CYAN}{format_number(conc_time_next)}{Style.RESET_ALL} until next point"
+                f"{Fore.CYAN}{format_number(conc_time_next)}{Style.RESET_ALL} until next {archive_currency}"
             )
             bottom_left_lines.append("")
-            bottom_left_lines.append("[2] to open Concepts tree")
+            bottom_left_lines.append(f"[2] Open {archive_name} board")
         else:
             bottom_left_lines.append(
-                (f"Reach ${format_number(CONCEPTS_UNLOCK_MONEY)} to ")
-                + ("unlock" if not game.get("concepts_unlocked", False) else "")
-                + (
-                    "Concepts"
-                    if not game.get("concepts_unlocked", False)
-                    else "Conceptualise"
-                )
+                f"Reach {format_currency(CONCEPTS_UNLOCK_MONEY)} to decipher {archive_name}."
             )
             bottom_left_lines.append("")
-            bottom_left_lines.append("[2] to open Concepts tree")
+            bottom_left_lines.append(f"[2] Open {archive_name} board")
         if screen == "concepts":
             visible_lines, footer, _ = build_tree_lines(
                 CONCEPT_UPGRADES, get_concept_info, "concept_page"
@@ -1391,7 +2094,14 @@ def render_ui(screen="work"):
                 "\033[1m[B] Back to Work\033[0m",
             ]
 
-    middle_lines = []
+    sparks_amount = format_number(game.get("stability_currency", 0))
+    middle_lines = [
+        build_wake_timer_line(),
+        f"{STABILITY_CURRENCY_NAME}: {Fore.MAGENTA}{sparks_amount}{Style.RESET_ALL}",
+    ]
+    if not game.get("wake_timer_infinite", False):
+        middle_lines.append("[T] Spend stabilizers")
+    middle_lines.append("")
     middle_lines += render_desk_table()
     if game.get("focus_unlocked", False):
         focus_max = FOCUS_MAX + game.get("focus_max_bonus", 0)
@@ -1407,69 +2117,55 @@ def render_ui(screen="work"):
     total_money = game.get("money_since_reset", 0)
     mystery_phase = total_money < 100
 
-    # Progressive Unobfuscation Logic
     show_money = total_money >= 10
     show_gain = total_money >= 30
-    show_options_hint = total_money >= 60
 
-    # Extended Ambiguity
-    # < 10: ???
-    # 10 - 100: Signal
-    # 100 - 1000: Data
-    # 1000 - 5000: Credits
-    # > 5000: Money
-    
-    currency_name = "MONEY"
-    if total_money < 100:
-        currency_name = "SIGNAL"
-    elif total_money < 1000:
-        currency_name = "DATA"
-    elif total_money < 5000:
-        currency_name = "CREDITS"
+    wake_currency = layer_currency_name("wake")
+    base_money = game.get("money", 0)
+    money_str = (
+        f"{wake_currency}: {format_currency(base_money)}"
+        if show_money
+        else f"{wake_currency}: ???"
+    )
 
-    money_str = f"{currency_name}: ${format_number(game.get('money', 0))}" if show_money else f"{currency_name}: ???"
-    
-    if mystery_phase:
-        if show_gain:
-             middle_lines.append(f"{money_str}   GAIN: {format_number(effective_gain)} / cycle")
-        else:
-             middle_lines.append(money_str)
-    else:
-        middle_lines.append(
-            f"{money_str}   GAIN: {format_number(effective_gain)} / cycle"
-            + (
-                f"   DELAY: {effective_delay:.2f}s"
-                if game.get("auto_work_unlocked", False)
-                else ""
-            )
-        )
-    
-    if total_money >= 10:
+    gain_segment = (
+        f"   GAIN: {format_currency(effective_gain)} / cycle"
+        if show_gain or not mystery_phase
+        else ""
+    )
+    delay_segment = (
+        f"   DELAY: {effective_delay:.2f}s"
+        if (not mystery_phase and game.get("auto_work_unlocked", False))
+        else ""
+    )
+    middle_lines.append(f"{money_str}{gain_segment}{delay_segment}".rstrip())
+
+    if show_money:
         middle_lines.append(work_bar)
     else:
-        middle_lines.append("") # Empty line instead of bar initially
+        middle_lines.append("")
+
+    work_prompt = reveal_text("ui_work_prompt", "Press W to work", "Press W...")
+    auto_prompt = reveal_text("ui_auto_prompt", "Auto-work: ENABLED", "Auto-work: ???")
+    if game.get("auto_work_unlocked", False):
+        middle_lines.append(auto_prompt)
+    else:
+        middle_lines.append(work_prompt)
 
     if mystery_phase:
-        if total_money < 10:
-            middle_lines.append("Press W...")
-        elif total_money < 30:
-            middle_lines.append("Press W to work...")
-        else:
-            middle_lines.append("Press W to work")
-    else:
-        middle_lines.append(
-            "Auto-work: ENABLED"
-            if game.get("auto_work_unlocked", False)
-            else "Press W to work"
+        option_line = reveal_text(
+            "ui_options_hint", "Options: [W] Work  [Q] Quit", "Options: [W] ???"
         )
-    
-    if mystery_phase:
-        if show_options_hint:
-            middle_lines += ["", "Options: [W] Work  [Q] Quit"]
-        else:
-            middle_lines += ["", "Options: [W] ???"]
     else:
-        middle_lines += ["", "Options: [W] Work  [U] Upgrades  [J] Backjack  [Q] Quit"]
+        option_line = reveal_text(
+            "ui_options_full",
+            "Options: [W] Work  [U] Upgrades  [J] Blackjack  [Q] Quit",
+            "Options: [W] ???",
+        )
+    option_line += ""
+    middle_lines += ["", option_line]
+    if wake_timer_blocked():
+        middle_lines.append("(Unconscious) Spend clicks in Stabilize menu (T).")
 
     term_width, term_height = get_term_size()
     while len(top_left_lines) < term_height - 4:
@@ -1511,9 +2207,7 @@ def render_ui(screen="work"):
             left_part + " " * right_pad + mid_part + " " * right_pad + right_part
         )
     
-    layer_title = f" Layer {game.get('layer', 0)} "
-    if mystery_phase:
-        layer_title = " ??? "
+    layer_title = f" {current_layer_label()} "
     box = boxed_lines(
         combined_lines, title=layer_title, pad_top=1, pad_bottom=1
     )
@@ -1595,6 +2289,7 @@ def typewriter_message(lines, title, speed=0.03):
 
 def main_loop():
     global KEY_PRESSED, running, work_timer, last_tick_time, last_manual_time, last_render
+    choose_save_slot()
     load_game()
     try:
         if getattr(config, "AUTO_BALANCE_UPGRADES", False) and getattr(
@@ -1613,11 +2308,11 @@ def main_loop():
 
     if game.get("money_since_reset", 0) == 0 and game.get("money", 0) == 0:
         msg = [
-            "You wake up at a desk.",
-            "It's dark.",
+            "You wake at a desk whose corners refuse to meet.",
+            "The dark hums like something counting you.",
             "You don't remember how you got here.",
             "",
-            "...",
+            "Something tilts when you try to stand.",
         ]
         typewriter_message(msg, title=" ??? ", speed=0.05)
         time.sleep(1.0)
@@ -1635,10 +2330,10 @@ def main_loop():
             if not game.get("mystery_revealed", False) and game.get("money_since_reset", 0) >= 100:
                 game["mystery_revealed"] = True
                 msg = [
-                    "You found a way to make money.",
-                    "Or at least, something that looks like money.",
+                    "The desk pays attention when you tap long enough.",
+                    "The value it hands back isn't money, but it obeys.",
                     "",
-                    "Upgrades unlocked."
+                    "Somewhere outside, a fourth shadow tilts its head."
                 ]
                 typewriter_message(msg, title=" Discovery ", speed=0.04)
                 time.sleep(1.5)
@@ -1676,8 +2371,8 @@ def main_loop():
                         gain, eff_delay = compute_gain_and_delay(auto=False)
                         if not game.get("auto_work_unlocked", False):
                             work_timer = 0
-                        perform_work(gain, eff_delay, manual=True)
-                        last_manual_time = now
+                        if perform_work(gain, eff_delay, manual=True):
+                            last_manual_time = now
                 elif k == "u":
                     current_screen = "work"
                     clear_screen()
@@ -1686,10 +2381,21 @@ def main_loop():
                 elif k == "j" and current_screen == "work":
                     open_blackjack_layer()
                     current_screen = "work"
+                elif k == "t":
+                    current_screen = "work"
+                    clear_screen()
+                    open_wake_timer_menu()
+                    render_ui(screen=current_screen)
                 elif k == "f":
                     ok, msg = activate_focus()
                     tmp = boxed_lines([msg], title=" Focus ", pad_top=1, pad_bottom=1)
                     render_frame(tmp)
+
+
+
+
+
+
                     time.sleep(1.0)
                 elif k == "i":
                     reset_for_inspiration()

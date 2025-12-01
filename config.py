@@ -2,13 +2,116 @@ BASE_MONEY_GAIN = 1.0
 BASE_WORK_DELAY = 6.7
 BASE_MONEY_MULT = 1.0
 
+CURRENCY_SYMBOL = "¤"
+STABILITY_CURRENCY_NAME = "Stability Sparks"
+STABILITY_REWARD_MULT = 0.4
+STABILITY_REWARD_EXP = 0.42
+
+WAKE_TIMER_START = 90
+WAKE_TIMER_UPGRADES = [
+    {
+        "id": "wake_breath",
+        "name": "Steady Breath",
+        "cost": 80,
+        "time_bonus": 60,
+        "desc": "Adds one precious minute before collapse.",
+    },
+    {
+        "id": "wake_anchor",
+        "name": "Anchor Points",
+        "cost": 320,
+        "time_bonus": 180,
+        "desc": "Tether the loop, +3 minutes.",
+    },
+    {
+        "id": "wake_lock",
+        "name": "Phase Lock",
+        "cost": 1400,
+        "time_bonus": 0,
+        "grant_infinite": True,
+        "desc": "Seal the breach and stop the timer forever.",
+    },
+]
+
+LAYER_FLOW = [
+    {
+        "id": 0,
+        "key": "wake",
+        "name": "Desk",
+        "currency_name": "Clicks",
+        "currency_suffix": "Cl",
+        "storage_key": "money",
+        "unlock_money": 0,
+        "border_id": 0,
+        "desc": "The desk hums with angles that do not meet.",
+    },
+    {
+        "id": 1,
+        "key": "corridor",
+        "name": "Hall",
+        "currency_name": "Marks",
+        "currency_suffix": "Mk",
+        "storage_key": "inspiration",
+        "unlock_money": 100_000,
+        "border_id": 1,
+        "desc": "Footsteps echo a beat before you take them.",
+    },
+    {
+        "id": 2,
+        "key": "archive",
+        "name": "Stacks",
+        "currency_name": "Threads",
+        "currency_suffix": "Th",
+        "storage_key": "concepts",
+        "unlock_money": 100_000_000,
+        "border_id": 2,
+        "desc": "Shelves lean away from your gaze, hiding spines.",
+    },
+    {
+        "id": 3,
+        "key": "dreamwalk",
+        "name": "Dreamtrail",
+        "currency_name": "Pulse",
+        "currency_suffix": "Pu",
+        "storage_key": "pulses",
+        "unlock_money": 5_000_000_000_000,
+        "border_id": 3,
+        "desc": "Dreams run parallel until you step across.",
+    },
+    {
+        "id": 4,
+        "key": "persona",
+        "name": "Maskroom",
+        "currency_name": "Veil",
+        "currency_suffix": "Ve",
+        "storage_key": "veils",
+        "unlock_money": 10**18,
+        "border_id": 4,
+        "desc": "Masks decide which version of you answers.",
+    },
+    {
+        "id": 5,
+        "key": "threshold",
+        "name": "Gate",
+        "currency_name": "Seal",
+        "currency_suffix": "Se",
+        "storage_key": "sigils",
+        "unlock_money": 10**24,
+        "border_id": 4,
+        "desc": "Beyond the arch the watcher finally notices.",
+    },
+]
+
+LAYER_BY_KEY = {entry["key"]: entry for entry in LAYER_FLOW}
+LAYER_BY_ID = {entry["id"]: entry for entry in LAYER_FLOW}
+
 FOCUS_BOOST_FACTOR = 0.5
 FOCUS_DURATION = 12
 FOCUS_CHARGE_PER_EARN = 12
 FOCUS_MAX = 100
 
-INSPIRATION_UNLOCK_MONEY = 100_000
-CONCEPTS_UNLOCK_MONEY = 100_000_000
+INSPIRATION_UNLOCK_MONEY = LAYER_BY_KEY["corridor"]["unlock_money"]
+CONCEPTS_UNLOCK_MONEY = LAYER_BY_KEY["archive"]["unlock_money"]
 
 MOTIVATION_MAX = 100
 MAX_MOTIVATION_MULT = 3.0
@@ -27,106 +130,106 @@ UPGRADES = [
     {
         "id": "keyboard",
         "name": "Basic Keyboard",
-        "cost": 100,
+        "cost": 45,
         "type": "mult",
-        "base_value": 1.5,
-        "value_mult": 1.25,
+        "base_value": 1.35,
+        "value_mult": 1.18,
         "max_level": 5,
-        "cost_mult": 2.0,
-        "desc": "Your first upgrade!. $1.5x, +25% per level",
+        "cost_mult": 1.85,
+        "desc": "Calibrate your fingers. 1.35x base, +18% per level",
         "unlocked": True,
     },
     {
         "id": "coffee",
         "name": "Coffee",
-        "cost": 500,
+        "cost": 160,
         "type": "reduce_delay",
-        "base_value": 0.97,
+        "base_value": 0.965,
         "value_mult": 0.95,
         "max_level": 3,
-        "cost_mult": 2.5,
-        "desc": "Caffeine 4ever. Reduces autowork by 3%, -5% per level",
+        "cost_mult": 2.2,
+        "desc": "Keep the loop awake. -3.5% auto delay, -5% per level",
         "unlocked": False,
     },
     {
         "id": "cup_holder",
         "name": "Cup Holder",
-        "cost": 400,
+        "cost": 260,
         "type": "add",
-        "base_value": 2.0,
+        "base_value": 4.0,
         "max_level": 1,
-        "cost_mult": 3.3,
-        "desc": "A lonely holder, that feels like its a part of something bigger...",
+        "cost_mult": 3.0,
+        "desc": "Makes space for rituals. +4 income",
         "unlocked": False,
     },
     {
         "id": "monitor",
         "name": "Dusty Monitor",
-        "cost": 2000,
+        "cost": 520,
         "type": "add",
-        "base_value": 3,
-        "value_mult": 1.5,
+        "base_value": 6,
+        "value_mult": 1.4,
         "max_level": 4,
-        "cost_mult": 2.5,
-        "desc": "An old ahh monitor. +$3, +$50% per level",
+        "cost_mult": 2.2,
+        "desc": "Shaky pixels, steady gains. +6 base, +40% per level",
         "unlocked": False,
     },
     {
         "id": "ergonomic_chair",
         "name": "Ergonomic Chair",
-        "cost": 5000,
+        "cost": 950,
         "type": "mult",
-        "base_value": 1.5,
-        "value_mult": 1.25,
+        "base_value": 1.28,
+        "value_mult": 1.22,
         "max_level": 3,
-        "cost_mult": 2.5,
-        "desc": "Pro gamer chair. $1.5x base, +25% per level",
+        "cost_mult": 2.3,
+        "desc": "Spine remembers. 1.28x base, +22% per level",
         "unlocked": False,
     },
     {
         "id": "dual_monitors",
         "name": "Dual Monitors",
-        "cost": 12000,
+        "cost": 1800,
         "type": "add",
-        "base_value": 10.0,
-        "value_mult": 1.5,
+        "base_value": 14.0,
+        "value_mult": 1.45,
         "max_level": 3,
-        "cost_mult": 2.5,
-        "desc": "2x the monitors, +$10, +50% per level",
+        "cost_mult": 2.35,
+        "desc": "Mirrored horizons. +14 income, +45% per level",
         "unlocked": False,
     },
     {
         "id": "mech_keyboard",
         "name": "Mechanical Keyboard",
-        "cost": 25000,
+        "cost": 3600,
         "type": "mult",
-        "base_value": 1.8,
-        "value_mult": 1.3,
-        "max_level": 5,
-        "cost_mult": 2.8,
-        "desc": "Clackety clack. $1.8x base, +30% per level",
+        "base_value": 1.6,
+        "value_mult": 1.24,
+        "max_level": 4,
+        "cost_mult": 2.6,
+        "desc": "Reality clicks louder. 1.6x base, +24% per level",
         "unlocked": False,
     },
     {
         "id": "lamp",
         "name": "Desk Lamp",
-        "cost": 40000,
+        "cost": 5400,
         "type": "reduce_delay",
-        "base_value": 0.95,
-        "value_mult": 0.95,
+        "base_value": 0.93,
+        "value_mult": 0.94,
         "max_level": 4,
-        "cost_mult": 3.0,
+        "cost_mult": 2.6,
         "unlocked": False,
     },
     {
         "id": "whiteboard",
         "name": "Whiteboard",
-        "cost": 100000,
+        "cost": 8200,
         "type": "add",
-        "base_value": 25.0,
-        "value_mult": 1.5,
+        "base_value": 32.0,
+        "value_mult": 1.4,
         "max_level": 5,
-        "cost_mult": 3.5,
+        "cost_mult": 3.0,
         "unlocked": False,
     },
 ]
@@ -251,13 +354,13 @@ CONCEPT_UPGRADES = [
         "cost_mult": 2.3,
         "base_value": 1.3,
         "value_mult": 1.15,
-        "desc": "BIG x$ boost",
+        "desc": "BIG x¤ boost",
     },
 ]
 
 CHARGE_THRESHOLDS = [
-    {"amount": 0, "reward_type": "x$", "reward_value": 1.1},
-    {"amount": 500, "reward_type": "x$", "reward_value": 1.2},
+    {"amount": 0, "reward_type": "x¤", "reward_value": 1.1},
+    {"amount": 500, "reward_type": "x¤", "reward_value": 1.2},
 ]
 
 BATTERY_TIERS = {
