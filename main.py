@@ -2157,11 +2157,7 @@ def key_listener():
 
 
 def get_screen_tabs():
-    tabs = [("work", layer_name("wake", "Desk"))]
-    if game.get("inspiration_unlocked", False):
-        tabs.append(("inspiration", layer_name("corridor")))
-    if game.get("concepts_unlocked", False):
-        tabs.append(("concepts", layer_name("archive")))
+    tabs = [("work", layer_name("wake", "Main Realm"))]
     if game.get("rpg_unlocked", False):
         tabs.append(("rpg", "Anti-Realm"))
     return tabs
@@ -2178,10 +2174,7 @@ def build_tab_bar_text(current_screen):
             parts.append(f"{Back.WHITE}{Fore.BLACK} {label} {Style.RESET_ALL}")
         else:
             parts.append(f"{Fore.WHITE}{label}{Style.RESET_ALL}")
-    bar = "  ".join(parts)
-    if len(tabs) > 1:
-        bar += f"   {Fore.YELLOW}(, / . to change views){Style.RESET_ALL}"
-    return bar
+    return "  ".join(parts)
 
 
 def cycle_screen(current_screen, direction):
@@ -2323,11 +2316,6 @@ def render_ui(screen="work"):
         middle_lines.append("[T] Buy stabilizers")
     middle_lines.append("")
     middle_lines += render_desk_table()
-
-    tab_line = build_tab_bar_text(screen)
-    if tab_line:
-        middle_lines.insert(0, "")
-        middle_lines.insert(0, tab_line)
     if game.get("focus_unlocked", False):
         focus_max = FOCUS_MAX + game.get("focus_max_bonus", 0)
         fprog = min(game.get("focus", 0) / float(focus_max), 1.0)
@@ -2393,6 +2381,8 @@ def render_ui(screen="work"):
     else:
         option_line = option_payload if options_known else veil_text(option_payload)
     middle_lines += ["", option_line]
+    if len(get_screen_tabs()) > 1:
+        middle_lines.append(f"{Fore.YELLOW}Use , and . to switch realms.{Style.RESET_ALL}")
     if wake_timer_blocked():
         middle_lines.append("(Unconscious) Spend Sparks in Stabilize menu (T).")
     elif not game.get("upgrades_unlocked", False):
@@ -2438,7 +2428,11 @@ def render_ui(screen="work"):
             left_part + " " * right_pad + mid_part + " " * right_pad + right_part
         )
     
-    layer_title = f" {current_layer_label()} "
+    tab_line = build_tab_bar_text(screen)
+    if tab_line:
+        layer_title = f" {tab_line} "
+    else:
+        layer_title = f" {current_layer_label()} "
     box = boxed_lines(
         combined_lines, title=layer_title, pad_top=1, pad_bottom=1
     )
