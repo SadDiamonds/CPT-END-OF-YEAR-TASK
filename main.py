@@ -118,6 +118,7 @@ game = {
     "knowledge": {},
     "upgrades_unlocked": False,
     "inspiration_resets": 0,
+    "intro_played": False,
     "concept_resets": 0,
     "stability_currency": 0.0,
     "stability_resets": 0,
@@ -371,6 +372,7 @@ def load_game():
     game.setdefault("knowledge", {})
     game.setdefault("upgrades_unlocked", False)
     game.setdefault("inspiration_resets", 0)
+    game.setdefault("intro_played", False)
     game.setdefault("concept_resets", 0)
     game.setdefault("stability_currency", 0.0)
     game.setdefault("stability_resets", 0)
@@ -550,7 +552,7 @@ def render_slot_menu(summaries, highlight_idx=None, phase=0):
             grid.append("   ".join(parts))
         grid.append("")
     clear_screen()
-    title = "Select Relay File"
+    title = "Select Save File"
     print()
     print(title.center(term_w))
     print()
@@ -1299,6 +1301,8 @@ def perform_stability_collapse():
             "best_charge": 0.0,
             "charge_threshold": [],
             "motivation": 0,
+            "owned": [],
+            "upgrade_levels": {},
         }
     )
     game["wake_timer"] = game.get("wake_timer_cap", WAKE_TIMER_START)
@@ -1816,8 +1820,6 @@ def open_upgrade_menu():
         render_frame(tmp)
         time.sleep(1.2)
         return
-    if mark_known("ui_options_full"):
-        save_game()
     last_box = None
     last_size = get_term_size()
     while True:
@@ -1906,6 +1908,8 @@ def buy_idx_upgrade(upg):
         game["upgrade_levels"][uid] = current_level
         if uid not in game["owned"]:
             game["owned"].append(uid)
+        if not game.get("upgrades_unlocked", False):
+            game["upgrades_unlocked"] = True
         mark_known(f"upgrade_{uid}")
         if upg.get("type") == "unlock_focus" and current_level > 0:
             game["focus_unlocked"] = True
@@ -2251,13 +2255,15 @@ def render_ui(screen="work"):
     else:
         option_payload += "[U] Offline  "
     option_payload += "[J] Blackjack  [Q] Quit"
-    if mystery_phase:
+    options_known = is_known("ui_options_full")
+    if mystery_phase and not options_known:
         option_line = reveal_text(
             "ui_options_hint", "Options: [W] Work  [Q] Quit", "Options: [W] ???"
         )
+        if game.get("upgrades_unlocked", False):
+            option_line += "  [U] ???"
     else:
-        option_line = reveal_text("ui_options_full", option_payload, "Options: [W] ???")
-    option_line += ""
+        option_line = option_payload if options_known else veil_text(option_payload)
     middle_lines += ["", option_line]
     if wake_timer_blocked():
         middle_lines.append("(Unconscious) Spend Sparks in Stabilize menu (T).")
@@ -2328,60 +2334,63 @@ def render_ui(screen="work"):
 
 
 def typewriter_message(lines, title, speed=0.03):
-    """
-    Renders a message box with a typewriter effect.
-    """
-    # Prepare the full content to know the final layout
-    # But we want to reveal character by character.
-    # Since boxed_lines handles wrapping, we need to be careful.
-    # We will assume the lines passed are already pre-wrapped or short enough,
-    # OR we rely on boxed_lines to wrap them, but that might cause jumping if we feed partial words.
-    # To be safe, let's pre-wrap them using the same logic as boxed_lines or just trust the input.
-    # The input `lines` is usually a list of strings.
-    
-    # We will iterate through the lines and characters.
-    # We maintain a list of "current lines" to display.
-    
+    """Render dialogue with a typewriter effect and Z-to-skip controls."""
+
+    global KEY_PRESSED, listener_enabled
+
+    if not lines:
+        return
+
     display_lines = [""] * len(lines)
-    
-    for i, line in enumerate(lines):
-        # If it's an empty line, just set it and continue (no delay for empty lines)
-        if not line:
-            display_lines[i] = ""
-            # Render once to show the empty line appearing? 
-            # Actually, let's just skip delay for empty lines but we still need to render the frame
-            # if we want the box to grow?
-            # But boxed_lines expects a list of all lines.
-            # If we pass ["", "", ""] it renders a box with 3 empty lines.
-            # If we pass ["H", "", ""] it renders 'H' on first line.
-            
-            # Let's just fill it.
-            continue
-            
-        for char in line:
-            display_lines[i] += char
-            
-            # Construct the full list for boxed_lines.
-            # We want to show the full height of the box from the start?
-            # Or grow it?
-            # Let's show full height to avoid jitter.
-            
-            # We need to pass the full list of lines, but some are still empty strings.
-            # display_lines already has empty strings for future lines.
-            
+
+    def _consume_skip_request():
+        """Return True if Z was pressed (consuming the key)."""
+        global KEY_PRESSED
+        if not KEY_PRESSED:
+            return False
+        raw = KEY_PRESSED
+        KEY_PRESSED = None
+        return isinstance(raw, str) and raw.lower() == "z"
+
+    def _wait_for_z(prompt_text):
+        """Pause until the player presses Z, unless listener is disabled."""
+        if not listener_enabled:
+            return
+        prompt_lines = display_lines.copy()
+        if prompt_text:
+            prompt_lines.append("")
+            prompt_lines.append(prompt_text)
+        frame = boxed_lines(prompt_lines, title=title, pad_top=1, pad_bottom=1)
+        render_frame(frame)
+        while True:
+            if _consume_skip_request():
+                return
+            if not listener_enabled:
+                return
+            time.sleep(0.01)
+
+    for idx, line in enumerate(lines):
+        current_line = line or ""
+        skip_line = False
+        if current_line:
+            for char in current_line:
+                display_lines[idx] += char
+                frame = boxed_lines(display_lines, title=title, pad_top=1, pad_bottom=1)
+                render_frame(frame)
+                if _consume_skip_request():
+                    display_lines[idx] = current_line
+                    frame = boxed_lines(display_lines, title=title, pad_top=1, pad_bottom=1)
+                    render_frame(frame)
+                    skip_line = True
+                    break
+                time.sleep(speed)
+        else:
+            display_lines[idx] = ""
+        if not skip_line:
             frame = boxed_lines(display_lines, title=title, pad_top=1, pad_bottom=1)
             render_frame(frame)
-            time.sleep(speed)
-            
-            # Check for skip
-            if KEY_PRESSED:
-                # If user presses a key, we could speed up?
-                # For now, let's just let it play.
-                pass
-                
-    # Ensure final render
-    frame = boxed_lines(lines, title=title, pad_top=1, pad_bottom=1)
-    render_frame(frame)
+        prompt = "Press Z to close" if idx == len(lines) - 1 else "Press Z to continue..."
+        _wait_for_z(prompt)
 
 
 def main_loop():
@@ -2403,7 +2412,7 @@ def main_loop():
     last_tick_time = time.time()
     threading.Thread(target=key_listener, daemon=True).start()
 
-    if game.get("money_since_reset", 0) == 0 and game.get("money", 0) == 0:
+    if not game.get("intro_played", False):
         msg = [
             "You wake at a desk whose corners refuse to meet.",
             "The dark hums like something counting you.",
@@ -2412,6 +2421,8 @@ def main_loop():
             "Something tilts when you try to stand.",
         ]
         typewriter_message(msg, title=" ??? ", speed=0.05)
+        game["intro_played"] = True
+        save_game()
         time.sleep(1.0)
 
     if game.get("layer", 0) >= 1 and not game.get("inspiration_unlocked", False):
