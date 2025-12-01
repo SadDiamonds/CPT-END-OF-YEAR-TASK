@@ -4,10 +4,10 @@ BASE_MONEY_MULT = 1.0
 
 CURRENCY_SYMBOL = "¤"
 STABILITY_CURRENCY_NAME = "Stability Sparks"
-STABILITY_REWARD_MULT = 0.4
-STABILITY_REWARD_EXP = 0.42
+STABILITY_REWARD_MULT = 0.5
+STABILITY_REWARD_EXP = 0.55
 
-WAKE_TIMER_START = 90
+WAKE_TIMER_START = 120
 WAKE_TIMER_UPGRADES = [
     {
         "id": "wake_breath",
@@ -19,14 +19,14 @@ WAKE_TIMER_UPGRADES = [
     {
         "id": "wake_anchor",
         "name": "Anchor Points",
-        "cost": 320,
+        "cost": 250,
         "time_bonus": 180,
         "desc": "Tether the loop, +3 minutes.",
     },
     {
         "id": "wake_lock",
         "name": "Phase Lock",
-        "cost": 1400,
+        "cost": 1000,
         "time_bonus": 0,
         "grant_infinite": True,
         "desc": "Seal the breach and stop the timer forever.",
@@ -59,13 +59,13 @@ LAYER_FLOW = [
     {
         "id": 2,
         "key": "archive",
-        "name": "Stacks",
-        "currency_name": "Threads",
-        "currency_suffix": "Th",
+        "name": "The Echo",
+        "currency_name": "Echoes",
+        "currency_suffix": "Ec",
         "storage_key": "concepts",
         "unlock_money": 100_000_000,
         "border_id": 2,
-        "desc": "Shelves lean away from your gaze, hiding spines.",
+        "desc": "A hollow frequency where reality used to be.",
     },
     {
         "id": 3,
@@ -304,58 +304,94 @@ INSPIRE_UPGRADES = [
 CONCEPT_UPGRADES = [
     {
         "id": "concept_autowork",
-        "name": "Auto‑Work",
+        "name": "Signal Tuner",
         "cost": 1,
         "type": "unlock_autowork",
         "value": 1,
         "max_level": 1,
         "cost_mult": 1.3,
-        "desc": "Unlocks automatic work cycles",
+        "desc": "Unlocks automatic work cycles via signal resonance.",
     },
     {
         "id": "concept_autospeed",
-        "name": "Automation Speed",
+        "name": "Waveform Compression",
         "base_cost": 5,
         "type": "work_mult",
         "max_level": 10,
         "cost_mult": 2.0,
         "base_value": 0.95,
         "value_mult": 0.95,
-        "desc": "Reduces auto‑work delay",
+        "desc": "Compresses the signal. Reduces auto-work delay.",
     },
     {
         "id": "concept_autoeff",
-        "name": "Automation Efficiency",
+        "name": "Amplitude Boost",
         "base_cost": 10,
         "type": "auto_money_mult",
         "max_level": 10,
         "cost_mult": 2.0,
         "base_value": 1.2,
         "value_mult": 1.1,
-        "desc": "Boosts auto‑work money gain",
+        "desc": "Amplifies the signal. Boosts auto-work income.",
     },
     {
         "id": "concept_rate",
-        "name": "Conceptual Drift",
+        "name": "Echo Chamber",
         "base_cost": 20,
         "type": "concept_rate",
         "max_level": 6,
         "cost_mult": 2.2,
         "base_value": 1.5,
         "value_mult": 1.12,
-        "desc": "×1.5 Co gain, +12% per level",
+        "desc": "Reverberates the void. x1.5 Echo gain.",
     },
     {
         "id": "concept_mastery",
-        "name": "Eureka",
+        "name": "Harmonic Convergence",
         "base_cost": 25,
         "type": "money_mult",
         "max_level": 8,
         "cost_mult": 2.3,
         "base_value": 1.3,
         "value_mult": 1.15,
-        "desc": "BIG x¤ boost",
+        "desc": "Aligns all frequencies. Big income boost.",
     },
+    {
+        "id": "concept_stabilizer",
+        "name": "Phase Lock",
+        "base_cost": 50,
+        "type": "resonance_stability",
+        "max_level": 5,
+        "cost_mult": 2.5,
+        "base_value": 0.9,
+        "value_mult": 0.9,
+        "desc": "Stabilizes the signal drift.",
+    },
+    {
+        "id": "concept_breach",
+        "name": "Reality Breach",
+        "base_cost": 100,
+        "type": "unlock_rpg",
+        "value": 1,
+        "max_level": 1,
+        "cost_mult": 1.0,
+        "desc": "Tears a hole in the static. Unlocks the Anti-Realm.",
+    },
+]
+
+RESONANCE_MAX = 100
+RESONANCE_START = 50
+RESONANCE_TARGET_WIDTH = 15
+RESONANCE_DRIFT_RATE = 2.0
+RESONANCE_TUNE_POWER = 4.0
+
+RPG_PLAYER_START_HP = 100
+RPG_PLAYER_START_ATK = 5
+RPG_ENEMIES = [
+    {"name": "Glitch Mite", "hp": 20, "atk": 2, "xp": 10, "gold": 5},
+    {"name": "Static Shade", "hp": 50, "atk": 5, "xp": 30, "gold": 15},
+    {"name": "Null Walker", "hp": 120, "atk": 12, "xp": 80, "gold": 40},
+    {"name": "Code Eater", "hp": 300, "atk": 25, "xp": 200, "gold": 100},
 ]
 
 CHARGE_THRESHOLDS = [

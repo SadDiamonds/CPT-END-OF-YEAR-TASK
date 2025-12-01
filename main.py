@@ -51,6 +51,14 @@ from config import (
     STABILITY_CURRENCY_NAME,
     STABILITY_REWARD_MULT,
     STABILITY_REWARD_EXP,
+    RESONANCE_MAX,
+    RESONANCE_START,
+    RESONANCE_TARGET_WIDTH,
+    RESONANCE_DRIFT_RATE,
+    RESONANCE_TUNE_POWER,
+    RPG_PLAYER_START_HP,
+    RPG_PLAYER_START_ATK,
+    RPG_ENEMIES,
     format_number,
 )
 
@@ -131,6 +139,20 @@ game = {
     "needs_stability_reset": False,
     "play_time": 0.0,
     "last_save_timestamp": 0.0,
+    "resonance_val": RESONANCE_START,
+    "resonance_target": 50.0,
+    "resonance_drift_dir": 1,
+    "rpg_unlocked": False,
+    "rpg_data": {
+        "hp": RPG_PLAYER_START_HP,
+        "max_hp": RPG_PLAYER_START_HP,
+        "atk": RPG_PLAYER_START_ATK,
+        "xp": 0,
+        "level": 1,
+        "gold": 0,
+        "current_enemy": None,
+        "log": [],
+    },
 }
 
 
@@ -551,20 +573,28 @@ def render_slot_menu(summaries, highlight_idx=None, phase=0):
             parts = [card[line_idx] if line_idx < len(card) else " " * card_w for card in row_cards]
             grid.append("   ".join(parts))
         grid.append("")
-    clear_screen()
+    
+    # Use ANSI codes to reset cursor and overwrite instead of clearing screen to prevent flicker
+    buffer = []
+    buffer.append("\033[H")  # Move cursor to top-left
+    
     title = "Select Save File"
-    print()
-    print(title.center(term_w))
-    print()
+    buffer.append("\033[2K\n")
+    buffer.append("\033[2K" + title.center(term_w) + "\n")
+    buffer.append("\033[2K\n")
     for line in grid:
-        print(line.center(term_w))
-    print()
-    print("Use arrows to move, Enter to load, D to delete, Q to quit.".center(term_w))
+        buffer.append("\033[2K" + line.center(term_w) + "\n")
+    buffer.append("\033[2K\n")
+    buffer.append("\033[2K" + "Use arrows to move, Enter to load, D to delete, Q to quit.".center(term_w) + "\n")
+    buffer.append("\033[J")  # Clear remaining screen content
+    
+    sys.stdout.write("".join(buffer))
+    sys.stdout.flush()
 
 
 def play_slot_select_animation(selected_idx, frames=6, delay=0.08):
+    summaries = collect_slot_summaries()
     for phase in range(frames):
-        summaries = collect_slot_summaries()
         render_slot_menu(summaries, highlight_idx=selected_idx, phase=phase)
         time.sleep(delay)
 
@@ -583,10 +613,14 @@ def finalize_slot_choice(selected):
 
 
 def choose_save_slot_windows():
+    # Clear any pending input
+    while msvcrt.kbhit():
+        msvcrt.getwch()
+
     selected = 0
     phase = 0
+    summaries = collect_slot_summaries()
     while True:
-        summaries = collect_slot_summaries()
         render_slot_menu(summaries, highlight_idx=selected, phase=phase)
         phase = (phase + 1) % 8
         frame_end = time.time() + 0.08
@@ -611,7 +645,8 @@ def choose_save_slot_windows():
             lower = ch.lower()
             if lower == "q":
                 clear_screen()
-                print("Exiting.")
+                print("Exiting (User pressed Q). Press Enter to close.")
+                input()
                 sys.exit(0)
             if lower == "d":
                 confirm = input(f"Erase slot {selected + 1}? Type YES to confirm: ")
@@ -621,6 +656,7 @@ def choose_save_slot_windows():
                         os.remove(path)
                     if selected == 0 and os.path.exists(LEGACY_SAVE_PATH):
                         os.remove(LEGACY_SAVE_PATH)
+                    summaries = collect_slot_summaries()
                 break
             if ch in ("\r", "\n"):
                 play_slot_select_animation(selected)
@@ -1007,6 +1043,8 @@ def compute_gain_and_delay(auto=False):
             game["focus_unlocked"] = True
         elif t == "unlock_charge" and lvl > 0:
             game["charge_unlocked"] = True
+        elif t == "unlock_rpg" and lvl > 0:
+            game["rpg_unlocked"] = True
 
     if game.get("motivation_unlocked", False):
         motivation = game.get("motivation", MOTIVATION_MAX)
@@ -1024,6 +1062,11 @@ def compute_gain_and_delay(auto=False):
                 delay_mult *= rval**buff_mult
     if time.time() < focus_active_until:
         delay_mult *= FOCUS_BOOST_FACTOR
+    
+    # Apply Resonance Efficiency
+    res_eff = get_resonance_efficiency()
+    gain_mult *= res_eff
+    
     eff_gain = base_gain * gain_mult + gain_add
     eff_gain *= BASE_MONEY_MULT
     eff_gain *= game.get("money_mult", 1.0)
@@ -1336,6 +1379,9 @@ def work_tick():
                 perform_stability_collapse()
             return
     game["wake_timer_locked"] = wake_timer_blocked()
+    
+    update_resonance(delta)
+    
     gain, eff_delay = compute_gain_and_delay(auto=True)
     if game.get("auto_work_unlocked", False) and not wake_timer_blocked():
         work_timer += delta
@@ -1552,6 +1598,12 @@ def calculate_concepts(money_since_reset):
             rate_mult *= val
         elif u["type"] == "concept_mult":
             final_mult *= val
+            
+    # Apply Resonance Efficiency to Echo gain
+    if game.get("layer", 0) >= 2:
+        res_eff = get_resonance_efficiency()
+        final_mult *= res_eff
+        
     return int(base_gain * rate_mult * final_mult)
 
 
@@ -1687,6 +1739,7 @@ def reset_for_concepts():
             "money": 0.0,
             "money_since_reset": 0.0,
             "fatigue": 0,
+            "resonance_val": RESONANCE_START,
             "focus": 0,
             "owned": [],
             "upgrade_levels": {},
@@ -1915,7 +1968,8 @@ def buy_idx_upgrade(upg):
             game["focus_unlocked"] = True
         elif upg.get("type") == "unlock_charge" and current_level > 0:
             game["charge_unlocked"] = True
-        msg = f"Purchased {upg['name']} Lv {current_level}/{max_level}."
+        elif upg.get("type") == "unlock_rpg" and current_level > 0:
+            game["rpg_unlocked"] = True
     tmp = boxed_lines([msg], title=" UPGRADE BAY ", pad_top=1, pad_bottom=1)
     render_frame(tmp)
     time.sleep(0.7)
@@ -1923,78 +1977,105 @@ def buy_idx_upgrade(upg):
 
 
 def play_inspiration_reset_animation():
-    term_w, term_h = shutil.get_terminal_size(fallback=(80, 24))
-    num_zs = 5
-    frames = 15
-    z_lifetime = 6
-    zs = []
+    term_w, term_h = get_term_size()
+    corridor_name = layer_name("corridor")
+    corridor_currency = layer_currency_name("corridor")
+    corridor_height = max(8, min(term_h - 4, 18))
+    frames = corridor_height * 2
+    shimmer_chars = [" ", ".", "·", ":"]
+
     for frame in range(frames):
         clear_screen()
-        screen = [" " * term_w for _ in range(term_h)]
-        if len(zs) < num_zs and random.random() < 0.3:
-            zs.append(
-                {
-                    "y": term_h - 4,
-                    "x": term_w // 2 + random.randint(-10, 10),
-                    "life": z_lifetime,
-                }
+        lines = []
+        depth_shift = max(0, frame - corridor_height)
+        for depth in range(corridor_height):
+            pad = depth * 2 + depth_shift
+            inner = term_w - pad * 2 - 2
+            if inner <= 0:
+                continue
+            filler = shimmer_chars[(depth + frame) % len(shimmer_chars)] * inner
+            if depth % 2 == 0:
+                left, right = "|", "|"
+            else:
+                left, right = "/", "\\"
+            color = Fore.LIGHTYELLOW_EX if depth > corridor_height // 2 else Fore.WHITE
+            line = " " * pad + f"{color}{left}{filler}{right}{Style.RESET_ALL}"
+            lines.append(line[:term_w])
+
+        caption = ansi_center(
+            f"{Fore.LIGHTYELLOW_EX}{corridor_name} inhales everything you built...{Style.RESET_ALL}",
+            term_w,
+        )
+        lines.append("")
+        lines.append(caption)
+        lines.append(
+            ansi_center(
+                f"{Fore.YELLOW}Hold steady. {corridor_currency} condense on the far door.{Style.RESET_ALL}",
+                term_w,
             )
-        for z in zs:
-            y, x = int(z["y"]), int(z["x"])
-            if 0 <= y < term_h and 0 <= x < term_w:
-                row = screen[y]
-                screen[y] = row[:x] + "Z" + row[x + 1 :]
-        print("\n".join(screen))
-        for z in zs:
-            z["y"] -= 1
-            z["x"] += random.choice([-1, 0, 1])
-            z["life"] -= 1
-        zs = [z for z in zs if z["life"] > 0]
-        time.sleep(0.2)
+        )
+        sys.stdout.write("\n".join(lines) + "\n")
+        sys.stdout.flush()
+        time.sleep(0.08)
+
     clear_screen()
-    print("\n" * (term_h // 2))
-    print("!".center(term_w))
-    time.sleep(0.6)
+    flash = ansi_center(
+        f"{Fore.WHITE}>>> {corridor_name} Passage Engaged <<<{Style.RESET_ALL}", term_w
+    )
+    sys.stdout.write("\n" * max(term_h // 2 - 1, 0) + flash + "\n")
+    sys.stdout.flush()
+    time.sleep(0.7)
 
 
 def play_concepts_animation():
-    term_w, term_h = shutil.get_terminal_size(fallback=(80, 24))
-    frames = 22
-    shards = []
-    for f in range(frames):
+    term_w, term_h = get_term_size()
+    archive_name = layer_name("archive")
+    archive_currency = layer_currency_name("archive")
+    rows = max(10, term_h - 4)
+    frames = rows + 12
+    amplitude = max(6, term_w // 6)
+
+    for frame in range(frames):
         clear_screen()
-        screen = [" " * term_w for _ in range(term_h)]
-        if random.random() < 0.35:
-            shards.append(
-                {
-                    "y": term_h - 4,
-                    "x": term_w // 2 + random.randint(-14, 14),
-                    "life": random.randint(4, 8),
-                }
+        lines = []
+        for row in range(rows):
+            phase = frame * 0.25 + row * 0.35
+            offset = int(math.sin(phase) * amplitude)
+            center = term_w // 2 + offset
+            color = Fore.CYAN if (row + frame) % 2 == 0 else Fore.BLUE
+            glyph = "~" if row % 3 else "-"
+            if 0 <= center < term_w:
+                left = " " * center
+                right = " " * max(term_w - center - 1, 0)
+                line = f"{left}{color}{glyph}{Style.RESET_ALL}{right}"
+            else:
+                line = " " * term_w
+            lines.append(line)
+
+        lines.append("")
+        lines.append(
+            ansi_center(
+                f"{Fore.CYAN}{archive_currency} braid themselves into blueprints...{Style.RESET_ALL}",
+                term_w,
             )
-        for s in shards:
-            y, x = int(s["y"]), int(s["x"])
-            if 0 <= y < term_h and 0 <= x < term_w:
-                ch = random.choice(["*", "o", "+", "·"])
-                row = screen[y]
-                screen[y] = row[:x] + ch + row[x + 1 :]
-        print("\n".join(screen))
-        new_shards = []
-        for s in shards:
-            s["y"] -= 1 + random.random() * 0.6
-            s["x"] += random.choice([-1, 0, 1])
-            s["life"] -= 1
-            if s["life"] > 0 and s["y"] >= 0:
-                new_shards.append(s)
-        shards = new_shards
-        time.sleep(0.09)
+        )
+        lines.append(
+            ansi_center(
+                f"{Fore.LIGHTBLUE_EX}{archive_name} crystallizes. Stability trembles.{Style.RESET_ALL}",
+                term_w,
+            )
+        )
+        sys.stdout.write("\n".join(lines) + "\n")
+        sys.stdout.flush()
+        time.sleep(0.07)
+
     clear_screen()
-    mid = term_h // 2
-    lines = [" " * term_w for _ in range(term_h)]
-    title = "Ah HA"
-    lines[mid] = title.center(term_w)
-    print("\n".join(lines))
-    time.sleep(0.7)
+    flash = ansi_center(
+        f"{Fore.CYAN}>>> {archive_name} Resonance Captured <<<{Style.RESET_ALL}", term_w
+    )
+    sys.stdout.write("\n" * max(term_h // 2 - 1, 0) + flash + "\n")
+    sys.stdout.flush()
+    time.sleep(0.9)
 
 
 def open_blackjack_layer():
@@ -2073,6 +2154,45 @@ def key_listener():
                 time.sleep(0.02)
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def get_screen_tabs():
+    tabs = [("work", layer_name("wake", "Desk"))]
+    if game.get("inspiration_unlocked", False):
+        tabs.append(("inspiration", layer_name("corridor")))
+    if game.get("concepts_unlocked", False):
+        tabs.append(("concepts", layer_name("archive")))
+    if game.get("rpg_unlocked", False):
+        tabs.append(("rpg", "Anti-Realm"))
+    return tabs
+
+
+def build_tab_bar_text(current_screen):
+    tabs = get_screen_tabs()
+    if not tabs:
+        return ""
+    parts = []
+    for screen_id, label in tabs:
+        label = label or screen_id.title()
+        if screen_id == current_screen:
+            parts.append(f"{Back.WHITE}{Fore.BLACK} {label} {Style.RESET_ALL}")
+        else:
+            parts.append(f"{Fore.WHITE}{label}{Style.RESET_ALL}")
+    bar = "  ".join(parts)
+    if len(tabs) > 1:
+        bar += f"   {Fore.YELLOW}(, / . to change views){Style.RESET_ALL}"
+    return bar
+
+
+def cycle_screen(current_screen, direction):
+    tabs = [tab[0] for tab in get_screen_tabs()]
+    if not tabs:
+        return current_screen
+    if current_screen not in tabs:
+        return tabs[0]
+    idx = tabs.index(current_screen)
+    idx = (idx + direction) % len(tabs)
+    return tabs[idx]
 
 
 def render_ui(screen="work"):
@@ -2162,6 +2282,7 @@ def render_ui(screen="work"):
             bottom_left_lines.append(
                 f"Holdings: {Fore.CYAN}{format_number(game.get('concepts', 0))}{Style.RESET_ALL} {archive_currency}"
             )
+            bottom_left_lines.append(build_resonance_bar())
             bottom_left_lines.append("")
         if game.get("money_since_reset", 0) >= CONCEPTS_UNLOCK_MONEY:
             bottom_left_lines.append(
@@ -2172,6 +2293,8 @@ def render_ui(screen="work"):
             )
             bottom_left_lines.append("")
             bottom_left_lines.append(f"[2] Open {archive_name} board")
+            if game.get("rpg_unlocked", False):
+                bottom_left_lines.append(f"[R] Enter Anti-Realm")
         else:
             bottom_left_lines.append(
                 f"Reach {format_currency(CONCEPTS_UNLOCK_MONEY)} to decipher {archive_name}."
@@ -2200,6 +2323,11 @@ def render_ui(screen="work"):
         middle_lines.append("[T] Buy stabilizers")
     middle_lines.append("")
     middle_lines += render_desk_table()
+
+    tab_line = build_tab_bar_text(screen)
+    if tab_line:
+        middle_lines.insert(0, "")
+        middle_lines.insert(0, tab_line)
     if game.get("focus_unlocked", False):
         focus_max = FOCUS_MAX + game.get("focus_max_bonus", 0)
         fprog = min(game.get("focus", 0) / float(focus_max), 1.0)
@@ -2393,6 +2521,227 @@ def typewriter_message(lines, title, speed=0.03):
         _wait_for_z(prompt)
 
 
+def update_resonance(delta):
+    if game.get("layer", 0) < 2:
+        return
+
+    # Initialize if missing
+    if "resonance_val" not in game:
+        game["resonance_val"] = RESONANCE_START
+        game["resonance_target"] = 50.0
+        game["resonance_drift_dir"] = 1
+
+    # Move target slowly
+    target = game["resonance_target"]
+    target += (random.random() - 0.5) * delta * 2.0
+    target = max(10, min(90, target))
+    game["resonance_target"] = target
+
+    # Drift value
+    val = game["resonance_val"]
+    drift_speed = RESONANCE_DRIFT_RATE
+    
+    # Check for Phase Lock upgrade
+    drift_mult = 1.0
+    for upg in game.get("concept_upgrades", []):
+        if upg["id"] == "concept_stabilizer":
+            level = upg.get("level", 0)
+            drift_mult *= (0.9 ** level)
+            
+    val += game["resonance_drift_dir"] * drift_speed * drift_mult * delta
+    
+    # Randomly switch drift direction
+    if random.random() < 0.05 * delta:
+        game["resonance_drift_dir"] *= -1
+        
+    # Bounce off edges
+    if val <= 0 or val >= RESONANCE_MAX:
+        game["resonance_drift_dir"] *= -1
+        
+    game["resonance_val"] = max(0, min(RESONANCE_MAX, val))
+
+
+def get_resonance_efficiency():
+    if game.get("layer", 0) < 2:
+        return 1.0
+        
+    val = game.get("resonance_val", RESONANCE_START)
+    target = game.get("resonance_target", 50.0)
+    width = RESONANCE_TARGET_WIDTH
+    
+    # Check for upgrades that widen the sweet spot?
+    # For now just use constant
+    
+    dist = abs(val - target)
+    if dist <= width:
+        return 1.5 # Bonus for being in tune
+    
+    # Falloff
+    penalty = (dist - width) * 0.02
+    return max(0.1, 1.0 - penalty)
+    
+
+def build_resonance_bar():
+    val = game.get("resonance_val", RESONANCE_START)
+    target = game.get("resonance_target", 50.0)
+    width = RESONANCE_TARGET_WIDTH
+    bar_len = 30
+    
+    chars = [" "] * bar_len
+    
+    # Draw target zone
+    start_pct = (target - width) / RESONANCE_MAX
+    end_pct = (target + width) / RESONANCE_MAX
+    start_idx = int(start_pct * bar_len)
+    end_idx = int(end_pct * bar_len)
+    
+    for i in range(max(0, start_idx), min(bar_len, end_idx + 1)):
+        chars[i] = "="
+        
+    # Draw needle
+    val_pct = val / RESONANCE_MAX
+    val_idx = int(val_pct * (bar_len - 1))
+    val_idx = max(0, min(bar_len - 1, val_idx))
+    
+    if chars[val_idx] == "=":
+        chars[val_idx] = "█" # Hit!
+    else:
+        chars[val_idx] = "|"
+        
+    bar_str = "".join(chars)
+    eff = get_resonance_efficiency()
+    color = Fore.GREEN if eff > 1.0 else (Fore.YELLOW if eff > 0.5 else Fore.RED)
+    
+    return f"Signal: [{color}{bar_str}{Style.RESET_ALL}] {int(eff*100)}% ([ / ])"
+
+
+def rpg_log(msg):
+    rpg = game.get("rpg_data", {})
+    log = rpg.get("log", [])
+    log.append(msg)
+    if len(log) > 8:
+        log.pop(0)
+    rpg["log"] = log
+
+def spawn_enemy():
+    rpg = game.get("rpg_data", {})
+    level = rpg.get("level", 1)
+    # Simple scaling: pick enemy based on level or random
+    enemy_template = random.choice(RPG_ENEMIES)
+    
+    # Scale enemy stats
+    scale = 1.0 + (level * 0.2)
+    
+    new_enemy = {
+        "name": enemy_template["name"],
+        "hp": int(enemy_template["hp"] * scale),
+        "max_hp": int(enemy_template["hp"] * scale),
+        "atk": int(enemy_template["atk"] * scale),
+        "xp": int(enemy_template["xp"] * scale),
+        "gold": int(enemy_template.get("gold", 0) * scale),
+    }
+    rpg["current_enemy"] = new_enemy
+    rpg_log(f"A {new_enemy['name']} appears!")
+
+def rpg_attack():
+    rpg = game.get("rpg_data", {})
+    enemy = rpg.get("current_enemy")
+    if not enemy:
+        spawn_enemy()
+        return
+
+    # Player attacks
+    dmg = rpg.get("atk", 5)
+    # Crit chance?
+    if random.random() < 0.1:
+        dmg *= 2
+        rpg_log(f"CRITICAL HIT! You deal {dmg} damage.")
+    else:
+        rpg_log(f"You deal {dmg} damage.")
+        
+    enemy["hp"] -= dmg
+    
+    if enemy["hp"] <= 0:
+        rpg_log(f"Defeated {enemy['name']}!")
+        rpg_log(f"Gained {enemy['xp']} XP and {enemy['gold']} Gold.")
+        rpg["xp"] += enemy["xp"]
+        rpg["gold"] += enemy["gold"]
+        rpg["current_enemy"] = None
+        
+        # Level up check
+        req_xp = rpg["level"] * 100
+        if rpg["xp"] >= req_xp:
+            rpg["xp"] -= req_xp
+            rpg["level"] += 1
+            rpg["max_hp"] += 20
+            rpg["hp"] = rpg["max_hp"]
+            rpg["atk"] += 2
+            rpg_log(f"LEVEL UP! You are now level {rpg['level']}.")
+    else:
+        # Enemy attacks back
+        e_dmg = max(0, enemy["atk"]) # Defense?
+        rpg["hp"] -= e_dmg
+        rpg_log(f"{enemy['name']} hits you for {e_dmg} damage.")
+        
+        if rpg["hp"] <= 0:
+            rpg_log("You have been defeated...")
+            rpg["hp"] = rpg["max_hp"]
+            rpg["current_enemy"] = None
+            # Penalty?
+
+def render_rpg_screen():
+    term_w, term_h = get_term_size()
+    clear_screen()
+    
+    rpg = game.get("rpg_data", {})
+    
+    lines = []
+    tab_line = build_tab_bar_text("rpg")
+    if tab_line:
+        lines.append(ansi_center(tab_line, term_w))
+        lines.append("")
+    lines.append(f"{Fore.RED}=== THE ANTI-REALM ==={Style.RESET_ALL}".center(term_w))
+    lines.append("")
+    
+    # Player Stats
+    p_stats = f"LVL: {rpg['level']}  HP: {rpg['hp']}/{rpg['max_hp']}  ATK: {rpg['atk']}  XP: {rpg['xp']}/{rpg['level']*100}  GOLD: {rpg['gold']}"
+    lines.append(p_stats.center(term_w))
+    lines.append("-" * term_w)
+    
+    # Enemy Area
+    lines.append("")
+    enemy = rpg.get("current_enemy")
+    if enemy:
+        e_name = f"{Fore.MAGENTA}{enemy['name']}{Style.RESET_ALL}"
+        e_hp = f"HP: {enemy['hp']}/{enemy['max_hp']}"
+        lines.append(f"VS  {e_name}".center(term_w))
+        lines.append(e_hp.center(term_w))
+        
+        # Health bar
+        bar_len = 40
+        pct = max(0, enemy['hp']) / enemy['max_hp']
+        filled = int(pct * bar_len)
+        bar = "[" + "#" * filled + " " * (bar_len - filled) + "]"
+        lines.append(bar.center(term_w))
+    else:
+        lines.append("No enemy present.".center(term_w))
+        lines.append("")
+        lines.append("")
+        
+    lines.append("")
+    lines.append("-" * term_w)
+    
+    # Log
+    for msg in rpg.get("log", []):
+        lines.append(msg.center(term_w))
+        
+    # Controls
+    lines.append("")
+    lines.append("[A] Attack  [H] Heal (Cost: 50 Gold)  [B] Back".center(term_w))
+    
+    for line in lines:
+        print(line)
+
 def main_loop():
     global KEY_PRESSED, running, work_timer, last_tick_time, last_manual_time, last_render
     choose_save_slot()
@@ -2434,6 +2783,7 @@ def main_loop():
     try:
         while running:
             work_tick()
+            update_resonance(0.05)
 
             if not game.get("mystery_revealed", False) and game.get("money_since_reset", 0) >= 100:
                 game["mystery_revealed"] = True
@@ -2448,7 +2798,11 @@ def main_loop():
                 save_game()
                 last_render = ""
 
-            render_ui(screen=current_screen)
+            if current_screen == "rpg":
+                render_rpg_screen()
+            else:
+                render_ui(screen=current_screen)
+                
             if KEY_PRESSED:
                 k_raw = KEY_PRESSED
                 KEY_PRESSED = None
@@ -2470,9 +2824,40 @@ def main_loop():
                 except Exception:
                     k = k_raw
 
-                if k == "q":
+                # Global Tuning Keys
+                if k == "[":
+                    if game.get("layer", 0) >= 2:
+                        game["resonance_val"] = max(0, game.get("resonance_val", RESONANCE_START) - RESONANCE_TUNE_POWER)
+                elif k == "]":
+                    if game.get("layer", 0) >= 2:
+                        game["resonance_val"] = min(RESONANCE_MAX, game.get("resonance_val", RESONANCE_START) + RESONANCE_TUNE_POWER)
+                elif k in (",", "."):
+                    direction = -1 if k == "," else 1
+                    next_screen = cycle_screen(current_screen, direction)
+                    if next_screen != current_screen:
+                        current_screen = next_screen
+                        if current_screen != "rpg":
+                            last_render = ""
+                        continue
+                
+                elif k == "q":
                     running = False
                     break
+                
+                elif current_screen == "rpg":
+                    if k == "b":
+                        current_screen = "work"
+                    elif k == "a":
+                        rpg_attack()
+                    elif k == "h":
+                        rpg = game.get("rpg_data", {})
+                        if rpg.get("gold", 0) >= 50:
+                            rpg["gold"] -= 50
+                            rpg["hp"] = min(rpg["max_hp"], rpg["hp"] + 20)
+                            rpg_log("Healed 20 HP.")
+                        else:
+                            rpg_log("Not enough gold!")
+                
                 elif k == "w":
                     now = time.time()
                     if now - last_manual_time > 0.1:
@@ -2498,12 +2883,6 @@ def main_loop():
                     ok, msg = activate_focus()
                     tmp = boxed_lines([msg], title=" Focus ", pad_top=1, pad_bottom=1)
                     render_frame(tmp)
-
-
-
-
-
-
                     time.sleep(1.0)
                 elif k == "i":
                     reset_for_inspiration()
@@ -2511,6 +2890,9 @@ def main_loop():
                 elif k == "c":
                     reset_for_concepts()
                     current_screen = "work"
+                elif k == "r" and game.get("rpg_unlocked", False):
+                    current_screen = "rpg"
+                    
                 elif (
                     current_screen == "work"
                     and k == "1"
@@ -2550,15 +2932,17 @@ def main_loop():
                         if 0 <= idx < len(CONCEPT_UPGRADES):
                             buy_tree_upgrade(CONCEPT_UPGRADES, idx)
                         time.sleep(0.2)
-            time.sleep(0.05)
-    except KeyboardInterrupt:
-        pass
+    except Exception:
+        traceback.print_exc()
+        running = False
     finally:
         save_game()
-        clear_screen()
-        print("Saved. Bye!")
 
 
 if __name__ == "__main__":
-    main_loop()
-    os.system("cls" if os.name == "nt" else "clear")
+    try:
+        main_loop()
+    except Exception:
+        traceback.print_exc()
+        input("Press Enter to exit...")
+
