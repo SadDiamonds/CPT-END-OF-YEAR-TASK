@@ -68,6 +68,66 @@ from config import (
 
 import blackjack
 
+RPG_DESKTOP_APPS = [
+    {
+        "id": "game",
+        "name": "GAME.EXE",
+        "icon": "■",
+        "tooltip": "Boot the Anti-Realm client.",
+    },
+    {
+        "id": "safari",
+        "name": "Safari",
+        "icon": "◎",
+        "tooltip": "Nothing beyond the loop answers.",
+    },
+    {
+        "id": "trash",
+        "name": "Trash Bin",
+        "icon": "♻",
+        "tooltip": "Already empty. Lucky.",
+    },
+]
+
+RPG_DESKTOP_COLS = 2
+
+RPG_ICON_ART = {
+    "game": [
+        "┌──────────┐",
+        "│ █▓██▓██ │",
+        "│  GAME.EXE│",
+        "│  ENTER→  │",
+        "└──────────┘",
+    ],
+    "safari": [
+        "┌──────────┐",
+        "│  ╲ ╱  ☼ │",
+        "│   ⌖  /  │",
+        "│  ╱ ╲     │",
+        "└──────────┘",
+    ],
+    "trash": [
+        "┌──────────┐",
+        "│  ______  │",
+        "│ | ____ | │",
+        "│ |______| │",
+        "└──────────┘",
+    ],
+}
+
+_DEFAULT_ICON_ART = [
+    "┌────┐",
+    "│ ?? │",
+    "│ ?? │",
+    "└────┘",
+]
+
+RPG_ICON_HEIGHT = max(len(art) for art in list(RPG_ICON_ART.values()) + [_DEFAULT_ICON_ART])
+RPG_ICON_WIDTH = max(
+    max(len(line) for line in art)
+    for art in list(RPG_ICON_ART.values()) + [_DEFAULT_ICON_ART]
+)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -201,6 +261,10 @@ game = {
     "resonance_drift_dir": 1,
     "rpg_unlocked": False,
     "rpg_data": default_rpg_data(),
+    "rpg_view": "desktop",
+    "rpg_icon_index": 0,
+    "rpg_desktop_hint": "",
+    "rpg_hint_until": 0.0,
 }
 
 
@@ -457,6 +521,10 @@ def load_game():
     game.setdefault("battery_tier", 1)
     game.setdefault("insp_page", 0)
     game.setdefault("concept_page", 0)
+    game.setdefault("rpg_view", "desktop")
+    game.setdefault("rpg_icon_index", 0)
+    game.setdefault("rpg_desktop_hint", "")
+    game.setdefault("rpg_hint_until", 0.0)
     game.setdefault("mystery_revealed", False)
     game.setdefault("pulses", 0)
     game.setdefault("veils", 0)
@@ -3311,59 +3379,234 @@ def rpg_handle_command(k):
             rpg_use_potion()
 
 
+def _desktop_icon_count():
+    return len(RPG_DESKTOP_APPS)
+
+
+def _ensure_desktop_hint_state():
+    if time.time() > game.get("rpg_hint_until", 0.0):
+        game["rpg_desktop_hint"] = ""
+        game["rpg_hint_until"] = 0.0
+
+
+def set_rpg_desktop_hint(text, duration=2.5):
+    game["rpg_desktop_hint"] = text
+    game["rpg_hint_until"] = time.time() + duration
+
+
+def move_rpg_desktop_cursor(direction):
+    total = max(1, _desktop_icon_count())
+    cols = max(1, RPG_DESKTOP_COLS)
+    idx = max(0, min(total - 1, game.get("rpg_icon_index", 0)))
+    row, col = divmod(idx, cols)
+    if direction == "w" and row > 0:
+        idx = (row - 1) * cols + col
+        if idx >= total:
+            idx = total - 1
+    elif direction == "s":
+        candidate = (row + 1) * cols + col
+        if candidate < total:
+            idx = candidate
+    elif direction == "a" and col > 0:
+        idx -= 1
+    elif direction == "d":
+        candidate = idx + 1
+        if (col + 1) < cols and candidate < total:
+            idx = candidate
+    game["rpg_icon_index"] = idx
+
+
+def activate_desktop_icon(index):
+    total = _desktop_icon_count()
+    if not (0 <= index < total):
+        return "noop"
+    icon = RPG_DESKTOP_APPS[index]
+    ident = icon.get("id")
+    if ident == "game":
+        game["rpg_view"] = "game"
+        set_rpg_desktop_hint("Booting GAME.EXE...")
+        return "launch_game"
+    if ident == "safari":
+        set_rpg_desktop_hint("Internet Explorer peers into static. No signal found.")
+        return "hint"
+    if ident == "trash":
+        set_rpg_desktop_hint("Trash Bin reports: already empty.")
+        return "hint"
+    return "noop"
+
+
+def build_rpg_desktop_view(width, max_lines):
+    lines = []
+    header = f"{Back.BLUE}{Fore.WHITE} DustOS 98 :: Desktop {Style.RESET_ALL}"
+    lines.append(pad_visible_line(header, width))
+    lines.append("")
+    cols = RPG_DESKTOP_COLS
+    col_width = max(RPG_ICON_WIDTH + 6, width // max(1, cols))
+    rows = math.ceil(_desktop_icon_count() / cols)
+    idx = 0
+    for _ in range(rows):
+        icon_blocks = [[" " * col_width for _ in range(RPG_ICON_HEIGHT)] for _ in range(cols)]
+        labels = [" " * col_width for _ in range(cols)]
+        for col in range(cols):
+            if idx < _desktop_icon_count():
+                icon = RPG_DESKTOP_APPS[idx]
+                art = RPG_ICON_ART.get(icon["id"], _DEFAULT_ICON_ART)
+                selected = idx == game.get("rpg_icon_index", 0)
+                padded = art[:]
+                if len(padded) < RPG_ICON_HEIGHT:
+                    padded = padded + ["" for _ in range(RPG_ICON_HEIGHT - len(padded))]
+                block = []
+                for line in padded:
+                    snippet = line.center(col_width)
+                    block.append(snippet)
+                icon_blocks[col] = block
+                label = f"> {icon['name']}" if selected else f"  {icon['name']}"
+                labels[col] = label.center(col_width)
+            idx += 1
+        for row_idx in range(RPG_ICON_HEIGHT):
+            combined = "".join(icon_blocks[col][row_idx] for col in range(cols))
+            lines.append(combined.rstrip())
+        lines.append("".join(labels).rstrip())
+        lines.append("")
+    hint = game.get("rpg_desktop_hint", "")
+    if hint:
+        lines.append(pad_visible_line(hint, width))
+    lines.append("")
+    lines.append(
+        pad_visible_line(
+            "Use arrow keys to move · Enter to open · B to return to the desk",
+            width,
+        )
+    )
+    lines.append(pad_visible_line("[,][.] switch realms", width))
+    return lines[:max_lines]
+
+
+def build_rpg_game_view(rpg, width, max_lines):
+    lines = []
+    title = (
+        f"{Back.BLUE}{Fore.WHITE} GAME.EXE — Floor {rpg.get('floor', 1)} {Style.RESET_ALL}"
+    )
+    lines.append(pad_visible_line(title, width))
+    lines.append("".ljust(width, "─"))
+    xp_goal = rpg.get("level", 1) * 120
+    stats = (
+        f"LV {rpg['level']}  HP {rpg['hp']}/{rpg['max_hp']}  ATK {rpg['atk']}  DEF {rpg.get('def', 0)}  "
+        f"XP {rpg['xp']}/{xp_goal}  GOLD {rpg['gold']}  POTIONS {rpg['inventory'].get('potion', 0)}"
+    )
+    lines.append(pad_visible_line(stats, width))
+    relics = rpg.get("relics", [])
+    if relics:
+        names = ", ".join(
+            RPG_RELIC_LOOKUP.get(rid, {"name": "Unknown"})["name"]
+            for rid in relics[:3]
+        )
+        more = "..." if len(relics) > 3 else ""
+        lines.append(pad_visible_line(f"Relics: {names}{more}", width))
+    lines.append("")
+    for row in build_rpg_map_lines(rpg):
+        lines.append(pad_visible_line(ansi_center(row, width), width))
+    lines.append("")
+    room = current_rpg_room(rpg)
+    lines.append(pad_visible_line(f"Room: {describe_rpg_room(room)}", width))
+    lines.append("")
+    if rpg.get("state") == "combat" and rpg.get("current_enemy"):
+        enemy = rpg["current_enemy"]
+        lines.append(
+            pad_visible_line(
+                f"{Fore.MAGENTA}{enemy['name']}{Style.RESET_ALL}  HP {enemy['hp']}/{enemy['max_hp']}  ATK {enemy['atk']}",
+                width,
+            )
+        )
+        bar_len = max(12, width - 10)
+        pct = max(0, enemy["hp"]) / max(1, enemy["max_hp"])
+        filled = int(pct * bar_len)
+        bar = "[" + "#" * filled + "-" * (bar_len - filled) + "]"
+        lines.append(pad_visible_line(bar, width))
+        lines.append("")
+    lines.append("".ljust(width, "─"))
+    for msg in rpg.get("log", [])[-6:]:
+        lines.append(pad_visible_line(msg, width))
+    lines.append("".ljust(width, "─"))
+    if rpg.get("state") == "combat":
+        action_line = "[A]ttack  [P]otion  [F]lee  (Enter: minimize disabled in combat)"
+    else:
+        action_line = "WASD move · P potion · Enter to minimize · B to close"
+    lines.append(pad_visible_line(action_line, width))
+    lines.append(pad_visible_line("[,][.] switch realms", width))
+    return lines[:max_lines]
+
+
+def build_monitor_frame(inner_lines, glass_width, term_w, term_h):
+    glass_width = max(30, glass_width)
+    glass_width = min(glass_width, term_w - 4)
+    case_width = glass_width + 4
+    left_pad = max(0, (term_w - case_width) // 2)
+    max_glass_lines = max(12, term_h - 8)
+    content = inner_lines[:max_glass_lines]
+    while len(content) < max_glass_lines:
+        content.append("")
+    output = []
+    visible_height = max_glass_lines + 6
+    top_margin = max(0, (term_h - visible_height) // 2)
+    output.extend(["" for _ in range(top_margin)])
+    output.append(" " * left_pad + "╭" + "─" * case_width + "╮")
+    output.append(" " * left_pad + "│" + " " * case_width + "│")
+    output.append(
+        " " * left_pad + "│" + "┌" + "─" * glass_width + "┐" + "│"
+    )
+    for raw in content:
+        padded = pad_visible_line(raw, glass_width)
+        output.append(
+            " " * left_pad + "│" + "│" + padded + "│" + "│"
+        )
+    output.append(
+        " " * left_pad + "│" + "└" + "─" * glass_width + "┘" + "│"
+    )
+    knob = ("◉" + " " * max(0, glass_width - 8) + "▢").center(glass_width)
+    output.append(" " * left_pad + "│" + knob + "│")
+    output.append(" " * left_pad + "╰" + "─" * case_width + "╯")
+    stand_center = left_pad + (case_width // 2)
+    output.append(" " * max(0, stand_center - 2) + "╭┴╮")
+    output.append(" " * max(0, stand_center - 4) + "╱____╲")
+    return output
+
+
+def handle_rpg_desktop_input(key):
+    if key == "b":
+        return "exit"
+    if key in {"w", "a", "s", "d"}:
+        move_rpg_desktop_cursor(key)
+        return "move"
+    if key == "enter":
+        return activate_desktop_icon(game.get("rpg_icon_index", 0))
+    return None
+
+
 def render_rpg_screen():
     global last_render, last_size
     rpg = ensure_rpg_state()
     term_w, term_h = get_term_size()
     current_size = (term_w, term_h)
     resized = current_size != last_size
-    lines = []
+    usable_w = max(32, term_w - 6)
+    glass_width = min(term_w - 6, usable_w)
+    glass_width = max(30, glass_width)
+    max_lines = max(18, term_h - 10)
+    view = game.get("rpg_view", "desktop")
+    _ensure_desktop_hint_state()
+    if view == "desktop":
+        inner_lines = build_rpg_desktop_view(glass_width, max_lines)
+    else:
+        inner_lines = build_rpg_game_view(rpg, glass_width, max_lines)
+    monitor_lines = build_monitor_frame(inner_lines, glass_width, term_w, term_h)
     tab_line = build_tab_bar_text("rpg")
     if tab_line:
-        lines.append(ansi_center(tab_line, term_w))
-        lines.append("")
-    lines.append(ansi_center(f"{Fore.RED}=== THE ANTI-REALM · FLOOR {rpg.get('floor', 1)} ==={Style.RESET_ALL}", term_w))
-    lines.append("")
-    xp_goal = rpg.get("level", 1) * 120
-    stats = (
-        f"LVL {rpg['level']}  HP {rpg['hp']}/{rpg['max_hp']}  ATK {rpg['atk']}  DEF {rpg.get('def', 0)}  "
-        f"XP {rpg['xp']}/{xp_goal}  GOLD {rpg['gold']}  POTIONS {rpg['inventory'].get('potion', 0)}"
-    )
-    lines.append(ansi_center(stats, term_w))
-    relics = rpg.get("relics", [])
-    if relics:
-        names = ", ".join(RPG_RELIC_LOOKUP.get(rid, {"name": "Unknown Relic"})["name"] for rid in relics[:3])
-        more = "..." if len(relics) > 3 else ""
-        lines.append(ansi_center(f"Relics: {names}{more}", term_w))
-    lines.append("")
-    for row in build_rpg_map_lines(rpg):
-        lines.append(ansi_center(row, term_w))
-    lines.append("")
-    room = current_rpg_room(rpg)
-    lines.append(ansi_center(f"Room: {describe_rpg_room(room)}", term_w))
-    lines.append("")
-    if rpg.get("state") == "combat" and rpg.get("current_enemy"):
-        enemy = rpg["current_enemy"]
-        lines.append(ansi_center(f"{Fore.MAGENTA}{enemy['name']}{Style.RESET_ALL}  HP {enemy['hp']}/{enemy['max_hp']}  ATK {enemy['atk']}", term_w))
-        bar_len = 32
-        pct = max(0, enemy["hp"]) / max(1, enemy["max_hp"])
-        filled = int(pct * bar_len)
-        bar = "[" + "#" * filled + "-" * (bar_len - filled) + "]"
-        lines.append(ansi_center(bar, term_w))
-        lines.append("")
-    divider = "-" * term_w
-    lines.append(divider)
-    for msg in rpg.get("log", []):
-        lines.append(ansi_center(msg, term_w))
-    lines.append(divider)
-    if rpg.get("state") == "combat":
-        lines.append(ansi_center("[A]ttack  [P]otion  [F]lee", term_w))
-    else:
-        lines.append(ansi_center("Move with [W][A][S][D] · [P]otion · [B]ack to Desk", term_w))
-    lines.append(ansi_center("[,][.] switch realms", term_w))
-    while len(lines) < term_h:
-        lines.append("")
-    prepared = [pad_visible_line(line, term_w) for line in lines[:term_h]]
+        monitor_lines.insert(0, ansi_center(tab_line, term_w))
+        monitor_lines.insert(1, "")
+    while len(monitor_lines) < term_h:
+        monitor_lines.append("")
+    prepared = [pad_visible_line(line, term_w) for line in monitor_lines[:term_h]]
     if resized:
         sys.stdout.write("\033[2J\033[H")
         last_size = current_size
@@ -3457,10 +3700,13 @@ def main_loop():
                         continue
 
                 if k is None:
-                    try:
-                        k = k_raw.lower()
-                    except Exception:
-                        k = k_raw
+                    if isinstance(k_raw, str) and k_raw in {"\r", "\n", "enter"}:
+                        k = "enter"
+                    else:
+                        try:
+                            k = k_raw.lower()
+                        except Exception:
+                            k = k_raw
 
                 if k in (",", "."):
                     direction = -1 if k == "," else 1
@@ -3479,13 +3725,25 @@ def main_loop():
                 
                 elif current_screen == "rpg":
                     rpg = ensure_rpg_state()
-                    if k == "b":
-                        if rpg.get("state") == "combat":
-                            rpg_log("The foe blocks your escape!")
-                        else:
+                    view = game.get("rpg_view", "desktop")
+                    if view == "desktop":
+                        result = handle_rpg_desktop_input(k)
+                        if result == "exit":
                             current_screen = "work"
                     else:
-                        rpg_handle_command(k)
+                        if k == "enter":
+                            if rpg.get("state") == "combat":
+                                rpg_log("Can't minimize the fight.")
+                            else:
+                                game["rpg_view"] = "desktop"
+                        elif k == "b":
+                            if rpg.get("state") == "combat":
+                                rpg_log("The foe blocks your escape!")
+                            else:
+                                game["rpg_view"] = "desktop"
+                                current_screen = "work"
+                        else:
+                            rpg_handle_command(k)
                 
                 elif k == "w":
                     now = time.time()
