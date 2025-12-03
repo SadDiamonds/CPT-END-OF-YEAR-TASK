@@ -1,4 +1,4 @@
-import json, os, time, sys, threading, shutil, math, select, random, textwrap, subprocess, re, traceback
+import json, os, time, sys, threading, shutil, math, select, random, textwrap, subprocess, re, traceback, copy
 
 try:
     import msvcrt
@@ -28,7 +28,7 @@ from config import (
     BASE_MONEY_GAIN,
     BASE_WORK_DELAY,
     BASE_MONEY_MULT,
-    INSPIRE_UPGRADES,
+    INSPIRE_UPGRADES, 
     CONCEPT_UPGRADES,
     INSPIRATION_UNLOCK_MONEY,
     CONCEPTS_UNLOCK_MONEY,
@@ -56,6 +56,10 @@ from config import (
     RESONANCE_TARGET_WIDTH,
     RESONANCE_DRIFT_RATE,
     RESONANCE_TUNE_POWER,
+    RESONANCE_BASE_INSTABILITY,
+    RESONANCE_MIN_INSTABILITY,
+    RESONANCE_JUMP_CHANCE,
+    RESONANCE_JUMP_POWER,
     RPG_PLAYER_START_HP,
     RPG_PLAYER_START_ATK,
     RPG_ENEMIES,
@@ -70,6 +74,59 @@ os.makedirs(DATA_DIR, exist_ok=True)
 LEGACY_SAVE_PATH = os.path.join(DATA_DIR, "save.json")
 SAVE_SLOT_COUNT = 4
 ACTIVE_SLOT_INDEX = 0
+
+
+RPG_MAP_WIDTH = 5
+RPG_MAP_HEIGHT = 5
+RPG_ROOM_TYPES = [
+    ("enemy", 0.4),
+    ("elite", 0.12),
+    ("treasure", 0.13),
+    ("healer", 0.08),
+    ("trap", 0.12),
+    ("empty", 0.15),
+]
+RPG_ROOM_DESCRIPTIONS = {
+    "start": "the anchor chamber",
+    "enemy": "a nest of hostile glitches",
+    "elite": "a predator built from negative space",
+    "treasure": "a vault of broken relics",
+    "healer": "a campfire of blue code",
+    "trap": "a minefield of static",
+    "empty": "a hollow stretch of hallway",
+    "exit": "a downward fracture",
+}
+RPG_POTION_HEAL_RATIO = 0.45
+RPG_LOG_MAX = 10
+RPG_RELICS = [
+    {"id": "heart_shard", "name": "Fractured Heart", "desc": "+25 Max HP", "effect": "max_hp", "value": 25},
+    {"id": "blade_loop", "name": "Blade Loop", "desc": "+3 ATK", "effect": "atk", "value": 3},
+    {"id": "obsidian_plate", "name": "Obsidian Plate", "desc": "+2 DEF", "effect": "def", "value": 2},
+    {"id": "gilded_eye", "name": "Gilded Eye", "desc": "+15% GOLD", "effect": "gold_bonus", "value": 0.15},
+]
+RPG_RELIC_LOOKUP = {entry["id"]: entry for entry in RPG_RELICS}
+
+
+def default_rpg_data():
+    return {
+        "hp": RPG_PLAYER_START_HP,
+        "max_hp": RPG_PLAYER_START_HP,
+        "atk": RPG_PLAYER_START_ATK,
+        "def": 0,
+        "xp": 0,
+        "level": 1,
+        "gold": 0,
+        "floor": 1,
+        "max_floor": 1,
+        "player_pos": None,
+        "map": [],
+        "state": "explore",
+        "current_enemy": None,
+        "inventory": {"potion": 1},
+        "relics": [],
+        "log": [],
+        "gold_bonus": 0.0,
+    }
 
 
 def slot_save_path(idx):
@@ -143,17 +200,29 @@ game = {
     "resonance_target": 50.0,
     "resonance_drift_dir": 1,
     "rpg_unlocked": False,
-    "rpg_data": {
-        "hp": RPG_PLAYER_START_HP,
-        "max_hp": RPG_PLAYER_START_HP,
-        "atk": RPG_PLAYER_START_ATK,
-        "xp": 0,
-        "level": 1,
-        "gold": 0,
-        "current_enemy": None,
-        "log": [],
-    },
+    "rpg_data": default_rpg_data(),
 }
+
+
+def ensure_rpg_state():
+    defaults = default_rpg_data()
+    rpg = game.setdefault("rpg_data", {})
+    for key, value in defaults.items():
+        if key not in rpg or rpg[key] is None:
+            rpg[key] = copy.deepcopy(value) if isinstance(value, (dict, list)) else value
+    if not isinstance(rpg.get("inventory"), dict):
+        rpg["inventory"] = copy.deepcopy(defaults["inventory"])
+    if "potion" not in rpg["inventory"]:
+        rpg["inventory"]["potion"] = 0
+    if not isinstance(rpg.get("relics"), list):
+        rpg["relics"] = []
+    if not rpg.get("map"):
+        generate_rpg_floor(rpg)
+    if not rpg.get("player_pos") and rpg.get("map"):
+        center_y = len(rpg["map"]) // 2
+        center_x = len(rpg["map"][0]) // 2
+        rpg["player_pos"] = [center_y, center_x]
+    return rpg
 
 
 def knowledge_store():
@@ -379,6 +448,7 @@ def load_game():
     game.setdefault("inspiration_upgrades", [])
     game.setdefault("concept_upgrades", [])
     game.setdefault("upgrade_levels", {})
+    game.setdefault("resonance_repick_cooldown", 0.0)
     game.setdefault("focus_max_bonus", 0)
     game.setdefault("motivation", 0)
     game.setdefault("charge", 0.0)
@@ -409,6 +479,7 @@ def load_game():
     game.setdefault("last_save_timestamp", 0.0)
     if game.get("money_since_reset", 0) >= 100:
         game["mystery_revealed"] = True
+    ensure_rpg_state()
     recalc_wake_timer_state()
     if not game.get("upgrades_unlocked", False) and game.get("owned"):
         game["upgrades_unlocked"] = True
@@ -585,7 +656,7 @@ def render_slot_menu(summaries, highlight_idx=None, phase=0):
     for line in grid:
         buffer.append("\033[2K" + line.center(term_w) + "\n")
     buffer.append("\033[2K\n")
-    buffer.append("\033[2K" + "Use arrows to move, Enter to load, D to delete, Q to quit.".center(term_w) + "\n")
+    buffer.append("\033[2K" + "Use arrows/WASD to move, Enter to load, Shift+D to delete, Q to quit.".center(term_w) + "\n")
     buffer.append("\033[J")  # Clear remaining screen content
     
     sys.stdout.write("".join(buffer))
@@ -648,7 +719,19 @@ def choose_save_slot_windows():
                 print("Exiting (User pressed Q). Press Enter to close.")
                 input()
                 sys.exit(0)
+            if lower == "w":
+                selected = (selected - 2) % SAVE_SLOT_COUNT
+                continue
+            if lower == "s":
+                selected = (selected + 2) % SAVE_SLOT_COUNT
+                continue
             if lower == "d":
+                selected = (selected + 1) % SAVE_SLOT_COUNT
+                continue
+            if lower == "a":
+                selected = (selected - 1) % SAVE_SLOT_COUNT
+                continue
+            if ch == "D":
                 confirm = input(f"Erase slot {selected + 1}? Type YES to confirm: ")
                 if confirm.strip().lower() == "yes":
                     path = slot_save_path(selected)
@@ -678,35 +761,109 @@ def choose_save_slot():
         return
     selected = 0
     phase = 0
-    deleting = False
     try:
         import termios, tty
 
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         tty.setcbreak(fd)
+
+        try:
+            while True:
+                summaries = collect_slot_summaries()
+                render_slot_menu(summaries, highlight_idx=selected, phase=phase)
+                phase = (phase + 1) % 8
+                frame_end = time.time() + 0.08
+                ch = None
+                while time.time() < frame_end:
+                    ready, _, _ = select.select([sys.stdin], [], [], 0)
+                    if ready:
+                        ch = sys.stdin.read(1)
+                        break
+                    time.sleep(0.01)
+                if not ch:
+                    continue
+                if ch == "\x1b":
+                    seq = ch
+                    while True:
+                        ready, _, _ = select.select([sys.stdin], [], [], 0.002)
+                        if not ready:
+                            break
+                        nxt = sys.stdin.read(1)
+                        if not nxt:
+                            break
+                        seq += nxt
+                        if nxt.isalpha():
+                            break
+                    if seq in ("\x1b[A", "\x1bOA"):
+                        selected = (selected - 2) % SAVE_SLOT_COUNT
+                        continue
+                    if seq in ("\x1b[B", "\x1bOB"):
+                        selected = (selected + 2) % SAVE_SLOT_COUNT
+                        continue
+                    if seq in ("\x1b[C", "\x1bOC"):
+                        selected = (selected + 1) % SAVE_SLOT_COUNT
+                        continue
+                    if seq in ("\x1b[D", "\x1bOD"):
+                        selected = (selected - 1) % SAVE_SLOT_COUNT
+                        continue
+                    continue
+                lower = ch.lower()
+                if lower == "w":
+                    selected = (selected - 2) % SAVE_SLOT_COUNT
+                    continue
+                if lower == "s":
+                    selected = (selected + 2) % SAVE_SLOT_COUNT
+                    continue
+                if lower == "d":
+                    selected = (selected + 1) % SAVE_SLOT_COUNT
+                    continue
+                if lower == "a":
+                    selected = (selected - 1) % SAVE_SLOT_COUNT
+                    continue
+                if lower == "q":
+                    clear_screen()
+                    print("Exiting.")
+                    sys.exit(0)
+                if ch == "D":
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    try:
+                        confirm = input(f"Erase slot {selected + 1}? Type YES to confirm: ")
+                    finally:
+                        tty.setcbreak(fd)
+                    if confirm.strip().lower() == "yes":
+                        path = slot_save_path(selected)
+                        if os.path.exists(path):
+                            os.remove(path)
+                        if selected == 0 and os.path.exists(LEGACY_SAVE_PATH):
+                            os.remove(LEGACY_SAVE_PATH)
+                    continue
+                if ch in ("\r", "\n"):
+                    play_slot_select_animation(selected)
+                    finalize_slot_choice(selected)
+                    return
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    except Exception:
+        # fallback to simple input if arrow handling fails
         while True:
             summaries = collect_slot_summaries()
-            render_slot_menu(summaries, highlight_idx=selected, phase=phase)
-            phase = (phase + 1) % 8
-            ch = sys.stdin.read(1)
-            if ch == "\x1b":
-                seq = sys.stdin.read(2)
-                if seq == "[A":  # up
+            render_slot_menu(summaries, highlight_idx=selected)
+            raw_choice = input(">> ").strip()
+            lower_choice = raw_choice.lower()
+            if lower_choice == "q":
+                sys.exit(0)
+            if lower_choice in {"w", "a", "s", "d"}:
+                if lower_choice == "w":
                     selected = (selected - 2) % SAVE_SLOT_COUNT
-                elif seq == "[B":  # down
+                elif lower_choice == "s":
                     selected = (selected + 2) % SAVE_SLOT_COUNT
-                elif seq == "[C":  # right
+                elif lower_choice == "d":
                     selected = (selected + 1) % SAVE_SLOT_COUNT
-                elif seq == "[D":  # left
+                elif lower_choice == "a":
                     selected = (selected - 1) % SAVE_SLOT_COUNT
                 continue
-            if ch.lower() == "q":
-                clear_screen()
-                print("Exiting.")
-                sys.exit(0)
-            if ch.lower() == "d":
-                deleting = True
+            if raw_choice == "D":
                 confirm = input(f"Erase slot {selected + 1}? Type YES to confirm: ")
                 if confirm.strip().lower() == "yes":
                     path = slot_save_path(selected)
@@ -714,22 +871,9 @@ def choose_save_slot():
                         os.remove(path)
                     if selected == 0 and os.path.exists(LEGACY_SAVE_PATH):
                         os.remove(LEGACY_SAVE_PATH)
-                deleting = False
                 continue
-            if ch == "\r" or ch == "\n":
-                play_slot_select_animation(selected)
-                finalize_slot_choice(selected)
-                return
-    except Exception:
-        # fallback to simple input if arrow handling fails
-        while True:
-            summaries = collect_slot_summaries()
-            render_slot_menu(summaries, highlight_idx=selected)
-            choice = input(">> ").strip().lower()
-            if choice == "q":
-                sys.exit(0)
-            if choice.isdigit():
-                idx = int(choice) - 1
+            if lower_choice.isdigit():
+                idx = int(lower_choice) - 1
                 if 0 <= idx < SAVE_SLOT_COUNT:
                     finalize_slot_choice(idx)
                     return
@@ -799,6 +943,16 @@ def ansi_visible_slice(s: str, start: int, width: int) -> str:
     return result
 
 
+def pad_visible_line(text, width):
+    if width <= 0:
+        return ""
+    snippet = ansi_visible_slice(text or "", 0, width)
+    vis = visible_len(snippet)
+    if vis < width:
+        snippet += " " * (width - vis)
+    return snippet
+
+
 def get_term_size():
     try:
         s = shutil.get_terminal_size(fallback=(80, 24))
@@ -815,30 +969,16 @@ def clear_screen():
         sys.stdout.write("\033[H\033[J")
         sys.stdout.flush()
 
-
 def render_frame(lines):
-    frame = "\n".join(lines)
-    clear_screen()
+    global last_render
+    term_w, term_h = get_term_size()
+    prepared = [pad_visible_line(line, term_w) for line in lines]
+    while len(prepared) < term_h:
+        prepared.append(" " * term_w)
+    frame = "\033[H" + "\n".join(prepared[:term_h])
     sys.stdout.write(frame)
     sys.stdout.flush()
-
-
-def get_inspire_info(upg_id):
-    for u in game.get("inspiration_upgrades", []):
-        if isinstance(u, dict) and u.get("id") == upg_id:
-            return True, u.get("level", 1)
-        elif isinstance(u, str) and u == upg_id:
-            return True, 1
-    return False, 0
-
-
-def get_concept_info(upg_id):
-    for u in game.get("concept_upgrades", []):
-        if isinstance(u, dict) and u.get("id") == upg_id:
-            return True, u.get("level", 1)
-        elif isinstance(u, str) and u == upg_id:
-            return True, 1
-    return False, 0
+    last_render = ""
 
 
 def render_battery(charge, tier=None):
@@ -865,23 +1005,47 @@ def render_battery(charge, tier=None):
     ]
 
 
-def wrap_ui_text(text):
+def get_inspire_info(upg_id):
+    for u in game.get("inspiration_upgrades", []):
+        if isinstance(u, dict) and u.get("id") == upg_id:
+            return True, u.get("level", 1)
+        elif isinstance(u, str) and u == upg_id:
+            return True, 1
+    return False, 0
+
+
+def get_concept_info(upg_id):
+    for u in game.get("concept_upgrades", []):
+        if isinstance(u, dict) and u.get("id") == upg_id:
+            return True, u.get("level", 1)
+        elif isinstance(u, str) and u == upg_id:
+            return True, 1
+    return False, 0
+
+
+def wrap_ui_text(text, width=None, reserved=0):
     term_w, _ = get_term_size()
     box_w = max(config.MIN_BOX_WIDTH, term_w - config.BOX_MARGIN * 2)
     inner_w = box_w - 2
-    panel_width = max(int(inner_w * 0.25) - 6, 20)
+    if width is None:
+        panel_width = max(int(inner_w * 0.25) - 6, 20)
+    else:
+        panel_width = max(10, int(width))
+    usable = max(8, panel_width - int(reserved))
     clean = ANSI_ESCAPE.sub("", text)
-    return textwrap.wrap(clean, width=panel_width)
+    return textwrap.wrap(clean, width=usable)
 
 
 def build_tree_lines(upgrades, get_info_fn, page_key):
     term_w, term_h = get_term_size()
     max_lines = term_h // 2 - 6
-    pool_suffix = (
-        layer_currency_suffix("corridor")
-        if upgrades is INSPIRE_UPGRADES
-        else layer_currency_suffix("archive")
-    )
+    layer_key = "corridor" if upgrades is INSPIRE_UPGRADES else "archive"
+    suffix_raw = layer_currency_suffix(layer_key)
+    suffix = f" {suffix_raw}" if suffix_raw else ""
+    pool_currency = layer_currency_name(layer_key)
+    holdings_key = "inspiration" if upgrades is INSPIRE_UPGRADES else "concepts"
+    # Left column in the main UI is ~25% of the terminal width; reserve padding for indent
+    desc_width = max(int(term_w * 0.25) - 6, 18)
     pages, current, used = [], [], 0
     for i, u in enumerate(upgrades, start=1):
         owned, level = get_info_fn(u["id"])
@@ -894,29 +1058,38 @@ def build_tree_lines(upgrades, get_info_fn, page_key):
             if level > 0
             else base_value
         )
-        owned_text = (
-            "(MAX)"
+        holdings = game.get(holdings_key, 0)
+        can_afford = holdings >= cost and level < max_level
+        status_color = (
+            Fore.GREEN
             if level >= max_level
-            else (f"(lvl {level}/{max_level})" if level > 0 else "")
+            else (Fore.CYAN if can_afford else Fore.RED)
         )
-        suffix_text = f" {pool_suffix}" if pool_suffix else ""
-        cost_text = (
-            f" - Cost: {format_number(cost)}{suffix_text}"
-            if level < max_level
-            else ""
-        )
-        line_head = f"{i}. {u['name']} {owned_text}{cost_text}"
-        lines = [line_head]
+        lvl_text = f"Lv {min(level, max_level)}/{max_level}"
+        lines = [
+            f"{status_color}{i}. {u['name']}{Style.RESET_ALL}  {Fore.YELLOW}{lvl_text}{Style.RESET_ALL}"
+        ]
+        if level >= max_level:
+            lines.append(
+                f"    {Fore.GREEN}MAXED — permanent bonus locked{Style.RESET_ALL}"
+            )
+        else:
+            lines.append(
+                f"    Cost: {Fore.LIGHTYELLOW_EX}{format_number(cost)}{suffix}{Style.RESET_ALL}"
+            )
+            lines.append(
+                f"    You:  {Fore.LIGHTYELLOW_EX}{format_number(holdings)}{suffix}{Style.RESET_ALL}"
+                f"  ({pool_currency})"
+            )
         if u.get("desc"):
             desc_text = f"→ {u['desc']}"
             if level > 0 and u["type"] not in ("unlock_motivation", "unlock_autowork"):
                 desc_text += f" (x{total_mult:.2f})"
-            if u["type"] == "unlock_motivation":
-                motiv = game.get("motivation", MOTIVATION_MAX)
-                motiv_mult = 1 + (motiv / MOTIVATION_MAX) * (MAX_MOTIVATION_MULT - 1)
-                desc_text += f" (x{motiv_mult:.2f})"
-            wrapped = wrap_ui_text(desc_text)
-            lines += ["     " + w for w in wrapped]
+            wrapped = wrap_ui_text(desc_text, width=desc_width, reserved=4)
+            lines += [f"    {Fore.LIGHTBLACK_EX}{w}{Style.RESET_ALL}" for w in wrapped]
+        lines.append(
+            f"    {Fore.LIGHTBLACK_EX}{'-' * max(24, desc_width // 2)}{Style.RESET_ALL}"
+        )
         if used + len(lines) > max_lines and current:
             pages.append(current)
             current, used = [], 0
@@ -1419,6 +1592,13 @@ def activate_focus():
 def get_tree_selection(upgrades, page_key, digit):
     term_w, term_h = get_term_size()
     max_lines = term_h // 2 - 6
+    layer_key = "corridor" if upgrades is INSPIRE_UPGRADES else "archive"
+    suffix_raw = layer_currency_suffix(layer_key)
+    suffix = f" {suffix_raw}" if suffix_raw else ""
+    pool_currency = layer_currency_name(layer_key)
+    holdings_key = "inspiration" if upgrades is INSPIRE_UPGRADES else "concepts"
+    desc_width = max(int(term_w * 0.25) - 6, 18)
+
     blocks = []
     for i, u in enumerate(upgrades, start=1):
         owned, level = (
@@ -1435,25 +1615,38 @@ def get_tree_selection(upgrades, page_key, digit):
             if level > 0
             else base_value
         )
-        owned_text = (
-            "(MAX)"
+        holdings = game.get(holdings_key, 0)
+        can_afford = holdings >= cost and level < max_level
+        status_color = (
+            Fore.GREEN
             if level >= max_level
-            else (f"(lvl {level}/{max_level})" if level > 0 else "")
+            else (Fore.CYAN if can_afford else Fore.RED)
         )
-        cost_text = (
-            f" - Cost: {format_number(cost)}"
-            + ("i" if upgrades is INSPIRE_UPGRADES else "Co")
-            if level < max_level
-            else ""
-        )
-        head = f"{i}. {u['name']} {owned_text}{cost_text}"
-        block = [head]
+        lvl_text = f"Lv {min(level, max_level)}/{max_level}"
+        header = f"{status_color}{i}. {u['name']}{Style.RESET_ALL}  {Fore.YELLOW}{lvl_text}{Style.RESET_ALL}"
+        block = [header]
+        if level >= max_level:
+            block.append(
+                f"    {Fore.GREEN}MAXED — permanent bonus locked{Style.RESET_ALL}"
+            )
+        else:
+            cost_line = (
+                f"    Cost: {Fore.LIGHTYELLOW_EX}{format_number(cost)}{suffix}{Style.RESET_ALL}"
+            )
+            have_line = (
+                f"    You:  {Fore.LIGHTYELLOW_EX}{format_number(holdings)}{suffix}{Style.RESET_ALL}"
+                f"  ({pool_currency})"
+            )
+            block.extend([cost_line, have_line])
         if u.get("desc"):
             desc_text = f"→ {u['desc']}"
             if level > 0 and u["type"] not in ("unlock_motivation", "unlock_autowork"):
                 desc_text += f" (x{total_mult:.2f})"
-            wrapped = wrap_ui_text(desc_text)
-            block += ["     " + w for w in wrapped]
+            wrapped = wrap_ui_text(desc_text, width=desc_width, reserved=4)
+            block += [f"    {Fore.LIGHTBLACK_EX}{w}{Style.RESET_ALL}" for w in wrapped]
+        block.append(
+            f"    {Fore.LIGHTBLACK_EX}{'-' * max(24, desc_width // 2)}{Style.RESET_ALL}"
+        )
         blocks.append(block)
 
     pages = []
@@ -1677,6 +1870,7 @@ def reset_for_inspiration():
             "charge": 0.0,
             "best_charge": 0.0,
             "charge_threshold": [],
+            "charge_unlocked": False,
         }
     )
     game["inspiration_resets"] = previous_resets + 1
@@ -1747,6 +1941,10 @@ def reset_for_concepts():
             "layer": max(game.get("layer", 0), 2),
             "inspiration_upgrades": [],
             "inspiration": 0,
+            "charge": 0.0,
+            "best_charge": 0.0,
+            "charge_threshold": [],
+            "charge_unlocked": False,
         }
     )
     game["concept_resets"] = game.get("concept_resets", 0) + 1
@@ -1873,6 +2071,7 @@ def open_upgrade_menu():
         render_frame(tmp)
         time.sleep(1.2)
         return
+    game.setdefault("upgrade_page", 0)
     last_box = None
     last_size = get_term_size()
     while True:
@@ -1887,28 +2086,61 @@ def open_upgrade_menu():
                 for dep in config.UPGRADE_DEPENDENCIES.get(u["id"], [])
             )
         ]
-        lines = ["--- UPGRADE BAY ---" if catalogue_known else "--- [REDACTED] ---"]
-        lines.append(f"Money: {format_currency(game.get('money', 0))}")
-        lines.append("")
+        money_available = game.get("money", 0)
+        current_money = format_currency(money_available)
+        term_w, term_h = get_term_size()
+        box_w = max(config.MIN_BOX_WIDTH, term_w - config.BOX_MARGIN * 2)
+        inner_w = box_w - 2
+        desc_width = max(int(inner_w * 0.5), 30)
+        max_content_lines = max(12, term_h - 12)
+
+        header_lines = [
+            "--- UPGRADE BAY ---" if catalogue_known else "--- [REDACTED] ---",
+            f"Money: {Fore.CYAN}{current_money}{Style.RESET_ALL}",
+            "",
+        ]
+
+        blocks = []
         for i, u in enumerate(unlocked, start=1):
-            term_w, _ = get_term_size()
-            box_w = max(config.MIN_BOX_WIDTH, term_w - config.BOX_MARGIN * 2)
-            inner_w = box_w - 2
-            panel_width = max(int(inner_w * 0.25), 20)
             level = game.get("upgrade_levels", {}).get(u["id"], 0)
             max_level = u.get("max_level", 1)
             cost = int(u.get("cost", 0) * (u.get("cost_mult", 1) ** level))
-            status = (
-                f"(Lv {level}/{max_level}) - Cost: {format_currency(cost)}"
-                if level < max_level
-                else "(MAX)"
-            )
+            affordable = money_available >= cost
             uid = u["id"]
             known_upgrade = catalogue_known or is_known(f"upgrade_{uid}")
             display_name = u["name"] if known_upgrade else veil_text(u["name"])
-            line = f"{i}. {display_name} {status if known_upgrade else status}"
-            lines.append(line.ljust(panel_width))
-            if u.get("desc"):
+
+            if level >= max_level:
+                title_color = Fore.GREEN
+            elif affordable:
+                title_color = Fore.CYAN
+            else:
+                title_color = Fore.RED
+
+            block = [
+                f"{title_color}{i}. {display_name}{Style.RESET_ALL}",
+                f"    {Fore.YELLOW}Lv {level}/{max_level}{Style.RESET_ALL}",
+            ]
+            if level >= max_level:
+                block.append(
+                    f"    {Fore.GREEN}MAXED — persists across collapses{Style.RESET_ALL}"
+                )
+            else:
+                block.extend(
+                    [
+                        f"    Cost: {Fore.CYAN}{format_currency(cost)}{Style.RESET_ALL}",
+                        f"    Wallet: {Fore.CYAN}{format_currency(money_available)}{Style.RESET_ALL}",
+                    ]
+                )
+
+            art_key = u.get("art", uid)
+            art_lines = UPGRADE_ART.get(art_key, [])
+            if art_lines:
+                block.extend([
+                    "    " + Style.DIM + art + Style.RESET_ALL for art in art_lines
+                ])
+
+            if u.get("desc") and known_upgrade:
                 effect_text = f"→ {u['desc']}"
                 base_val = float(u.get("base_value", u.get("value", 1)))
                 val_mult = float(u.get("value_mult", 1))
@@ -1919,9 +2151,45 @@ def open_upgrade_menu():
                     effect_text += f" (×{val:.2f} delay)"
                 elif u["type"] == "add":
                     effect_text += f" (+{val:.2f} flat)"
-                wrapped = wrap_ui_text(effect_text)
-                lines += ["   " + w for w in wrapped]
-        lines += ["", "Press number to buy, B to back."]
+                wrapped = wrap_ui_text(effect_text, width=desc_width, reserved=4)
+                block.extend(
+                    [f"    {Fore.LIGHTBLACK_EX}{w}{Style.RESET_ALL}" for w in wrapped]
+                )
+            if i < len(unlocked):
+                block.append(
+                    f"    {Fore.LIGHTBLACK_EX}{'─' * max(20, desc_width // 2)}{Style.RESET_ALL}"
+                )
+            blocks.append(block)
+
+        pages = []
+        current_block_lines = []
+        used_lines = 0
+        for block in blocks:
+            block_len = len(block)
+            if current_block_lines and used_lines + block_len > max_content_lines:
+                pages.append(current_block_lines)
+                current_block_lines = []
+                used_lines = 0
+            current_block_lines.extend(block)
+            used_lines += block_len
+        if current_block_lines or not pages:
+            pages.append(current_block_lines)
+
+        total_pages = len(pages)
+        page_idx = min(game.get("upgrade_page", 0), total_pages - 1)
+        page_idx = max(0, page_idx)
+        game["upgrade_page"] = page_idx
+        visible_lines = pages[page_idx] if pages else []
+
+        lines = header_lines[:]
+        if visible_lines:
+            lines.extend(visible_lines)
+        else:
+            lines.append("No upgrades available.")
+
+        page_hint = f"Page {page_idx + 1}/{max(1, total_pages)}  (Z/X to scroll)"
+        lines += ["", page_hint, "Press number to buy, Z/X to scroll, B to back."]
+        page_count = total_pages
         box = boxed_lines(lines, title=" UPGRADE BAY ", pad_top=1, pad_bottom=1)
         cur_size = get_term_size()
         box_str = "\n".join(box)
@@ -1937,6 +2205,14 @@ def open_upgrade_menu():
                 global last_render
                 last_render = ""
                 return
+            elif k == "z":
+                if page_count > 1:
+                    game["upgrade_page"] = max(0, game["upgrade_page"] - 1)
+                continue
+            elif k == "x":
+                if page_count > 1:
+                    game["upgrade_page"] = min(page_count - 1, game["upgrade_page"] + 1)
+                continue
             elif k.isdigit():
                 idx = int(k) - 1
                 if 0 <= idx < len(unlocked):
@@ -1970,6 +2246,7 @@ def buy_idx_upgrade(upg):
             game["charge_unlocked"] = True
         elif upg.get("type") == "unlock_rpg" and current_level > 0:
             game["rpg_unlocked"] = True
+        msg = f"Purchased {upg['name']} (Lv {current_level}/{max_level})."
     tmp = boxed_lines([msg], title=" UPGRADE BAY ", pad_top=1, pad_bottom=1)
     render_frame(tmp)
     time.sleep(0.7)
@@ -2286,8 +2563,6 @@ def render_ui(screen="work"):
             )
             bottom_left_lines.append("")
             bottom_left_lines.append(f"[2] Open {archive_name} board")
-            if game.get("rpg_unlocked", False):
-                bottom_left_lines.append(f"[R] Enter Anti-Realm")
         else:
             bottom_left_lines.append(
                 f"Reach {format_currency(CONCEPTS_UNLOCK_MONEY)} to decipher {archive_name}."
@@ -2307,12 +2582,12 @@ def render_ui(screen="work"):
                 "\033[1m[B] Back to Work\033[0m",
             ]
 
-    sparks_amount = format_number(game.get("stability_currency", 0))
-    middle_lines = [
-        build_wake_timer_line(),
-        f"{STABILITY_CURRENCY_NAME}: {Fore.MAGENTA}{sparks_amount}{Style.RESET_ALL}",
-    ]
+    middle_lines = [build_wake_timer_line()]
     if not game.get("wake_timer_infinite", False):
+        sparks_amount = format_number(game.get("stability_currency", 0))
+        middle_lines.append(
+            f"{STABILITY_CURRENCY_NAME}: {Fore.MAGENTA}{sparks_amount}{Style.RESET_ALL}"
+        )
         middle_lines.append("[T] Buy stabilizers")
     middle_lines.append("")
     middle_lines += render_desk_table()
@@ -2445,14 +2720,14 @@ def render_ui(screen="work"):
         view_offset_y = 0
     visible_lines = box[view_offset_y : view_offset_y + term_height]
     visible_lines = [
-        ansi_visible_slice(line, view_offset_x, term_width) for line in visible_lines
+        pad_visible_line(ansi_visible_slice(line, view_offset_x, term_width), term_width)
+        for line in visible_lines
     ]
-    output = "\033[H" + "\n".join(visible_lines)
-    if output != last_render:
-        sys.stdout.write("\033[H")
-        sys.stdout.write(output)
+    frame = "\033[H" + "\n".join(visible_lines)
+    if frame != last_render:
+        sys.stdout.write(frame)
         sys.stdout.flush()
-        last_render = output
+        last_render = frame
 
 
 def typewriter_message(lines, title, speed=0.03):
@@ -2525,34 +2800,60 @@ def update_resonance(delta):
         game["resonance_target"] = 50.0
         game["resonance_drift_dir"] = 1
 
-    # Move target slowly
+    instability = get_resonance_instability()
+    stabilizer_level = get_stabilizer_level()
+    cooldown = max(0.0, game.get("resonance_repick_cooldown", 0.0) - delta)
+    game["resonance_repick_cooldown"] = cooldown
+
+    # Target wanders more when unstable
     target = game["resonance_target"]
-    target += (random.random() - 0.5) * delta * 2.0
+    target += (random.random() - 0.5) * delta * 10.0 * instability
     target = max(10, min(90, target))
     game["resonance_target"] = target
 
-    # Drift value
     val = game["resonance_val"]
-    drift_speed = RESONANCE_DRIFT_RATE
-    
-    # Check for Phase Lock upgrade
-    drift_mult = 1.0
-    for upg in game.get("concept_upgrades", []):
-        if upg["id"] == "concept_stabilizer":
-            level = upg.get("level", 0)
-            drift_mult *= (0.9 ** level)
-            
-    val += game["resonance_drift_dir"] * drift_speed * drift_mult * delta
-    
-    # Randomly switch drift direction
-    if random.random() < 0.05 * delta:
-        game["resonance_drift_dir"] *= -1
-        
+    drift_speed = RESONANCE_DRIFT_RATE * (0.75 + instability)
+    val += game["resonance_drift_dir"] * drift_speed * delta
+
+    # Add jitter proportional to instability
+    val += (random.random() - 0.5) * instability * 4.0
+
+    # Erratic jumps during high instability
+    if random.random() < RESONANCE_JUMP_CHANCE * instability * delta:
+        val += (random.random() - 0.5) * RESONANCE_JUMP_POWER * max(1.0, instability)
+
+    # Decide whether to re-choose drift direction (rate now governed by cooldown)
+    if cooldown <= 0:
+        toward_target = 1 if target > val else -1
+        bias = min(0.25, stabilizer_level * 0.05)
+        prob_toward = 0.5 + bias
+        if random.random() < prob_toward:
+            game["resonance_drift_dir"] = toward_target
+        else:
+            game["resonance_drift_dir"] = -toward_target
+        min_cd = 0.3 + stabilizer_level * 0.05
+        max_cd = 0.6 + stabilizer_level * 0.12
+        game["resonance_repick_cooldown"] = random.uniform(min_cd, max_cd)
+
     # Bounce off edges
     if val <= 0 or val >= RESONANCE_MAX:
         game["resonance_drift_dir"] *= -1
-        
     game["resonance_val"] = max(0, min(RESONANCE_MAX, val))
+
+
+def get_stabilizer_level():
+    for entry in game.get("concept_upgrades", []):
+        if entry.get("id") == "concept_stabilizer":
+            return entry.get("level", 0)
+    return 0
+
+
+def get_resonance_instability():
+    instability = RESONANCE_BASE_INSTABILITY
+    level = get_stabilizer_level()
+    if level:
+        instability *= 0.82 ** level
+    return max(RESONANCE_MIN_INSTABILITY, instability)
 
 
 def get_resonance_efficiency():
@@ -2570,10 +2871,29 @@ def get_resonance_efficiency():
     if dist <= width:
         return 1.5 # Bonus for being in tune
     
-    # Falloff
-    penalty = (dist - width) * 0.02
-    return max(0.1, 1.0 - penalty)
+    # Accelerated falloff when outside the colored zone
+    overflow = dist - width
+    span = RESONANCE_MAX - width
+    normalized = min(1.0, overflow / max(span, 1e-6))
+    penalty = (normalized ** 0.7) * 1.25
+    return max(0.0, 1.0 - penalty)
     
+
+_RESONANCE_GRADIENT = [
+    Fore.RED,
+    Fore.LIGHTRED_EX,
+    Fore.YELLOW,
+    Fore.LIGHTGREEN_EX,
+    Fore.GREEN,
+]
+
+
+def gradient_color(ratio):
+    ratio = max(0.0, min(1.0, ratio))
+    steps = len(_RESONANCE_GRADIENT) - 1
+    idx = min(steps, int(round((1.0 - ratio) * steps)))
+    return _RESONANCE_GRADIENT[idx]
+
 
 def build_resonance_bar():
     val = game.get("resonance_val", RESONANCE_START)
@@ -2582,159 +2902,477 @@ def build_resonance_bar():
     bar_len = 30
     
     chars = [" "] * bar_len
-    
-    # Draw target zone
-    start_pct = (target - width) / RESONANCE_MAX
-    end_pct = (target + width) / RESONANCE_MAX
-    start_idx = int(start_pct * bar_len)
-    end_idx = int(end_pct * bar_len)
-    
-    for i in range(max(0, start_idx), min(bar_len, end_idx + 1)):
-        chars[i] = "="
+    colors = [None] * bar_len
+    pos_step = RESONANCE_MAX / max(1, (bar_len - 1))
+    zone_left = max(0.0, target - width)
+    zone_right = min(RESONANCE_MAX, target + width)
+
+    def zone_ratio(position):
+        if position < zone_left or position > zone_right:
+            return None
+        dist = abs(position - target)
+        return min(1.0, dist / max(width, 1e-6))
+
+    for i in range(bar_len):
+        pos = i * pos_step
+        ratio = zone_ratio(pos)
+        if ratio is not None:
+            chars[i] = "="
+            colors[i] = gradient_color(ratio)
         
     # Draw needle
     val_pct = val / RESONANCE_MAX
     val_idx = int(val_pct * (bar_len - 1))
     val_idx = max(0, min(bar_len - 1, val_idx))
     
-    if chars[val_idx] == "=":
-        chars[val_idx] = "█" # Hit!
-    else:
-        chars[val_idx] = "|"
+    chars[val_idx] = "█" if colors[val_idx] else "|"
+    colors[val_idx] = Fore.WHITE
         
-    bar_str = "".join(chars)
+    segments = []
+    for ch, color in zip(chars, colors):
+        if color:
+            segments.append(color + ch + Style.RESET_ALL)
+        else:
+            segments.append(ch)
+    bar_str = "".join(segments)
     eff = get_resonance_efficiency()
-    color = Fore.GREEN if eff > 1.0 else (Fore.YELLOW if eff > 0.5 else Fore.RED)
-    
-    return f"Signal: [{color}{bar_str}{Style.RESET_ALL}] {int(eff*100)}% ([ / ])"
+
+    needle_ratio = None
+    if zone_left <= val <= zone_right:
+        needle_ratio = min(1.0, abs(val - target) / max(width, 1e-6))
+    braces_color = gradient_color(needle_ratio) if needle_ratio is not None else Fore.RED
+    left_brace = f"{braces_color}[{Style.RESET_ALL}"
+    right_brace = f"{braces_color}]{Style.RESET_ALL}"
+
+    if needle_ratio is None:
+        approx_pct = int(round(max(0.0, eff) * 100))
+    else:
+        approx_pct = int(round(150 - needle_ratio * 70))
+
+    legend = "center≈150% → edges≈80% (outside plummets to 0%)"
+    return f"Signal: {left_brace}{bar_str}{right_brace} {approx_pct}%  ({legend})"
 
 
 def rpg_log(msg):
-    rpg = game.get("rpg_data", {})
+    rpg = ensure_rpg_state()
     log = rpg.get("log", [])
     log.append(msg)
-    if len(log) > 8:
-        log.pop(0)
+    if len(log) > RPG_LOG_MAX:
+        log = log[-RPG_LOG_MAX:]
     rpg["log"] = log
 
-def spawn_enemy():
-    rpg = game.get("rpg_data", {})
-    level = rpg.get("level", 1)
-    # Simple scaling: pick enemy based on level or random
-    enemy_template = random.choice(RPG_ENEMIES)
-    
-    # Scale enemy stats
-    scale = 1.0 + (level * 0.2)
-    
-    new_enemy = {
-        "name": enemy_template["name"],
-        "hp": int(enemy_template["hp"] * scale),
-        "max_hp": int(enemy_template["hp"] * scale),
-        "atk": int(enemy_template["atk"] * scale),
-        "xp": int(enemy_template["xp"] * scale),
-        "gold": int(enemy_template.get("gold", 0) * scale),
+
+def generate_rpg_floor(rpg):
+    layout = []
+    weights = [entry[1] for entry in RPG_ROOM_TYPES]
+    options = [entry[0] for entry in RPG_ROOM_TYPES]
+    for _y in range(RPG_MAP_HEIGHT):
+        row = []
+        for _x in range(RPG_MAP_WIDTH):
+            typo = random.choices(options, weights=weights, k=1)[0]
+            row.append({"type": typo, "visited": False, "cleared": typo == "empty"})
+        layout.append(row)
+    center_y = RPG_MAP_HEIGHT // 2
+    center_x = RPG_MAP_WIDTH // 2
+    layout[center_y][center_x] = {"type": "start", "visited": True, "cleared": True}
+    candidates = [(y, x) for y in range(RPG_MAP_HEIGHT) for x in range(RPG_MAP_WIDTH) if (y, x) != (center_y, center_x)]
+    exit_y, exit_x = random.choice(candidates)
+    layout[exit_y][exit_x]["type"] = "exit"
+    layout[exit_y][exit_x]["visited"] = False
+    layout[exit_y][exit_x]["cleared"] = False
+    if not any(room["type"] in ("enemy", "elite") for row in layout for room in row):
+        backfill_y, backfill_x = random.choice(candidates)
+        layout[backfill_y][backfill_x]["type"] = "enemy"
+        layout[backfill_y][backfill_x]["cleared"] = False
+        layout[backfill_y][backfill_x]["visited"] = False
+    rpg["map"] = layout
+    rpg["player_pos"] = [center_y, center_x]
+    rpg["state"] = "explore"
+    rpg["current_enemy"] = None
+    rpg_log(f"The maze reshapes itself for Floor {rpg.get('floor', 1)}.")
+
+
+def current_rpg_room(rpg):
+    layout = rpg.get("map") or []
+    if not layout:
+        return None
+    y, x = rpg.get("player_pos", [0, 0])
+    if not (0 <= y < len(layout) and 0 <= x < len(layout[0])):
+        return None
+    return layout[y][x]
+
+
+def describe_rpg_room(room):
+    if not room:
+        return "the void"
+    r_type = room.get("type")
+    if room.get("cleared") and r_type in {"enemy", "elite", "treasure", "trap"}:
+        return "the husk of a resolved encounter"
+    return RPG_ROOM_DESCRIPTIONS.get(r_type, "an unreadable hallway")
+
+
+def rpg_room_symbol(room, is_player=False):
+    if is_player:
+        return "@"
+    if not room or not room.get("visited"):
+        return "░"
+    if room.get("type") == "exit":
+        return ">"
+    if not room.get("cleared"):
+        symbols = {
+            "enemy": "!",
+            "elite": "E",
+            "treasure": "$",
+            "healer": "+",
+            "trap": "^",
+        }
+        return symbols.get(room.get("type"), "?")
+    return "."
+
+
+def build_rpg_map_lines(rpg):
+    layout = rpg.get("map") or []
+    if not layout:
+        return []
+    pos = tuple(rpg.get("player_pos", [0, 0]))
+    lines = []
+    for y, row in enumerate(layout):
+        glyphs = []
+        for x, room in enumerate(row):
+            glyphs.append(rpg_room_symbol(room, is_player=pos == (y, x)))
+        lines.append(" ".join(glyphs))
+    return lines
+
+
+def handle_rpg_room_event(rpg, room):
+    if not room:
+        return
+    r_type = room.get("type")
+    if r_type in ("enemy", "elite") and not room.get("cleared"):
+        start_rpg_combat(rpg, elite=(r_type == "elite"))
+    elif r_type == "treasure" and not room.get("cleared"):
+        rpg_grant_treasure(rpg)
+        room["cleared"] = True
+    elif r_type == "healer" and not room.get("cleared"):
+        heal = max(10, int(rpg.get("max_hp", 1) * 0.4))
+        rpg["hp"] = min(rpg["max_hp"], rpg.get("hp", 0) + heal)
+        room["cleared"] = True
+        rpg_log(f"Blue fire knits {heal} HP back together.")
+    elif r_type == "trap" and not room.get("cleared"):
+        dmg = max(6, int(rpg.get("max_hp", 1) * 0.2))
+        rpg["hp"] -= dmg
+        room["cleared"] = True
+        rpg_log(f"Static spikes bite for {dmg} damage!")
+        if rpg["hp"] <= 0:
+            handle_rpg_death(rpg)
+    elif r_type == "exit":
+        advance_rpg_floor(rpg)
+
+
+def rpg_move(dy, dx):
+    rpg = ensure_rpg_state()
+    if rpg.get("state") != "explore":
+        rpg_log("You must resolve the encounter first.")
+        return
+    layout = rpg.get("map") or []
+    if not layout:
+        generate_rpg_floor(rpg)
+        layout = rpg["map"]
+    y, x = rpg.get("player_pos", [0, 0])
+    ny, nx = y + dy, x + dx
+    if not (0 <= ny < len(layout) and 0 <= nx < len(layout[0])):
+        rpg_log("The void disagrees with that direction.")
+        return
+    rpg["player_pos"] = [ny, nx]
+    room = layout[ny][nx]
+    if not room.get("visited"):
+        room["visited"] = True
+        rpg_log(f"You scout {describe_rpg_room(room)}.")
+    handle_rpg_room_event(rpg, room)
+
+
+def start_rpg_combat(rpg, elite=False):
+    enemy = build_rpg_enemy(rpg.get("floor", 1), elite=elite)
+    rpg["current_enemy"] = enemy
+    rpg["state"] = "combat"
+    prefix = "Elite " if elite else ""
+    rpg_log(f"{prefix}{enemy['name']} manifests!")
+
+
+def build_rpg_enemy(floor, elite=False):
+    template = random.choice(RPG_ENEMIES)
+    scale = 1.0 + max(0, floor - 1) * 0.25
+    if elite:
+        scale *= 1.35
+    return {
+        "name": template["name"],
+        "hp": int(template["hp"] * scale),
+        "max_hp": int(template["hp"] * scale),
+        "atk": max(1, int(template["atk"] * scale)),
+        "xp": int(template["xp"] * scale * (1.4 if elite else 1.0)),
+        "gold": int(template.get("gold", 0) * scale * (1.4 if elite else 1.0)),
+        "elite": elite,
+        "charging": False,
     }
-    rpg["current_enemy"] = new_enemy
-    rpg_log(f"A {new_enemy['name']} appears!")
+
 
 def rpg_attack():
-    rpg = game.get("rpg_data", {})
+    rpg = ensure_rpg_state()
+    if rpg.get("state") != "combat":
+        rpg_log("There is nothing to strike.")
+        return
     enemy = rpg.get("current_enemy")
     if not enemy:
-        spawn_enemy()
+        rpg["state"] = "explore"
         return
-
-    # Player attacks
-    dmg = rpg.get("atk", 5)
-    # Crit chance?
-    if random.random() < 0.1:
-        dmg *= 2
-        rpg_log(f"CRITICAL HIT! You deal {dmg} damage.")
+    dmg = rpg.get("atk", RPG_PLAYER_START_ATK)
+    if random.random() < 0.15:
+        dmg = int(dmg * 1.75)
+        rpg_log(f"Critical hit! You deal {dmg} damage.")
     else:
         rpg_log(f"You deal {dmg} damage.")
-        
     enemy["hp"] -= dmg
-    
     if enemy["hp"] <= 0:
-        rpg_log(f"Defeated {enemy['name']}!")
-        rpg_log(f"Gained {enemy['xp']} XP and {enemy['gold']} Gold.")
-        rpg["xp"] += enemy["xp"]
-        rpg["gold"] += enemy["gold"]
-        rpg["current_enemy"] = None
-        
-        # Level up check
-        req_xp = rpg["level"] * 100
-        if rpg["xp"] >= req_xp:
-            rpg["xp"] -= req_xp
-            rpg["level"] += 1
-            rpg["max_hp"] += 20
-            rpg["hp"] = rpg["max_hp"]
-            rpg["atk"] += 2
-            rpg_log(f"LEVEL UP! You are now level {rpg['level']}.")
+        complete_combat_victory(rpg, enemy)
     else:
-        # Enemy attacks back
-        e_dmg = max(0, enemy["atk"]) # Defense?
-        rpg["hp"] -= e_dmg
-        rpg_log(f"{enemy['name']} hits you for {e_dmg} damage.")
-        
-        if rpg["hp"] <= 0:
-            rpg_log("You have been defeated...")
-            rpg["hp"] = rpg["max_hp"]
-            rpg["current_enemy"] = None
-            # Penalty?
+        enemy_turn(rpg)
+
+
+def complete_combat_victory(rpg, enemy):
+    gold_gain = int(enemy.get("gold", 0) * (1 + rpg.get("gold_bonus", 0.0)))
+    xp_gain = enemy.get("xp", 0)
+    rpg_log(f"Felled {enemy['name']}! +{xp_gain} XP, +{gold_gain} gold.")
+    rpg["gold"] = rpg.get("gold", 0) + gold_gain
+    rpg["xp"] = rpg.get("xp", 0) + xp_gain
+    room = current_rpg_room(rpg)
+    if room:
+        room["cleared"] = True
+    rpg["current_enemy"] = None
+    rpg["state"] = "explore"
+    check_rpg_level_up(rpg)
+
+
+def check_rpg_level_up(rpg):
+    leveled = False
+    while rpg.get("xp", 0) >= rpg.get("level", 1) * 120:
+        req = rpg["level"] * 120
+        rpg["xp"] -= req
+        rpg["level"] += 1
+        rpg["max_hp"] += 15
+        rpg["atk"] += 2
+        rpg["hp"] = rpg["max_hp"]
+        leveled = True
+        rpg_log(f"Level up! You are now level {rpg['level']}.")
+    return leveled
+
+
+def enemy_turn(rpg):
+    enemy = rpg.get("current_enemy")
+    if not enemy:
+        return
+    if enemy.get("charging"):
+        dmg = int(enemy["atk"] * 1.6)
+        enemy["charging"] = False
+        rpg_log(f"{enemy['name']} unleashes a charged strike for {dmg} damage!")
+    else:
+        if random.random() < 0.2:
+            enemy["charging"] = True
+            rpg_log(f"{enemy['name']} gathers static energy.")
+            return
+        dmg = enemy["atk"]
+        rpg_log(f"{enemy['name']} lashes out for {dmg} damage.")
+    dmg = max(1, dmg - rpg.get("def", 0))
+    rpg["hp"] -= dmg
+    if rpg["hp"] <= 0:
+        handle_rpg_death(rpg)
+
+
+def handle_rpg_death(rpg):
+    loss = int(rpg.get("gold", 0) * 0.2)
+    if loss:
+        rpg_log(f"You collapse and drop {loss} gold.")
+    else:
+        rpg_log("You collapse and the maze spits you out.")
+    rpg["gold"] = max(0, rpg.get("gold", 0) - loss)
+    rpg["hp"] = rpg.get("max_hp", RPG_PLAYER_START_HP)
+    rpg["state"] = "explore"
+    rpg["current_enemy"] = None
+    if rpg.get("map"):
+        center_y = len(rpg["map"]) // 2
+        center_x = len(rpg["map"][0]) // 2
+        rpg["player_pos"] = [center_y, center_x]
+        rpg["map"][center_y][center_x]["visited"] = True
+
+
+def rpg_use_potion():
+    rpg = ensure_rpg_state()
+    potions = rpg["inventory"].get("potion", 0)
+    if potions <= 0:
+        rpg_log("No vials remain.")
+        return
+    heal = max(10, int(rpg.get("max_hp", 1) * RPG_POTION_HEAL_RATIO))
+    rpg["inventory"]["potion"] = potions - 1
+    prev = rpg.get("hp", 0)
+    rpg["hp"] = min(rpg["max_hp"], prev + heal)
+    rpg_log(f"You drink a sparking vial (+{rpg['hp'] - prev} HP).")
+
+
+def rpg_attempt_flee():
+    rpg = ensure_rpg_state()
+    if rpg.get("state") != "combat":
+        rpg_log("There is nothing to flee from.")
+        return
+    if random.random() < 0.55:
+        rpg["state"] = "explore"
+        rpg["current_enemy"] = None
+        rpg_log("You vanish into another branch of the maze.")
+    else:
+        rpg_log("The foe cuts off your escape!")
+        enemy_turn(rpg)
+
+
+def rpg_grant_treasure(rpg):
+    roll = random.random()
+    if roll < 0.35:
+        rpg["inventory"]["potion"] = rpg["inventory"].get("potion", 0) + 1
+        rpg_log("You pocket a fresh potion.")
+    elif roll < 0.7:
+        if random.random() < 0.5:
+            rpg["atk"] += 2
+            rpg_log("Your strikes hum hotter (+2 ATK).")
+        else:
+            rpg["max_hp"] += 20
+            rpg["hp"] = min(rpg["max_hp"], rpg["hp"])
+            rpg_log("New marrow grows (+20 Max HP).")
+    else:
+        grant_rpg_relic(rpg)
+
+
+def grant_rpg_relic(rpg):
+    available = [rel for rel in RPG_RELICS if rel["id"] not in rpg.get("relics", [])]
+    if not available:
+        fallback = 100 + 25 * rpg.get("floor", 1)
+        rpg["gold"] += fallback
+        rpg_log(f"The vault echoes and spills {fallback} gold instead.")
+        return
+    relic = random.choice(available)
+    rpg.setdefault("relics", []).append(relic["id"])
+    apply_relic_effect(rpg, relic)
+    rpg_log(f"Relic found: {relic['name']} ({relic['desc']}).")
+
+
+def apply_relic_effect(rpg, relic):
+    effect = relic.get("effect")
+    value = relic.get("value", 0)
+    if effect == "max_hp":
+        rpg["max_hp"] += value
+        rpg["hp"] = min(rpg["max_hp"], rpg["hp"])
+    elif effect == "atk":
+        rpg["atk"] += value
+    elif effect == "def":
+        rpg["def"] = rpg.get("def", 0) + value
+    elif effect == "gold_bonus":
+        rpg["gold_bonus"] = rpg.get("gold_bonus", 0.0) + value
+
+
+def advance_rpg_floor(rpg):
+    rpg["floor"] = rpg.get("floor", 1) + 1
+    rpg["max_floor"] = max(rpg.get("max_floor", 1), rpg["floor"])
+    bonus_gold = 150 + 40 * rpg["floor"]
+    rpg["gold"] += bonus_gold
+    heal = max(15, int(rpg.get("max_hp", 1) * 0.5))
+    rpg["hp"] = min(rpg["max_hp"], rpg.get("hp", 0) + heal)
+    rpg_log(f"You descend deeper. +{bonus_gold} gold, +{heal} HP.")
+    generate_rpg_floor(rpg)
+
+
+def rpg_handle_command(k):
+    rpg = ensure_rpg_state()
+    explore_moves = {
+        "w": (-1, 0),
+        "s": (1, 0),
+        "a": (0, -1),
+        "d": (0, 1),
+    }
+    if rpg.get("state") == "combat":
+        if k == "a":
+            rpg_attack()
+        elif k == "p":
+            rpg_use_potion()
+        elif k == "f":
+            rpg_attempt_flee()
+        else:
+            rpg_log("Combat options: [A]ttack, [P]otion, [F]lee.")
+    else:
+        if k in explore_moves:
+            dy, dx = explore_moves[k]
+            rpg_move(dy, dx)
+        elif k == "p":
+            rpg_use_potion()
+
 
 def render_rpg_screen():
+    global last_render, last_size
+    rpg = ensure_rpg_state()
     term_w, term_h = get_term_size()
-    clear_screen()
-    
-    rpg = game.get("rpg_data", {})
-    
+    current_size = (term_w, term_h)
+    resized = current_size != last_size
     lines = []
     tab_line = build_tab_bar_text("rpg")
     if tab_line:
         lines.append(ansi_center(tab_line, term_w))
         lines.append("")
-    lines.append(f"{Fore.RED}=== THE ANTI-REALM ==={Style.RESET_ALL}".center(term_w))
+    lines.append(ansi_center(f"{Fore.RED}=== THE ANTI-REALM · FLOOR {rpg.get('floor', 1)} ==={Style.RESET_ALL}", term_w))
     lines.append("")
-    
-    # Player Stats
-    p_stats = f"LVL: {rpg['level']}  HP: {rpg['hp']}/{rpg['max_hp']}  ATK: {rpg['atk']}  XP: {rpg['xp']}/{rpg['level']*100}  GOLD: {rpg['gold']}"
-    lines.append(p_stats.center(term_w))
-    lines.append("-" * term_w)
-    
-    # Enemy Area
+    xp_goal = rpg.get("level", 1) * 120
+    stats = (
+        f"LVL {rpg['level']}  HP {rpg['hp']}/{rpg['max_hp']}  ATK {rpg['atk']}  DEF {rpg.get('def', 0)}  "
+        f"XP {rpg['xp']}/{xp_goal}  GOLD {rpg['gold']}  POTIONS {rpg['inventory'].get('potion', 0)}"
+    )
+    lines.append(ansi_center(stats, term_w))
+    relics = rpg.get("relics", [])
+    if relics:
+        names = ", ".join(RPG_RELIC_LOOKUP.get(rid, {"name": "Unknown Relic"})["name"] for rid in relics[:3])
+        more = "..." if len(relics) > 3 else ""
+        lines.append(ansi_center(f"Relics: {names}{more}", term_w))
     lines.append("")
-    enemy = rpg.get("current_enemy")
-    if enemy:
-        e_name = f"{Fore.MAGENTA}{enemy['name']}{Style.RESET_ALL}"
-        e_hp = f"HP: {enemy['hp']}/{enemy['max_hp']}"
-        lines.append(f"VS  {e_name}".center(term_w))
-        lines.append(e_hp.center(term_w))
-        
-        # Health bar
-        bar_len = 40
-        pct = max(0, enemy['hp']) / enemy['max_hp']
+    for row in build_rpg_map_lines(rpg):
+        lines.append(ansi_center(row, term_w))
+    lines.append("")
+    room = current_rpg_room(rpg)
+    lines.append(ansi_center(f"Room: {describe_rpg_room(room)}", term_w))
+    lines.append("")
+    if rpg.get("state") == "combat" and rpg.get("current_enemy"):
+        enemy = rpg["current_enemy"]
+        lines.append(ansi_center(f"{Fore.MAGENTA}{enemy['name']}{Style.RESET_ALL}  HP {enemy['hp']}/{enemy['max_hp']}  ATK {enemy['atk']}", term_w))
+        bar_len = 32
+        pct = max(0, enemy["hp"]) / max(1, enemy["max_hp"])
         filled = int(pct * bar_len)
-        bar = "[" + "#" * filled + " " * (bar_len - filled) + "]"
-        lines.append(bar.center(term_w))
-    else:
-        lines.append("No enemy present.".center(term_w))
+        bar = "[" + "#" * filled + "-" * (bar_len - filled) + "]"
+        lines.append(ansi_center(bar, term_w))
         lines.append("")
-        lines.append("")
-        
-    lines.append("")
-    lines.append("-" * term_w)
-    
-    # Log
+    divider = "-" * term_w
+    lines.append(divider)
     for msg in rpg.get("log", []):
-        lines.append(msg.center(term_w))
-        
-    # Controls
-    lines.append("")
-    lines.append("[A] Attack  [H] Heal (Cost: 50 Gold)  [B] Back".center(term_w))
-    
-    for line in lines:
-        print(line)
+        lines.append(ansi_center(msg, term_w))
+    lines.append(divider)
+    if rpg.get("state") == "combat":
+        lines.append(ansi_center("[A]ttack  [P]otion  [F]lee", term_w))
+    else:
+        lines.append(ansi_center("Move with [W][A][S][D] · [P]otion · [B]ack to Desk", term_w))
+    lines.append(ansi_center("[,][.] switch realms", term_w))
+    while len(lines) < term_h:
+        lines.append("")
+    prepared = [pad_visible_line(line, term_w) for line in lines[:term_h]]
+    if resized:
+        sys.stdout.write("\033[2J\033[H")
+        last_size = current_size
+        last_render = ""
+    frame = "\033[H" + "\n".join(prepared)
+    if frame != last_render:
+        sys.stdout.write(frame)
+        sys.stdout.flush()
+        last_render = frame
 
 def main_loop():
     global KEY_PRESSED, running, work_timer, last_tick_time, last_manual_time, last_render
@@ -2800,8 +3438,12 @@ def main_loop():
             if KEY_PRESSED:
                 k_raw = KEY_PRESSED
                 KEY_PRESSED = None
+                k = None
                 if isinstance(k_raw, str) and k_raw.startswith("\x1b"):
-                    if k_raw in ("\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"):
+                    arrow_map = {"\x1b[A": "w", "\x1b[B": "s", "\x1b[C": "d", "\x1b[D": "a"}
+                    if current_screen == "rpg" and k_raw in arrow_map:
+                        k = arrow_map[k_raw]
+                    elif k_raw in arrow_map:
                         if k_raw == "\x1b[A":
                             view_offset_y = max(0, view_offset_y - 1)
                         elif k_raw == "\x1b[B":
@@ -2811,21 +3453,16 @@ def main_loop():
                         elif k_raw == "\x1b[D":
                             view_offset_x = max(0, view_offset_x - 2)
                         continue
-                    continue
+                    else:
+                        continue
 
-                try:
-                    k = k_raw.lower()
-                except Exception:
-                    k = k_raw
+                if k is None:
+                    try:
+                        k = k_raw.lower()
+                    except Exception:
+                        k = k_raw
 
-                # Global Tuning Keys
-                if k == "[":
-                    if game.get("layer", 0) >= 2:
-                        game["resonance_val"] = max(0, game.get("resonance_val", RESONANCE_START) - RESONANCE_TUNE_POWER)
-                elif k == "]":
-                    if game.get("layer", 0) >= 2:
-                        game["resonance_val"] = min(RESONANCE_MAX, game.get("resonance_val", RESONANCE_START) + RESONANCE_TUNE_POWER)
-                elif k in (",", "."):
+                if k in (",", "."):
                     direction = -1 if k == "," else 1
                     next_screen = cycle_screen(current_screen, direction)
                     if next_screen != current_screen:
@@ -2835,22 +3472,20 @@ def main_loop():
                         continue
                 
                 elif k == "q":
+                    clear_screen()
+                    last_render = ""
                     running = False
                     break
                 
                 elif current_screen == "rpg":
+                    rpg = ensure_rpg_state()
                     if k == "b":
-                        current_screen = "work"
-                    elif k == "a":
-                        rpg_attack()
-                    elif k == "h":
-                        rpg = game.get("rpg_data", {})
-                        if rpg.get("gold", 0) >= 50:
-                            rpg["gold"] -= 50
-                            rpg["hp"] = min(rpg["max_hp"], rpg["hp"] + 20)
-                            rpg_log("Healed 20 HP.")
+                        if rpg.get("state") == "combat":
+                            rpg_log("The foe blocks your escape!")
                         else:
-                            rpg_log("Not enough gold!")
+                            current_screen = "work"
+                    else:
+                        rpg_handle_command(k)
                 
                 elif k == "w":
                     now = time.time()
@@ -2868,7 +3503,7 @@ def main_loop():
                 elif k == "j" and current_screen == "work":
                     open_blackjack_layer()
                     current_screen = "work"
-                elif k == "t":
+                elif k == "t" and not game.get("wake_timer_infinite", False):
                     current_screen = "work"
                     clear_screen()
                     open_wake_timer_menu()
@@ -2884,9 +3519,6 @@ def main_loop():
                 elif k == "c":
                     reset_for_concepts()
                     current_screen = "work"
-                elif k == "r" and game.get("rpg_unlocked", False):
-                    current_screen = "rpg"
-                    
                 elif (
                     current_screen == "work"
                     and k == "1"
