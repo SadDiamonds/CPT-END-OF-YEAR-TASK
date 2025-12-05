@@ -160,6 +160,11 @@ cython_debug/
 #.idea/
 data/save.json
 
+data/
 .json
 data/save.json
 *.json
+data/save_slot_1.json
+data/save_slot_2.json
+data/save_slot_3.json
+data/save_slot_4.json
