@@ -48,6 +48,11 @@ from config import (
     CONCEPT_UPGRADES,
     INSPIRATION_UNLOCK_MONEY,
     CONCEPTS_UNLOCK_MONEY,
+    BREACH_KEY_BASE_COST,
+    BREACH_KEY_MIN_COST,
+    BREACH_KEY_MAX_COST,
+    BREACH_TARGET_PROGRESS,
+    BREACH_SLACK_PROGRESS,
     MOTIVATION_MAX,
     MAX_MOTIVATION_MULT,
     FOCUS_BOOST_FACTOR,
@@ -89,6 +94,8 @@ from config import (
     RPG_DESKTOP_COLS,
     RPG_MAP_WIDTH,
     RPG_MAP_HEIGHT,
+    RPG_THEME_ROTATION,
+    RPG_THEME_BLOCK_SIZE,
     RPG_MAZE_VARIANTS,
     RPG_ROOM_TYPES,
     RPG_ROOM_DESCRIPTIONS,
@@ -153,9 +160,57 @@ ROOM_COLOR_MAP = {
     "trap": Fore.LIGHTRED_EX,
     "empty": Fore.LIGHTBLACK_EX,
     "secret": Fore.BLUE,
+    "secret_vault": Fore.YELLOW,
+    "secret_echo": Fore.CYAN,
+    "secret_sentinel": Fore.MAGENTA,
+    "secret_exit": Fore.GREEN,
     "exit": Fore.GREEN,
     "stairs": Fore.GREEN,
 }
+
+BROWSER_CURRENCY_NAME = "Cache Shards"
+BROWSER_NOTICE_DURATION = 3.0
+SHOPKEEPER_NAME = "Mysterious Merchant"
+BROWSER_UPGRADES = [
+    {
+        "id": "hp_matrix",
+        "name": "Archive Plating",
+        "cost": 3,
+        "desc": "+60 Max HP after each reset",
+        "effect": {"max_hp": 60},
+    },
+    {
+        "id": "atk_array",
+        "name": "Signal Bracer",
+        "cost": 4,
+        "desc": "+5 ATK baseline",
+        "effect": {"atk": 5},
+    },
+    {
+        "id": "def_shell",
+        "name": "Mirror Shell",
+        "cost": 4,
+        "desc": "+3 DEF baseline",
+        "effect": {"def": 3},
+    },
+    {
+        "id": "gold_boot",
+        "name": "Cache Primer",
+        "cost": 5,
+        "desc": "Begin each loop with +150 gold",
+        "effect": {"gold": 150},
+    },
+]
+
+
+def compute_browser_effects(unlocks):
+    totals = {"max_hp": 0, "atk": 0, "def": 0, "gold": 0}
+    for entry in BROWSER_UPGRADES:
+        if entry.get("id") not in unlocks:
+            continue
+        for key, value in (entry.get("effect") or {}).items():
+            totals[key] = totals.get(key, 0) + value
+    return totals
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -165,6 +220,38 @@ ACTIVE_SLOT_INDEX = 0
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 RESET_SEQ = getattr(Style, "RESET_ALL", "\x1b[0m")
+
+ESCAPE_MODE = True
+ESCAPE_REPLACEMENTS = [
+    (r"campfire", "rest node"),
+    (r"annex", "side zone"),
+    (r"sentinel", "defense unit"),
+    (r"vault", "resource room"),
+    (r"maze", "grid"),
+    (r"seam", "doorway"),
+    (r"secret", "hidden"),
+    (r"boss", "warden"),
+    (r"flame", "node"),
+    (r"merchant", "merchant"),
+    (r"relic", "upgrade core"),
+    (r"loop", "escape cycle"),
+]
+
+
+def escape_text(text):
+    if not ESCAPE_MODE or not isinstance(text, str):
+        return text
+    stripped = ANSI_ESCAPE.sub("", text)
+    stripped = stripped.strip()
+    for pattern, replacement in ESCAPE_REPLACEMENTS:
+        stripped = re.sub(pattern, replacement, stripped, flags=re.IGNORECASE)
+    return stripped
+
+
+def escape_lines(lines):
+    if not ESCAPE_MODE or not isinstance(lines, list):
+        return lines
+    return [escape_text(line) for line in lines]
 
 
 def default_rpg_data():
@@ -188,6 +275,10 @@ def default_rpg_data():
         "gold_bonus": 0.0,
         "gear_atk_bonus": 0,
         "gear_def_bonus": 0,
+        "gear_trinket_bonus": {},
+        "floor_theme": None,
+        "theme_ambient_next": 0.0,
+        "shop_pending_item": None,
         "aura": RPG_DEFAULT_AURA,
         "shop_owned": [],
         "shop_stock": [],
@@ -209,6 +300,10 @@ def default_rpg_data():
         "floor_modifier_floor": 0,
         "boss_rewards": [],
         "stairs_prompted": False,
+        "shop_purchases_this_floor": 0,
+        "secret_origin": None,
+        "secret_payload_active": None,
+        "browser_bonus": {"max_hp": 0, "atk": 0, "def": 0, "gold": 0},
     }
 
 
@@ -287,9 +382,13 @@ def default_game_state():
         "rpg_hint_until": 0.0,
         "signal_multiplier": 1.0,
         "time_progress": 0.0,
-        "time_stratum": 0,
         "time_velocity": 1.0,
         "time_reward_multiplier": 1.0,
+        "browser_tokens": 0,
+        "browser_unlocks": [],
+        "browser_notice": "",
+        "browser_notice_until": 0.0,
+        "browser_cycles": 0,
     }
 
 
@@ -303,6 +402,36 @@ last_manual_time = 0.0
 listener_enabled = True
 
 game = default_game_state()
+
+
+def browser_effect_totals():
+    unlocks = game.get("browser_unlocks", [])
+    return compute_browser_effects(unlocks)
+
+
+def sync_browser_bonuses(rpg):
+    if not isinstance(rpg, dict):
+        return
+    desired = browser_effect_totals()
+    current = rpg.get("browser_bonus") or {"max_hp": 0, "atk": 0, "def": 0, "gold": 0}
+    for key in ("max_hp", "atk", "def"):
+        diff = desired.get(key, 0) - current.get(key, 0)
+        if not diff:
+            continue
+        if key == "max_hp":
+            rpg["max_hp"] = max(1, rpg.get("max_hp", 1) + diff)
+            # Shift current HP proportionally but clamp to new max
+            rpg["hp"] = max(1, min(rpg["max_hp"], rpg.get("hp", rpg["max_hp"]) + diff))
+        elif key == "atk":
+            rpg["atk"] = max(1, rpg.get("atk", 1) + diff)
+        elif key == "def":
+            rpg["def"] = max(0, rpg.get("def", 0) + diff)
+    rpg["browser_bonus"] = {
+        "max_hp": desired.get("max_hp", 0),
+        "atk": desired.get("atk", 0),
+        "def": desired.get("def", 0),
+        "gold": desired.get("gold", 0),
+    }
 
 
 def _rpg_base_hp_for_cycles(cycles):
@@ -355,6 +484,7 @@ def ensure_rpg_state():
     if not isinstance(rpg.get("relics"), list):
         rpg["relics"] = []
     enforce_ng_plus_baseline(rpg)
+    sync_browser_bonuses(rpg)
     if (not rpg.get("map")) and rpg.get("state") not in {"transition", "shop"}:
         generate_rpg_floor(rpg)
     if not rpg.get("player_pos") and rpg.get("map"):
@@ -503,8 +633,8 @@ def show_wake_timer_warning():
     if game.get("wake_timer_notified", False):
         return
     msg = [
-        "Your vision tunnels as the loop crushes in.",
-        f"Collapse is inevitable. The implosion will mint {STABILITY_CURRENCY_NAME}.",
+        "Collapse underway.",
+        f"Failure yields {STABILITY_CURRENCY_NAME}.",
     ]
     tmp = boxed_lines(msg, title=" Collapse Imminent ", pad_top=1, pad_bottom=1)
     render_frame(tmp)
@@ -514,7 +644,7 @@ def show_wake_timer_warning():
 
 def build_wake_timer_line():
     if game.get("wake_timer_infinite", False):
-        return "Stability: ∞ (secured)"
+        return "Escape Window: ∞ (locked open)"
     remaining = max(0, int(game.get("wake_timer", WAKE_TIMER_START)))
     cap = max(1, int(game.get("wake_timer_cap", WAKE_TIMER_START)))
     ratio = remaining / cap if cap else 0
@@ -524,9 +654,9 @@ def build_wake_timer_line():
         status = "faltering"
     else:
         status = "critical"
-    label = f"Stability: {format_clock(remaining)} ({status})"
+    label = f"Escape Window: {format_clock(remaining)} ({status})"
     if wake_timer_blocked():
-        label += "  collapsing"
+        label += "  sealed"
     return label
 
 
@@ -679,14 +809,14 @@ def open_breach_door():
     game["rpg_unlocked"] = True
     game["breach_door_manifested"] = True
     lines = [
-        "You press the key into the static lock.",
-        "The void splits open, revealing a silent room.",
-        "Its doorway will remain from now on.",
+        "Breach door unlocked.",
+        "Use X at the desk to enter the escape room.",
+        "Portal stays open permanently.",
     ]
     tmp = boxed_lines(lines, title=" Breach Door ", pad_top=1, pad_bottom=1)
     render_frame(tmp)
     time.sleep(1.3)
-    set_settings_notice("The door stays open.")
+    set_settings_notice("Breach door remains open.")
     return True
 
 def announce_breach_door_manifestation():
@@ -694,14 +824,14 @@ def announce_breach_door_manifestation():
         return
     game["breach_door_manifested"] = True
     lines = [
-        "Something sketches itself into the console's edge.",
-        "A keyed doorway waits at the lower-right of your view.",
-        "Press X near it to see what answers.",
+        "Breach key synced with the desk UI.",
+        "Look to the lower-right panel for the entry point.",
+        "Press X near it to enter.",
     ]
     tmp = boxed_lines(lines, title=" Breach Key ", pad_top=1, pad_bottom=1)
     render_frame(tmp)
     time.sleep(1.2)
-    set_settings_notice("The door etched itself onto the desk.")
+    set_settings_notice("Breach door visible on the desk.")
 
 
 def perform_breach_unlock_sequence():
@@ -714,7 +844,7 @@ def perform_breach_unlock_sequence():
         extra_lines = max(0, target_block - len(centered))
         top_pad = extra_lines // 2
         bottom_pad = extra_lines - top_pad
-        payload = ["The key hums against the lock.", ""]
+        payload = ["Synchronizing breach lock...", ""]
         payload.extend(["" for _ in range(top_pad)])
         payload.extend(centered)
         payload.extend(["" for _ in range(bottom_pad)])
@@ -725,7 +855,7 @@ def perform_breach_unlock_sequence():
 
 
 def set_settings_notice(message, duration=2.5):
-    game["settings_notice"] = message
+    game["settings_notice"] = escape_text(message)
     game["settings_notice_until"] = time.time() + duration
 
 
@@ -1288,6 +1418,53 @@ def ansi_visible_slice(s: str, start: int, width: int) -> str:
     return result
 
 
+def wrap_visible_text(text: str, width: int) -> list[str]:
+    """Split ANSI-aware strings so each segment fits the visible width."""
+    if width <= 0:
+        return [text or ""]
+    if text is None:
+        return [""]
+    segments = []
+    buffer = []
+    buffer_width = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\x1b":
+            match = ANSI_ESCAPE.match(text, i)
+            if match:
+                seq = match.group(0)
+                buffer.append(seq)
+                i += len(seq)
+                continue
+        if ch == "\n":
+            segments.append("".join(buffer))
+            buffer = []
+            buffer_width = 0
+            i += 1
+            continue
+        char_width = 1
+        if _wcwidth:
+            w = _wcwidth(ch)
+            if w is not None:
+                char_width = max(w, 0)
+        if buffer_width and buffer_width + char_width > width:
+            segments.append("".join(buffer))
+            buffer = []
+            buffer_width = 0
+            continue
+        buffer.append(ch)
+        buffer_width += char_width
+        if buffer_width >= width:
+            segments.append("".join(buffer))
+            buffer = []
+            buffer_width = 0
+        i += 1
+    if buffer or not segments:
+        segments.append("".join(buffer))
+    return segments
+
+
 def pad_visible_line(text, width):
     if width <= 0:
         return ""
@@ -1454,10 +1631,30 @@ def build_tree_lines(upgrades, get_info_fn, page_key):
 
 
 def get_tree_cost(upg, current_level=0):
+    if upg.get("id") == "concept_breach":
+        base = balanced_breach_key_cost()
+        scale = upg.get("cost_mult", 1) ** current_level
+        return int(max(1, base * scale))
     return int(
         upg.get("base_cost", upg.get("cost", 0))
         * (upg.get("cost_mult", 1) ** current_level)
     )
+
+
+def balanced_breach_key_cost():
+    base = BREACH_KEY_BASE_COST
+    min_cost = BREACH_KEY_MIN_COST
+    max_cost = BREACH_KEY_MAX_COST
+    target = max(1, BREACH_TARGET_PROGRESS)
+    slack = max(1, BREACH_SLACK_PROGRESS)
+    progress = estimate_progress(game)
+    delta = progress - target
+    ratio = max(-1.0, min(1.0, delta / float(slack)))
+    if ratio < 0:
+        span = base - min_cost
+        return int(round(base - span * abs(ratio)))
+    span = max_cost - base
+    return int(round(base + span * ratio))
 
 
 def apply_inspiration_effects():
@@ -1641,26 +1838,7 @@ def boxed_lines(
     for raw in content_lines:
         if raw is None:
             raw = ""
-        segs = []
-        if visible_len(raw) <= inner_w:
-            segs.append(raw)
-        else:
-            words = raw.split(" ")
-            cur = ""
-            for w in words:
-                if cur == "":
-                    cur = w
-                elif len(cur) + 1 + len(w) <= inner_w:
-                    cur += " " + w
-                else:
-                    segs.append(cur)
-                    cur = w
-            if cur:
-                while len(cur) > inner_w:
-                    segs.append(cur[:inner_w])
-                    cur = cur[inner_w:]
-                if cur:
-                    segs.append(cur)
+        segs = wrap_visible_text(raw, inner_w)
 
         for s in segs:
             vis_len = visible_len(s)
@@ -1868,9 +2046,9 @@ def perform_stability_collapse():
     game["stability_currency"] = game.get("stability_currency", 0.0) + reward
     game["stability_resets"] = game.get("stability_resets", 0) + 1
     lines = [
-        "The desk roars and everything folds inward.",
-        f"You claw back {format_number(reward)} {STABILITY_CURRENCY_NAME}.",
-        "Permanent stabilizers await.",
+        "Collapse triggered.",
+        f"Recovered {format_number(reward)} {STABILITY_CURRENCY_NAME}.",
+        "Spend sparks in the stabilizer menu (T).",
     ]
     tmp = boxed_lines(lines, title=" Collapse ", pad_top=1, pad_bottom=1)
     render_frame(tmp)
@@ -2082,6 +2260,87 @@ def build_time_banner_line(width):
         return ""
     text = f"Timeflow • {value:,.2f} {label}"
     return pad_visible_line(ansi_center(text, width), width)
+
+
+def compute_escape_vector_state():
+    if not ESCAPE_MODE or not isinstance(game, dict):
+        return None
+    total_layers = max(1, len(LAYER_FLOW) - 1)
+    current_layer = max(0, min(game.get("layer", 0), total_layers))
+    layer_ratio = current_layer / total_layers if total_layers else 0.0
+    rpg_floor = None
+    rpg_data = game.get("rpg_data") or {}
+    if isinstance(rpg_data, dict):
+        rpg_floor = max(rpg_data.get("floor", 0), rpg_data.get("max_floor", 0))
+        if rpg_floor <= 0:
+            rpg_floor = None
+
+    cap = max(1, int(game.get("wake_timer_cap", WAKE_TIMER_START)))
+    if game.get("wake_timer_infinite", False):
+        window_ratio = 1.0
+        window_text = "Window locked open"
+    else:
+        remaining = max(0, min(int(game.get("wake_timer", cap)), cap))
+        window_ratio = 1.0 - (remaining / cap)
+        window_text = f"Window {format_clock(remaining)}"
+        if wake_timer_blocked():
+            window_text = "Window sealed"
+
+    resonance_ready = (
+        game.get("layer", 0) >= 2
+        or game.get("concepts_unlocked", False)
+        or game.get("concept_resets", 0) > 0
+    )
+    if resonance_ready:
+        signal_val = float(game.get("resonance_val", RESONANCE_START))
+        signal_ratio = 1.0 - min(1.0, abs(50.0 - signal_val) / 50.0)
+        signal_text = f"Signal {signal_val:05.1f}"
+    else:
+        signal_ratio = 0.0
+        signal_text = "Signal offline"
+
+    route_text = (
+        f"Route floor {rpg_floor}"
+        if rpg_floor
+        else f"Route layer {current_layer}/{total_layers}"
+    )
+    score = layer_ratio * 0.35 + window_ratio * 0.35 + signal_ratio * 0.30
+    phase = "Dormant" if score < 0.35 else ("Aligning" if score < 0.7 else "Surging")
+    return {
+        "score": max(0.0, min(1.0, score)),
+        "window_text": window_text,
+        "route_text": route_text,
+        "signal_text": signal_text,
+        "phase": phase,
+    }
+
+
+def build_escape_meter(value, width):
+    value = max(0.0, min(1.0, value))
+    bar_width = max(16, min(48, width - 24))
+    filled = int(round(value * bar_width))
+    filled = min(bar_width, filled)
+    empty = max(0, bar_width - filled)
+    filled_block = f"{Fore.CYAN}{'#' * filled}{Style.RESET_ALL}" if filled else ""
+    empty_block = "-" * empty
+    pct = int(round(value * 100))
+    return f"[{filled_block}{empty_block}] {pct:3d}%"
+
+
+def build_escape_banner_lines(width):
+    state = compute_escape_vector_state()
+    if not state:
+        return []
+    header = f"{Fore.CYAN}ESCAPE VECTOR{Style.RESET_ALL} · {state['phase']}"
+    details = "   ".join(
+        entry for entry in [state["window_text"], state["route_text"], state["signal_text"]] if entry
+    )
+    meter = build_escape_meter(state["score"], width)
+    return [
+        pad_visible_line(ansi_center(header, width), width),
+        pad_visible_line(ansi_center(details, width), width),
+        pad_visible_line(ansi_center(meter, width), width),
+    ]
 
 
 def check_charge_thresholds():
@@ -2397,15 +2656,7 @@ def reset_for_inspiration():
         attempt_reveal("currency_wake")
         attempt_reveal("ui_currency_clear")
         attempt_reveal("ui_upgrade_catalogue")
-        memory_lines = [
-            "A fissure opens in your memory as the Hall answers.",
-            "The desk stops hissing long enough to whisper names back to you.",
-            "Values sharpen. Schematics regain a few letters.",
-            "Someone else sounds relieved that you remember at all.",
-        ]
-        typewriter_message(memory_lines, title=" Memory Thread ", speed=0.04)
-        time.sleep(0.8)
-        clear_screen()
+        set_settings_notice("Inspiration systems synced.", duration=3.0)
     if game.get("motivation_unlocked", False):
         game.update({"motivation": MOTIVATION_MAX})
     refresh_knowledge_flags()
@@ -2505,14 +2756,18 @@ def open_wake_timer_menu(auto_invoked=False):
                 if owned
                 else f"Cost {cost_label} {STABILITY_CURRENCY_NAME}"
             )
-            bonus = "Grants infinite time" if upg.get("grant_infinite") else f"+{upg.get('time_bonus', 0)}s stability"
-            lines.append(f"{i}. {upg['name']} - {status}")
+            display_name = upg.get("name", upg.get("id", f"Upgrade {i}"))
+            lines.append(f"{i}. {display_name} - {status}")
             desc = upg.get("desc")
             if desc:
                 lines.append(f"   {desc}")
-            effect_lines = [bonus]
+            effect_lines = []
+            if upg.get("grant_infinite"):
+                effect_lines.append("Seals the window permanently.")
+            elif upg.get("time_bonus"):
+                effect_lines.append(f"Adds {upg['time_bonus']}s to the window.")
             if upg.get("unlock_upgrades"):
-                effect_lines.append("Unlocks the upgrade bay")
+                effect_lines.append("Unlocks the upgrade bay.")
             for info in effect_lines:
                 lines.append(f"   {info}")
         lines += ["", "Press number to install, B to back."]
@@ -2798,14 +3053,14 @@ def play_inspiration_reset_animation():
             lines.append(line[:term_w])
 
         caption = ansi_center(
-            f"{Fore.LIGHTYELLOW_EX}{corridor_name} inhales everything you built...{Style.RESET_ALL}",
+            f"{Fore.LIGHTYELLOW_EX}{corridor_name} reset in progress...{Style.RESET_ALL}",
             term_w,
         )
         lines.append("")
         lines.append(caption)
         lines.append(
             ansi_center(
-                f"{Fore.YELLOW}Hold steady. {corridor_currency} condense on the far door.{Style.RESET_ALL}",
+                f"{Fore.YELLOW}Hold steady. {corridor_currency} condensing.{Style.RESET_ALL}",
                 term_w,
             )
         )
@@ -2882,7 +3137,7 @@ def open_blackjack_layer():
     starting_money = float(game.get("money", 0.0))
     try:
         print("Entering blackjack casino...\n")
-        print(f"You are bringing {format_currency(starting_money)} from the main game.\n")
+        print(f"Carrying {format_currency(starting_money)} from the main game.\n")
         new_money = blackjack.run_blackjack(starting_money)
         game["money"] = max(0.0, float(new_money))
         save_game()
@@ -3136,7 +3391,7 @@ def render_ui(screen="work"):
             middle_lines.append(
                 f"{STABILITY_CURRENCY_NAME}: {Fore.MAGENTA}{sparks_amount}{Style.RESET_ALL}"
             )
-            middle_lines.append("[T] Buy stabilizers")
+            middle_lines.append("[T] Stabilize window")
         middle_lines.append("")
         middle_lines += render_desk_table()
         if game.get("focus_unlocked", False):
@@ -3287,6 +3542,10 @@ def render_ui(screen="work"):
         pad_visible_line(ansi_visible_slice(line, view_offset_x, term_width), term_width)
         for line in visible_lines
     ]
+    escape_banner = build_escape_banner_lines(term_width)
+    if escape_banner:
+        visible_lines = escape_banner + visible_lines
+        visible_lines = visible_lines[:term_height]
     banner_line = build_time_banner_line(term_width)
     if banner_line:
         visible_lines = [banner_line] + visible_lines
@@ -3304,6 +3563,10 @@ def typewriter_message(lines, title, speed=0.03):
 
     if not lines:
         return
+
+    if ESCAPE_MODE:
+        lines = escape_lines(list(lines))
+        title = escape_text(title)
 
     display_lines = [""] * len(lines)
 
@@ -3559,6 +3822,7 @@ def build_breach_door_lines():
 
 
 def rpg_log(msg):
+    msg = escape_text(msg)
     rpg = ensure_rpg_state()
     log = rpg.get("log", [])
     log.append(msg)
@@ -3590,17 +3854,17 @@ def _clear_rpg_event(rpg):
 
 def start_campfire_event(rpg, room):
     _start_rpg_event(rpg, "campfire", room=room)
-    rpg_log("A blue campfire crackles, awaiting your decision.")
+    rpg_log("Campfire ready: [R]est or [L]eave.")
 
 
 def start_relic_event(rpg, relic):
     _start_rpg_event(rpg, "relic", relic=relic)
-    rpg_log(f"{Fore.YELLOW}{relic['name']}{Style.RESET_ALL} drifts in the air, waiting for you.")
+    rpg_log(f"Relic online: {Fore.YELLOW}{relic['name']}{Style.RESET_ALL}.")
 
 
 def start_secret_reveal_event(rpg, room, coords, direction):
     _start_rpg_event(rpg, "secret", room=room, coords=coords, direction=direction)
-    rpg_log("The seam unstitches, revealing circuits beneath the paint.")
+    rpg_log("Hidden seam opened.")
 
 
 def resolve_secret_entry(rpg):
@@ -3617,10 +3881,121 @@ def resolve_secret_entry(rpg):
     layout = rpg.get("map") or []
     if 0 <= y < len(layout) and 0 <= x < len(layout[0]):
         rpg["player_pos"] = [y, x]
-    desc = describe_rpg_room(room)
-    rpg_log(f"You step into {_colorize_room_label(room, desc)}.")
     _clear_rpg_event(rpg)
     handle_rpg_room_event(rpg, room)
+
+
+def build_secret_chamber_layout(payload):
+    payload = payload or random.choice(RPG_SECRET_ROOM_TYPES)
+    def _room(r_type, visited=False, cleared=False, extra=None):
+        data = {"type": r_type, "visited": visited, "cleared": cleared}
+        if extra:
+            data.update(extra)
+        return data
+
+    payload_type = {
+        "vault": "secret_vault",
+        "echo": "secret_echo",
+        "sentinel": "secret_sentinel",
+    }.get(payload, "secret_vault")
+    layout = [
+        [
+            _room("start", visited=True, cleared=True),
+            _room("empty", cleared=True),
+            _room(payload_type, extra={"secret_payload": payload}),
+        ],
+        [
+            _room("empty", cleared=True),
+            _room("empty", cleared=True),
+            _room("secret_exit"),
+        ],
+    ]
+    start = (0, 0)
+    variant = {
+        "id": "secret",
+        "label": "Secret Annex",
+        "width": len(layout[0]),
+        "height": len(layout),
+        "color": "BLUE",
+    }
+    return layout, start, variant, payload
+
+
+def enter_secret_room(rpg, payload, seam_coords, seam_room=None):
+    origin_map = rpg.get("map")
+    if not origin_map:
+        return
+    layout, start, variant, payload = build_secret_chamber_layout(payload)
+    rpg["secret_origin"] = {
+        "map": origin_map,
+        "variant": copy.deepcopy(rpg.get("maze_variant")),
+        "player_pos": list(seam_coords),
+        "seam_coords": list(seam_coords),
+        "seam_room": seam_room,
+    }
+    rpg["map"] = layout
+    rpg["player_pos"] = list(start)
+    rpg["maze_variant"] = variant
+    rpg["state"] = "secret"
+    rpg["secret_payload_active"] = payload
+    rpg_log("Entered secret annex.")
+
+
+def exit_secret_room(rpg):
+    origin = rpg.get("secret_origin") or {}
+    origin_map = origin.get("map")
+    if not origin_map:
+        rpg_log("No seam remains to exit through.")
+        return
+    seam_coords = origin.get("seam_coords", origin.get("player_pos", [0, 0]))
+    rpg["map"] = origin_map
+    rpg["player_pos"] = list(seam_coords)
+    rpg["maze_variant"] = origin.get("variant")
+    rpg["state"] = "explore"
+    seam_room = origin.get("seam_room")
+    if seam_room:
+        seam_room["type"] = "empty"
+        seam_room["cleared"] = True
+        seam_room["hidden"] = False
+        seam_room["visited"] = True
+    rpg["secret_origin"] = None
+    rpg["secret_payload_active"] = None
+    rpg_log("Returned to the main maze.")
+
+
+def resolve_secret_payload_room(rpg, room):
+    payload = room.get("secret_payload")
+    if room.get("secret_resolved") and payload != "sentinel":
+        rpg_log("This annex chamber already lies dormant.")
+        return
+    floor = rpg.get("floor", 1)
+    if payload == "vault":
+        gold_gain = 100 + floor * 25
+        modifier = active_floor_modifier(rpg)
+        if modifier:
+            gold_gain = int(gold_gain * modifier.get("treasure_gold_bonus", 1.0))
+        rpg["gold"] = rpg.get("gold", 0) + gold_gain
+        rpg_log(f"Secret vault cleared (+{gold_gain} gold).")
+        room["cleared"] = True
+        room["secret_resolved"] = True
+    elif payload == "echo":
+        xp_gain = 90 + floor * 30
+        modifier = active_floor_modifier(rpg)
+        if modifier:
+            xp_gain = int(xp_gain * modifier.get("enemy_xp_mult", 1.0))
+        rpg["xp"] = rpg.get("xp", 0) + xp_gain
+        rpg_log(f"Secret echo captured (+{xp_gain} XP).")
+        check_rpg_level_up(rpg)
+        room["cleared"] = True
+        room["secret_resolved"] = True
+    else:
+        if room.get("secret_resolved"):
+            rpg_log("Annex encounter already cleared.")
+            return
+        enemy = build_secret_enemy(rpg, floor)
+        room["secret_encounter"] = True
+        rpg_log("Secret sentinel detected.")
+        start_rpg_combat(rpg, custom_enemy=enemy)
 
 
 def _advance_event_animation(rpg):
@@ -3695,9 +4070,9 @@ def resolve_campfire_choice(rpg, rest):
         rpg["hp"] = min(rpg.get("max_hp", 0), prev + heal)
         if room:
             room["cleared"] = True
-        rpg_log(f"You bask in the code-flame (+{rpg['hp'] - prev} HP).")
+        rpg_log(f"Campfire restore: +{rpg['hp'] - prev} HP.")
     else:
-        rpg_log("You leave the flame untouched.")
+        rpg_log("Campfire skipped.")
     _clear_rpg_event(rpg)
 
 
@@ -3714,7 +4089,7 @@ def resolve_relic_choice(rpg, accept):
     else:
         spill = 90 + rpg.get("floor", 1) * 25
         rpg["gold"] = rpg.get("gold", 0) + spill
-        rpg_log(f"You siphon the relic's energy (+{spill} gold).")
+        rpg_log(f"Relic drained for +{spill} gold.")
     _clear_rpg_event(rpg)
 
 
@@ -3725,24 +4100,24 @@ def handle_rpg_event_command(rpg, key):
         return
     kind = event.get("kind")
     if kind == "campfire":
-        if key in {"y", "enter", "r"}:
+        if key == "r":
             resolve_campfire_choice(rpg, True)
-        elif key in {"n", "b"}:
+        elif key == "l":
             resolve_campfire_choice(rpg, False)
         else:
-            rpg_log("Campfire choices: [Y] rest · [N] leave.")
+            rpg_log("Campfire choices: [R]est · [L]eave.")
     elif kind == "relic":
-        if key in {"c", "y", "enter"}:
+        if key == "a":
             resolve_relic_choice(rpg, True)
-        elif key in {"s", "n", "b"}:
+        elif key == "d":
             resolve_relic_choice(rpg, False)
         else:
-            rpg_log("Relic choices: [C]laim · [S]alvage.")
+            rpg_log("Relic choices: [A]ttune · [D]rain.")
     elif kind == "secret":
-        if key in {"enter", "c", "y"}:
+        if key == "h":
             resolve_secret_entry(rpg)
         else:
-            rpg_log("Secret door: press Enter to step through.")
+            rpg_log("Secret door: press [H] to step through.")
     else:
         _clear_rpg_event(rpg)
 
@@ -3768,7 +4143,7 @@ def build_event_panel_lines(rpg, width):
         prompt = [
             "",
             ansi_center(f"Rest here to regain about {heal} HP?", span),
-            ansi_center("[Y] Rest · [N] Save it for later", span),
+            ansi_center("[R] Rest · [L] Leave it alone", span),
         ]
     elif kind == "relic":
         relic = (event.get("data") or {}).get("relic") if event else None
@@ -3777,14 +4152,14 @@ def build_event_panel_lines(rpg, width):
         prompt = [
             "",
             ansi_center(f"{name}: {desc}", span),
-            ansi_center("[C] Claim power · [S] Salvage to gold", span),
+            ansi_center("[A] Attune power · [D] Drain to gold", span),
         ]
     elif kind == "secret":
         direction = (event.get("data") or {}).get("direction", "nearby")
         prompt = [
             "",
             ansi_center(f"The {direction} wall blooms outward.", span),
-            ansi_center("[Enter] Step inside", span),
+            ansi_center("[H] Step inside", span),
         ]
     else:
         prompt = []
@@ -3828,12 +4203,53 @@ def choose_maze_variant(floor):
     return random.choices(pool, weights=weights, k=1)[0]
 
 
+def floor_theme_for_floor(floor):
+    block_size = max(1, RPG_THEME_BLOCK_SIZE)
+    rotation = copy.deepcopy(RPG_THEME_ROTATION) if RPG_THEME_ROTATION else []
+    if not rotation:
+        rotation = [
+            {
+                "id": "default",
+                "label": "Drifted Corridors",
+                "desc": "Bare hallways hum with patient static.",
+                "map_color": "CYAN",
+                "ambient_lines": [],
+            }
+        ]
+    block = max(0, (max(1, floor) - 1) // block_size)
+    entry = rotation[block % len(rotation)]
+    entry["block"] = block
+    entry["start_floor"] = block * block_size + 1
+    entry["end_floor"] = entry["start_floor"] + block_size - 1
+    return entry
+
+
+def ensure_floor_theme(rpg, floor=None):
+    floor = floor or rpg.get("floor", 1)
+    theme = rpg.get("floor_theme")
+    block_size = max(1, RPG_THEME_BLOCK_SIZE)
+    block = max(0, (max(1, floor) - 1) // block_size)
+    if not theme or theme.get("block") != block:
+        theme = floor_theme_for_floor(floor)
+        rpg["floor_theme"] = theme
+        rpg["theme_ambient_next"] = time.time() + 1.5
+        color = _theme_color(theme)
+        rpg_log(f"{color}Theme shift → {theme['label']}{Style.RESET_ALL}.")
+    return theme
+
+
+def maybe_emit_theme_ambient(rpg, chance=0.4):
+    return
+
+
 def is_boss_floor(floor):
     return floor in RPG_BOSSES
 
 
 SIDE_CHAMBER_CHANCE = 0.35
 SECRET_ROOM_CHANCE = 0.05
+SHOP_MAX_ITEMS_PER_VISIT = 3
+SHOP_PURCHASE_LIMIT = 2
 
 
 def maybe_attach_side_chamber(layout, floor):
@@ -3923,6 +4339,13 @@ def _variant_color_code(variant):
     return getattr(Fore, color_name.upper(), Fore.WHITE)
 
 
+def _theme_color(theme):
+    if not theme:
+        return Fore.WHITE
+    color_name = theme.get("map_color") or theme.get("color") or "WHITE"
+    return getattr(Fore, color_name.upper(), Fore.WHITE)
+
+
 def _enemy_ng_softener(rpg):
     tiers = (rpg or {}).get("ng_plus", 0)
     return max(0.6, 1.0 - 0.04 * tiers)
@@ -3957,7 +4380,25 @@ def _limit_room_spawns(layout, room_type, max_allowed):
         layout[y][x] = {"type": "enemy", "visited": False, "cleared": False}
 
 
+def _build_boss_floor_layout(floor):
+    layout = [
+        [
+            {"type": "start", "visited": True, "cleared": True},
+            {"type": "healer", "visited": False, "cleared": False},
+            {"type": "boss", "visited": False, "cleared": False},
+        ],
+        [
+            {"type": "treasure", "visited": False, "cleared": False},
+            {"type": "empty", "visited": False, "cleared": True},
+            {"type": "empty", "visited": False, "cleared": True},
+        ],
+    ]
+    return layout, (0, 0)
+
+
 def _build_layout_for_variant(floor, variant):
+    if is_boss_floor(floor):
+        return _build_boss_floor_layout(floor)
     width = max(3, int((variant or {}).get("width", RPG_MAP_WIDTH)))
     height = max(3, int((variant or {}).get("height", RPG_MAP_HEIGHT)))
     weights = [entry[1] for entry in RPG_ROOM_TYPES]
@@ -4019,17 +4460,25 @@ def _build_transition_sequence(layout, start):
 
 def generate_rpg_floor(rpg, variant=None, prepared_layout=None):
     floor = rpg.get("floor", 1)
+    theme = ensure_floor_theme(rpg, floor)
     ensure_floor_modifier(rpg)
-    selected = copy.deepcopy(variant) if variant else choose_maze_variant(floor)
+    if is_boss_floor(floor) and not variant:
+        boss = RPG_BOSSES.get(floor, {})
+        label = f"{boss.get('name', 'Boss')} Arena"
+        selected = {"id": "boss", "label": label, "color": "LIGHTMAGENTA_EX"}
+    else:
+        selected = copy.deepcopy(variant) if variant else choose_maze_variant(floor)
     if prepared_layout:
         base_layout, center = prepared_layout
         layout = copy.deepcopy(base_layout)
         center_y, center_x = center
     else:
         layout, (center_y, center_x) = _build_layout_for_variant(floor, selected)
-    layout, annex_info = maybe_attach_side_chamber(layout, floor)
-    if annex_info:
-        rpg_log("An opening along the east wall reveals bonus rooms.")
+    annex_info = None
+    if not is_boss_floor(floor):
+        layout, annex_info = maybe_attach_side_chamber(layout, floor)
+        if annex_info:
+            rpg_log("Side chamber attached to the east wall.")
     height = len(layout)
     width = len(layout[0]) if layout else 0
     rpg["map"] = layout
@@ -4041,11 +4490,17 @@ def generate_rpg_floor(rpg, variant=None, prepared_layout=None):
         "label": selected.get("label", "Unknown Layout"),
         "width": width,
         "height": height,
+        "color": theme.get("map_color") if theme else selected.get("color"),
     }
     rpg["pending_variant"] = None
-    rpg_log(
-        f"The maze reshapes itself for Floor {floor} ({selected.get('label', '???')} {height}x{width})."
-    )
+    if is_boss_floor(floor):
+        rpg_log(
+            f"Boss arena ready: {selected.get('label', 'Boss Arena')} ({height}x{width})."
+        )
+    else:
+        rpg_log(
+            f"Floor {floor} layout: {selected.get('label', '???')} ({height}x{width})."
+        )
 
 
 def inject_secret_rooms(layout, floor):
@@ -4141,6 +4596,15 @@ def rpg_room_symbol(room, is_player=False):
         if not room.get("cleared"):
             return "?"
         return "S"
+    if room_type in {"secret_vault", "secret_echo", "secret_sentinel"}:
+        symbols = {
+            "secret_vault": "$",
+            "secret_echo": "~",
+            "secret_sentinel": "!",
+        }
+        return symbols.get(room_type, "?")
+    if room_type == "secret_exit":
+        return "^"
     if not room.get("cleared"):
         symbols = {
             "enemy": "!",
@@ -4219,7 +4683,7 @@ def begin_maze_reassembly(rpg, variant=None, duration=1.8):
     step_time = max(0.02, duration / float(total_cells))
     rpg["transition_step_time"] = step_time
     rpg["transition_last_step"] = now
-    rpg_log("The maze liquefies into static and begins to rewind.")
+    rpg_log("Maze resetting. Hold position.")
 
 
 def complete_maze_reassembly(rpg):
@@ -4246,7 +4710,7 @@ def build_transition_map_lines(rpg, width):
     layout = rpg.get("transition_layout") or []
     variant = rpg.get("transition_variant") or {}
     if not layout:
-        return ["The maze is remembering itself…"]
+        return ["Layout rebuild in progress."]
     seq = rpg.get("transition_sequence") or []
     total = max(1, rpg.get("transition_total_cells", len(seq) or 1))
     reveal = max(0, min(total, rpg.get("transition_reveal", 0)))
@@ -4269,7 +4733,7 @@ def build_transition_map_lines(rpg, width):
                 glyphs.append(f"{Fore.LIGHTBLACK_EX}·{Style.RESET_ALL}")
         lines.append(ansi_center(" ".join(glyphs), width))
     pct = int((reveal / float(total)) * 100)
-    caption = f"{color}{variant.get('label', 'Unknown Layout')} reassembling… {pct}%{Style.RESET_ALL}"
+    caption = f"{color}{variant.get('label', 'Unknown Layout')} reassembling {pct}%{Style.RESET_ALL}"
     return [caption, ""] + lines
 
 
@@ -4315,21 +4779,25 @@ def handle_rpg_room_event(rpg, room):
         dmg = _soften_trap_damage(rpg, dmg)
         rpg["hp"] -= dmg
         room["cleared"] = True
-        rpg_log(f"Static spikes bite for {dmg} damage!")
+        rpg_log(f"Trap triggered: {dmg} damage.")
         if rpg["hp"] <= 0:
             handle_rpg_death(rpg)
     elif r_type in {"exit", "stairs"}:
         if not rpg.get("stairs_prompted"):
-            rpg_log("A staircase spirals upward. Press [C] to climb or keep exploring.")
+            rpg_log("Staircase ready. Press [C] to climb or keep exploring.")
             rpg["stairs_prompted"] = True
     elif r_type == "secret" and not room.get("cleared"):
         resolve_secret_room(rpg, room)
+    elif r_type in {"secret_vault", "secret_echo", "secret_sentinel"}:
+        resolve_secret_payload_room(rpg, room)
+    elif r_type == "secret_exit" and rpg.get("state") == "secret":
+        rpg_log("Exit seam ready: press [C] to return.")
 
 
 def rpg_move(dy, dx):
     rpg = ensure_rpg_state()
-    if rpg.get("state") != "explore":
-        rpg_log("You must resolve the encounter first.")
+    if rpg.get("state") not in {"explore", "secret"}:
+        rpg_log("Resolve the current encounter first.")
         return
     layout = rpg.get("map") or []
     if not layout:
@@ -4338,80 +4806,67 @@ def rpg_move(dy, dx):
     y, x = rpg.get("player_pos", [0, 0])
     ny, nx = y + dy, x + dx
     if not (0 <= ny < len(layout) and 0 <= nx < len(layout[0])):
-        rpg_log("The void disagrees with that direction.")
+        rpg_log("Movement blocked by map edge.")
         return
     target = layout[ny][nx]
     if target.get("hidden") and not target.get("visited"):
-        rpg_log("A sealed seam blocks the way. Press [E] to slip through.")
+        rpg_log("Hidden seam detected. Press [H] to enter.")
         return
     rpg["player_pos"] = [ny, nx]
     room = target
     if not room.get("visited"):
         room["visited"] = True
         desc = describe_rpg_room(room)
-        rpg_log(f"You scout {_colorize_room_label(room, desc)}.")
+        rpg_log(f"Scouted {_colorize_room_label(room, desc)}.")
     if room.get("type") not in {"exit", "stairs"}:
         rpg["stairs_prompted"] = False
     handle_rpg_room_event(rpg, room)
+    maybe_emit_theme_ambient(rpg)
 
 
 def attempt_enter_hidden_room():
     rpg = ensure_rpg_state()
     if rpg.get("state") != "explore":
-        rpg_log("Focus on the current encounter first.")
+        rpg_log("Resolve the current encounter first.")
         return
     neighbors = _adjacent_hidden_rooms(rpg)
     if not neighbors:
-        rpg_log("No hidden seams hum nearby.")
+        rpg_log("No hidden seams detected nearby.")
         return
     if len(neighbors) > 1:
-        rpg_log("Multiple seams surround you. Face one and try again.")
+        rpg_log("Multiple seams detected. Face one and try again.")
         return
     ny, nx, label, room = neighbors[0]
-    rpg_log(f"You press into the {label} wall; it shimmers and yields.")
+    rpg_log(f"Entering {label} seam.")
     start_secret_reveal_event(rpg, room, (ny, nx), label)
 
 
 def attempt_climb_stairs(rpg=None):
     rpg = rpg or ensure_rpg_state()
-    if rpg.get("state") != "explore":
+    special_mode = rpg.get("state") == "secret"
+    if rpg.get("state") != "explore" and not special_mode:
         rpg_log("Resolve the current encounter before climbing.")
         return
     room = current_rpg_room(rpg)
-    if not room or room.get("type") not in {"exit", "stairs"}:
+    if not room:
+        rpg_log("No staircase here to climb.")
+        return
+    if special_mode and room.get("type") == "secret_exit":
+        exit_secret_room(rpg)
+        return
+    if room.get("type") not in {"exit", "stairs"}:
         rpg_log("No staircase here to climb.")
         return
     rpg["stairs_prompted"] = False
-    rpg_log("You commit to the climb.")
+    rpg_log("Climbing to the next floor.")
     advance_rpg_floor(rpg)
 
 
 def resolve_secret_room(rpg, room):
     room["hidden"] = False
     payload = room.get("secret_payload") or random.choice(RPG_SECRET_ROOM_TYPES)
-    floor = rpg.get("floor", 1)
-    if payload == "vault":
-        gold_gain = 100 + floor * 25
-        modifier = active_floor_modifier(rpg)
-        if modifier:
-            gold_gain = int(gold_gain * modifier.get("treasure_gold_bonus", 1.0))
-        rpg["gold"] = rpg.get("gold", 0) + gold_gain
-        rpg_log(f"You pry open a silent vault (+{gold_gain} gold).")
-        room["cleared"] = True
-    elif payload == "echo":
-        xp_gain = 90 + floor * 30
-        modifier = active_floor_modifier(rpg)
-        if modifier:
-            xp_gain = int(xp_gain * modifier.get("enemy_xp_mult", 1.0))
-        rpg["xp"] = rpg.get("xp", 0) + xp_gain
-        rpg_log(f"Echoing code seeps into you (+{xp_gain} XP).")
-        check_rpg_level_up(rpg)
-        room["cleared"] = True
-    else:
-        enemy = build_secret_enemy(rpg, floor)
-        room["secret_encounter"] = True
-        rpg_log("A sentinel unfolds from the wall!")
-        start_rpg_combat(rpg, custom_enemy=enemy)
+    coords = tuple(rpg.get("player_pos", [0, 0]))
+    enter_secret_room(rpg, payload, coords, seam_room=room)
 
 
 def start_rpg_combat(rpg, elite=False, custom_enemy=None):
@@ -4424,7 +4879,7 @@ def start_rpg_combat(rpg, elite=False, custom_enemy=None):
         prefix = ""
     else:
         prefix = "Elite " if elite else ""
-    rpg_log(f"{prefix}{enemy['name']} manifests!")
+    rpg_log(f"Encounter: {prefix}{enemy['name']} engaged.")
 
 
 def build_rpg_enemy(floor, elite=False, rpg=None):
@@ -4489,10 +4944,18 @@ def build_secret_enemy(rpg, floor):
     return enemy
 
 
+def calculate_browser_token_gain(rpg, gold_before):
+    floor = max(1, rpg.get("floor", 1))
+    base = max(1, floor // 2)
+    gold_bonus = max(0, gold_before // 350)
+    boss_bonus = 2 if is_boss_floor(floor) else 0
+    return base + gold_bonus + boss_bonus
+
+
 def rpg_attack():
     rpg = ensure_rpg_state()
     if rpg.get("state") != "combat":
-        rpg_log("You strike at air..? You feel silly.")
+        rpg_log("Attack misses completely.")
         return
     enemy = rpg.get("current_enemy")
     if not enemy:
@@ -4500,12 +4963,13 @@ def rpg_attack():
         return
     dmg = rpg.get("atk", RPG_PLAYER_START_ATK)
     aura_data, _ = _active_aura_data(rpg)
-    crit_chance = min(0.9, RPG_BASE_CRIT + aura_data.get("crit_bonus", 0.0))
+    trinket_bonus = (rpg.get("gear_trinket_bonus") or {}).get("crit_bonus", 0.0)
+    crit_chance = min(0.9, RPG_BASE_CRIT + aura_data.get("crit_bonus", 0.0) + trinket_bonus)
     if random.random() < crit_chance:
         dmg = int(dmg * 1.75)
-        rpg_log(f"Critical hit! You deal {dmg} damage.")
+        rpg_log(f"Critical hit: {dmg} damage.")
     else:
-        rpg_log(f"You deal {dmg} damage.")
+        rpg_log(f"Damage dealt: {dmg}.")
     enemy["hp"] -= dmg
     if enemy["hp"] <= 0:
         complete_combat_victory(rpg, enemy)
@@ -4526,8 +4990,11 @@ def complete_combat_victory(rpg, enemy):
     room = current_rpg_room(rpg)
     if room:
         room["cleared"] = True
+        if room.get("secret_encounter"):
+            room["secret_resolved"] = True
+            room.pop("secret_encounter", None)
     rpg["current_enemy"] = None
-    rpg["state"] = "explore"
+    rpg["state"] = "secret" if rpg.get("secret_origin") else "explore"
     _clear_enemy_animation(rpg)
     check_rpg_level_up(rpg)
     if room and room.get("type") == "boss":
@@ -4547,7 +5014,7 @@ def check_rpg_level_up(rpg):
         heal = max(8, int(rpg["max_hp"] * 0.4))
         rpg["hp"] = min(rpg["max_hp"], rpg["hp"] + heal)
         leveled = True
-        rpg_log(f"Level up! You are now level {rpg['level']}.")
+        rpg_log(f"Level up → {rpg['level']}.")
     return leveled
 
 
@@ -4622,11 +5089,17 @@ def apply_boss_reward(rpg, reward, boss_data, floor):
 def handle_rpg_death(rpg):
     gold_before = max(0, int(rpg.get("gold", 0)))
     ng_gain = calculate_ng_gain_from_gold(gold_before)
-    show_rpg_death_screen(rpg, gold_before, ng_gain)
+    token_gain = calculate_browser_token_gain(rpg, gold_before)
+    if token_gain > 0:
+        game["browser_tokens"] = game.get("browser_tokens", 0) + token_gain
+        game["browser_cycles"] = game.get("browser_cycles", 0) + 1
+        set_browser_notice(f"Banked +{token_gain} {BROWSER_CURRENCY_NAME}.")
+    token_total = game.get("browser_tokens", 0)
+    show_rpg_death_screen(rpg, gold_before, ng_gain, token_gain, token_total)
     collapse_to_ng_plus(rpg, gold_spill=gold_before, ng_gain=ng_gain)
 
 
-def show_rpg_death_screen(rpg, gold_before, ng_gain):
+def show_rpg_death_screen(rpg, gold_before, ng_gain, token_gain, token_total):
     future_cycles = rpg.get("ng_plus", 0) + ng_gain
     future_hp = _rpg_base_hp_for_cycles(future_cycles)
     future_atk = _rpg_base_atk_for_cycles(future_cycles)
@@ -4636,6 +5109,7 @@ def show_rpg_death_screen(rpg, gold_before, ng_gain):
         f"Floor reached: {Fore.YELLOW}{rpg.get('floor', 1)}{Style.RESET_ALL}",
         f"Gold carried: {Fore.YELLOW}{gold_before}{Style.RESET_ALL}",
         f"NG+ gain: {Fore.MAGENTA}+{ng_gain}{Style.RESET_ALL}",
+        f"{BROWSER_CURRENCY_NAME}: {Fore.CYAN}+{token_gain}{Style.RESET_ALL} (Total {token_total})",
         f"Next baseline → HP {Fore.GREEN}{future_hp}{Style.RESET_ALL}  ATK {Fore.CYAN}{future_atk}{Style.RESET_ALL}",
         "",
         f"{Style.DIM}More hoarded gold = stronger reincarnations.{Style.RESET_ALL}",
@@ -4667,6 +5141,13 @@ def collapse_to_ng_plus(rpg, gold_spill=0, ng_gain=1):
     rpg["state"] = "transition"
     rpg["floor_modifier"] = None
     rpg["floor_modifier_floor"] = 0
+    rpg["secret_origin"] = None
+    rpg["secret_payload_active"] = None
+    rpg["browser_bonus"] = {"max_hp": 0, "atk": 0, "def": 0, "gold": 0}
+    sync_browser_bonuses(rpg)
+    bonus_gold = (rpg.get("browser_bonus") or {}).get("gold", 0)
+    if bonus_gold:
+        rpg["gold"] = bonus_gold
     rpg_log(
         f"Loop resets to NG+{rpg['ng_plus']} (gold {gold_spill} → +{gain} tiers, +{RPG_NG_HP_BONUS} base HP each)."
     )
@@ -4683,21 +5164,21 @@ def rpg_use_potion():
     rpg["inventory"]["potion"] = potions - 1
     prev = rpg.get("hp", 0)
     rpg["hp"] = min(rpg["max_hp"], prev + heal)
-    rpg_log(f"You drink a sparking vial (+{rpg['hp'] - prev} HP).")
+    rpg_log(f"Potion consumed (+{rpg['hp'] - prev} HP).")
 
 
 def rpg_attempt_flee():
     rpg = ensure_rpg_state()
     if rpg.get("state") != "combat":
-        rpg_log("There is nothing to flee from.")
+        rpg_log("No combat to flee from.")
         return
     if random.random() < 0.55:
-        rpg["state"] = "explore"
+        rpg["state"] = "secret" if rpg.get("secret_origin") else "explore"
         rpg["current_enemy"] = None
         _clear_enemy_animation(rpg)
-        rpg_log("You vanish into another branch of the maze.")
+        rpg_log("Flee successful.")
     else:
-        rpg_log("The foe cuts off your escape!")
+        rpg_log("Flee failed.")
         enemy_turn(rpg)
 
 
@@ -4709,15 +5190,15 @@ def rpg_grant_treasure(rpg):
     stat_threshold = min(0.95, potion_threshold + 0.35)
     if roll < potion_threshold:
         rpg["inventory"]["potion"] = rpg["inventory"].get("potion", 0) + 1
-        rpg_log("You pocket a fresh potion.")
+        rpg_log("Potion acquired.")
     elif roll < stat_threshold:
         if random.random() < 0.5:
             rpg["atk"] += 2
-            rpg_log("Your strikes hum hotter (+2 ATK).")
+            rpg_log("Permanent bonus: +2 ATK.")
         else:
             rpg["max_hp"] += 20
             rpg["hp"] = min(rpg["max_hp"], rpg["hp"])
-            rpg_log("New marrow grows (+20 Max HP).")
+            rpg_log("Permanent bonus: +20 Max HP.")
     else:
         grant_rpg_relic(rpg)
 
@@ -4754,7 +5235,11 @@ def advance_rpg_floor(rpg):
     rpg["floor"] = rpg.get("floor", 1) + 1
     rpg["max_floor"] = max(rpg.get("max_floor", 1), rpg["floor"])
     rpg["stairs_prompted"] = False
+    rpg["shop_purchases_this_floor"] = 0
+    rpg["secret_origin"] = None
+    rpg["secret_payload_active"] = None
     new_floor = rpg["floor"]
+    ensure_floor_theme(rpg, new_floor)
     bonus_gold = int((70 + 20 * min(new_floor, 10)) * RPG_GOLD_REWARD_SCALE)
     rpg["gold"] += bonus_gold
     base_heal_ratio = 0.5
@@ -4768,7 +5253,7 @@ def advance_rpg_floor(rpg):
         extra = max(5, int(rpg["max_hp"] * extra_heal_ratio))
         rpg["hp"] = min(rpg["max_hp"], rpg["hp"] + extra)
         rpg_log(f"Aura mends +{extra} HP.")
-    rpg_log(f"You climb to Floor {new_floor}. +{bonus_gold} gold, +{heal} HP.")
+    rpg_log(f"Advanced to Floor {new_floor}. +{bonus_gold} gold, +{heal} HP.")
     if is_boss_floor(new_floor):
         rpg_log("Boss presence detected on this floor.")
     rpg["map"] = []
@@ -4814,7 +5299,7 @@ def rpg_handle_command(k):
             rpg_move(dy, dx)
         elif k == "p":
             rpg_use_potion()
-        elif k == "e":
+        elif k == "h":
             attempt_enter_hidden_room()
         elif k == "c":
             attempt_climb_stairs(rpg)
@@ -4831,8 +5316,19 @@ def _ensure_desktop_hint_state():
 
 
 def set_rpg_desktop_hint(text, duration=2.5):
-    game["rpg_desktop_hint"] = text
+    game["rpg_desktop_hint"] = escape_text(text)
     game["rpg_hint_until"] = time.time() + duration
+
+
+def _ensure_browser_notice_state():
+    if time.time() > game.get("browser_notice_until", 0.0):
+        game["browser_notice"] = ""
+        game["browser_notice_until"] = 0.0
+
+
+def set_browser_notice(text, duration=BROWSER_NOTICE_DURATION):
+    game["browser_notice"] = escape_text(text)
+    game["browser_notice_until"] = time.time() + duration
 
 
 def move_rpg_desktop_cursor(direction):
@@ -4868,8 +5364,9 @@ def activate_desktop_icon(index):
         set_rpg_desktop_hint("Booting GAME.EXE...")
         return "launch_game"
     if ident == "safari":
-        set_rpg_desktop_hint("No internet?? ")
-        return "hint"
+        game["rpg_view"] = "browser"
+        set_browser_notice("Cache portal connected.")
+        return "launch_browser"
     if ident == "trash":
         set_rpg_desktop_hint("Nothing there...")
         return "hint"
@@ -4923,6 +5420,105 @@ def build_rpg_desktop_view(width, max_lines):
     return lines[:max_lines]
 
 
+def build_browser_view(width, max_lines):
+    lines = []
+    header = f"{Back.BLUE}{Fore.WHITE} NET.EXE {Style.RESET_ALL} :: CACHE PORTAL"
+    top, bottom = _build_crt_header(header, width)
+    lines.extend([top, bottom])
+    tokens = game.get("browser_tokens", 0)
+    cycles = game.get("browser_cycles", 0)
+    bonuses = browser_effect_totals()
+    ledger_lines = [
+        f"{BROWSER_CURRENCY_NAME}: {tokens}",
+        f"Loop collapses logged: {cycles}",
+    ]
+    stat_chunks = []
+    for label, key in (("HP", "max_hp"), ("ATK", "atk"), ("DEF", "def")):
+        if bonuses.get(key):
+            stat_chunks.append(f"+{bonuses[key]} {label}")
+    if stat_chunks:
+        ledger_lines.append("Baseline boosts: " + ", ".join(stat_chunks))
+    if bonuses.get("gold"):
+        ledger_lines.append(f"Start loops with +{bonuses['gold']} gold")
+    lines += _boxed_block("Cache Ledger", ledger_lines, width)
+    lines.append("")
+
+    unlocks = set(game.get("browser_unlocks", []))
+    upgrade_lines = []
+    if not BROWSER_UPGRADES:
+        upgrade_lines.append("No upgrades published yet.")
+    else:
+        for idx, upgrade in enumerate(BROWSER_UPGRADES, start=1):
+            owned = upgrade["id"] in unlocks
+            cost = upgrade.get("cost", 0)
+            if owned:
+                status = "Installed"
+                color = Fore.GREEN
+            elif tokens >= cost:
+                status = f"Press {idx} to install"
+                color = Fore.CYAN
+            else:
+                status = "Need shards"
+                color = Fore.LIGHTBLACK_EX
+            label = f"{idx}. {upgrade['name']} — {cost} shards"
+            upgrade_lines.append(f"{color}{label}{Style.RESET_ALL} ({status})")
+            desc = upgrade.get("desc")
+            if desc:
+                upgrade_lines.append(f"    {Style.DIM}{desc}{Style.RESET_ALL}")
+    lines += _boxed_block("Archive Market", upgrade_lines, width)
+    lines.append("")
+
+    _ensure_browser_notice_state()
+    notice = game.get("browser_notice", "")
+    if notice:
+        lines.append(pad_visible_line(notice, width))
+        lines.append("")
+    lines.append(pad_visible_line(f"Digits install · Enter hides · B closes · {BROWSER_CURRENCY_NAME} fuel upgrades", width))
+    lines.append(pad_visible_line("[,][.] switch realms", width))
+    return lines[:max_lines]
+
+
+def browser_purchase_upgrade(index):
+    if not (0 <= index < len(BROWSER_UPGRADES)):
+        set_browser_notice("No such listing.")
+        return False
+    upgrade = BROWSER_UPGRADES[index]
+    owned = set(game.get("browser_unlocks", []) or [])
+    if upgrade["id"] in owned:
+        set_browser_notice("Already installed.")
+        return False
+    cost = upgrade.get("cost", 0)
+    tokens = game.get("browser_tokens", 0)
+    if tokens < cost:
+        set_browser_notice("Need more Cache Shards.")
+        return False
+    owned_list = game.setdefault("browser_unlocks", [])
+    owned_list.append(upgrade["id"])
+    game["browser_tokens"] = tokens - cost
+    rpg = ensure_rpg_state()
+    sync_browser_bonuses(rpg)
+    set_browser_notice(f"Installed {upgrade['name']}.")
+    save_game()
+    return True
+
+
+def handle_browser_input(key):
+    if key == "b":
+        game["rpg_view"] = "desktop"
+        return "exit"
+    if key == "enter":
+        game["rpg_view"] = "desktop"
+        return "minimize"
+    if key.isdigit() and key != "0":
+        browser_purchase_upgrade(int(key) - 1)
+        return "purchase"
+    if key == "h":
+        set_browser_notice("Digits install upgrades; Enter hides; B exits.")
+        return None
+    set_browser_notice("Input digits to install, Enter to hide, B to exit.")
+    return None
+
+
 def _boxed_block(title, body_lines, width):
     inner_width = max(6, width - 2)
     title_text = f" {title.upper()} "
@@ -4940,7 +5536,10 @@ def _boxed_block(title, body_lines, width):
 def _stat_bar(label, current, maximum, width, color):
     max_val = max(1, maximum)
     ratio = max(0.0, min(1.0, current / max_val))
-    bar_span = max(8, width - len(label) - 12)
+    max_visible = max(12, width - 4)
+    stat_text = f"{current}/{maximum}"
+    overhead = len(label) + 5 + len(stat_text)
+    bar_span = max(4, max_visible - overhead)
     filled = int(bar_span * ratio)
     empty = max(0, bar_span - filled)
     bar = color + "█" * filled + Style.RESET_ALL + "░" * empty
@@ -4982,6 +5581,12 @@ def build_maze_panel_lines(rpg, width):
     dims = variant.get("height"), variant.get("width")
     if all(dims):
         caption = f"{caption} {dims[0]}x{dims[1]}"
+    theme = rpg.get("floor_theme")
+    span_line = None
+    if theme:
+        span = f"Floors {theme.get('start_floor', 1)}-{theme.get('end_floor', 1)}"
+        t_color = _theme_color(theme)
+        span_line = f"{t_color}{theme.get('label')} · {span}{Style.RESET_ALL}"
     map_lines = _stylize_map_lines(rpg, width)
     if not map_lines:
         map_lines = ["Routes obscured in static."]
@@ -4992,7 +5597,11 @@ def build_maze_panel_lines(rpg, width):
             f"Modifier: {modifier['name']} — {modifier['desc']}",
             "",
         ]
-    return [caption, ""] + modifier_lines + map_lines
+    header_lines = [caption]
+    if span_line:
+        header_lines.append(span_line)
+    header_lines.append("")
+    return header_lines + modifier_lines + map_lines
 
 
 def _apply_scanlines(lines):
@@ -5049,6 +5658,25 @@ def describe_rpg_gear_slot(rpg, slot):
     return equipped
 
 
+def _needs_swap_confirmation(rpg, item):
+    slot = item.get("slot")
+    if slot not in {"weapon", "armor", "trinket", "aura"}:
+        return False
+    if slot == "aura":
+        current_aura = rpg.get("aura")
+        return bool(current_aura and current_aura != item.get("aura"))
+    gear = rpg.get("gear", {})
+    return bool(gear.get(slot))
+
+
+def _current_slot_label(rpg, slot):
+    if slot == "aura":
+        aura_id = rpg.get("aura")
+        data = RPG_AURAS.get(aura_id, {})
+        return data.get("label", aura_id or "None")
+    return describe_rpg_gear_slot(rpg, slot)
+
+
 def _shop_inventory_for_floor(rpg):
     floor = rpg.get("floor", 1)
     owned = set(rpg.get("shop_owned", []))
@@ -5056,7 +5684,9 @@ def _shop_inventory_for_floor(rpg):
     for item in RPG_SHOP_STOCK:
         if floor >= item.get("floor_req", 1) and item.get("id") not in owned:
             eligible.append(copy.deepcopy(item))
-    return eligible
+    random.shuffle(eligible)
+    limit = min(len(eligible), SHOP_MAX_ITEMS_PER_VISIT)
+    return eligible[:limit]
 
 
 def _shop_locked_first_run(rpg):
@@ -5064,27 +5694,28 @@ def _shop_locked_first_run(rpg):
 
 
 def visit_rpg_shop(rpg):
+    if _shop_locked_first_run(rpg):
+        rpg_log("Shop locked until a loop is completed.")
+        return False
     stock = _shop_inventory_for_floor(rpg)
     rpg["shop_stock"] = stock
     if not stock:
         return False
     rpg["state"] = "shop"
-    locked = _shop_locked_first_run(rpg)
-    rpg["shop_locked_first_run"] = locked
-    if locked:
-        rpg_log("Patch drags a tarp of wares between floors, but shakes his head: 'First loop? Just browse.'")
-    else:
-        rpg_log("Patch drags a tarp of wares between floors.")
+    rpg["shop_purchases_this_floor"] = 0
+    rpg["shop_locked_first_run"] = False
+    rpg["shop_pending_item"] = None
+    rpg_log("Shop inventory online for this floor.")
     return True
 
 
 def purchase_rpg_item(rpg, item):
     cost = item.get("cost", 0)
     if _shop_locked_first_run(rpg):
-        rpg_log("Patch taps a hanging sign: 'Loop once before you buy, friend.'")
+        rpg_log("Shop unavailable until the first loop ends.")
         return False
     if rpg.get("gold", 0) < cost:
-        rpg_log("Patch clucks: not enough gold.")
+        rpg_log("Insufficient gold for that item.")
         return False
     rpg["gold"] -= cost
     slot = item.get("slot")
@@ -5093,44 +5724,72 @@ def purchase_rpg_item(rpg, item):
     elif slot == "armor":
         equip_rpg_armor(rpg, item)
     elif slot == "aura":
-        set_rpg_aura(rpg, item.get("aura"), source="Patch offers new dye")
+        set_rpg_aura(rpg, item.get("aura"), source="Shop dye swap")
+    elif slot == "trinket":
+        equip_rpg_trinket(rpg, item)
+    elif slot == "boon":
+        apply_shop_boon(rpg, item)
     else:
-        rpg_log("Patch shrugs; the item fizzles with no effect.")
-    if item.get("id"):
+        rpg_log("Item slot unsupported; effect cancelled.")
+    if item.get("id") and slot in {"weapon", "armor", "trinket", "aura"}:
         owned = rpg.setdefault("shop_owned", [])
         if item["id"] not in owned:
             owned.append(item["id"])
+    rpg["shop_pending_item"] = None
     return True
 
 
 def close_rpg_shop(rpg):
     if rpg.get("state") == "shop":
-        rpg_log("Patch folds the stall and vanishes up the stairs.")
+        rpg_log("Shop closed for this floor.")
     rpg["shop_stock"] = []
+    rpg["shop_pending_item"] = None
     begin_maze_reassembly(rpg)
 
 
-def select_rpg_shop_item(rpg, index):
+def select_rpg_shop_item(rpg, index, force=False):
     stock = rpg.get("shop_stock") or []
     if not stock:
-        rpg_log("Patch shrugs; all crates sold.")
+        rpg_log("All crates already sold.")
         return
     if not (0 <= index < len(stock)):
-        rpg_log("Patch tilts his head; he doesn't carry that crate.")
+        rpg_log("Invalid crate index.")
+        return
+    if not force and rpg.get("shop_pending_item"):
+        rpg["shop_pending_item"] = None
+    if rpg.get("shop_purchases_this_floor", 0) >= SHOP_PURCHASE_LIMIT:
+        rpg_log("Trade limit reached for this floor.")
         return
     item = stock[index]
+    if not force and _needs_swap_confirmation(rpg, item):
+        slot = item.get("slot")
+        current = _current_slot_label(rpg, slot)
+        if slot == "aura" and not rpg.get("aura"):
+            current = "no aura"
+        rpg["shop_pending_item"] = {"index": index}
+        rpg_log(
+            f"Swap {current} for {item['name']}? Press [Y] to confirm or [N] to stand pat."
+        )
+        return
     if purchase_rpg_item(rpg, item):
+        rpg["shop_purchases_this_floor"] = rpg.get("shop_purchases_this_floor", 0) + 1
         stock.pop(index)
+        if rpg.get("shop_purchases_this_floor", 0) >= SHOP_PURCHASE_LIMIT and stock:
+            rpg_log("Trade limit reached; remaining crates sealed.")
+            stock.clear()
+            close_rpg_shop(rpg)
+            return
         if not stock:
-            rpg_log("Patch chuckles: \"Sold out.\"")
+            rpg_log("All crates sold.")
             close_rpg_shop(rpg)
 
 
 def build_shop_panel(rpg):
     lines = [
-        "Patch's cart rattles between floors.",
+        "Shop crate rattles between floors.",
         f"Gold: {rpg.get('gold', 0)}",
         f"Weapon: {describe_rpg_gear_slot(rpg, 'weapon')}  Armor: {describe_rpg_gear_slot(rpg, 'armor')}",
+        f"Trinket: {describe_rpg_gear_slot(rpg, 'trinket')}",
     ]
     aura_data, _ = _active_aura_data(rpg)
     lines.append(f"Aura: {aura_data.get('label', 'Unknown')}")
@@ -5141,8 +5800,13 @@ def build_shop_panel(rpg):
         return lines
     lines.append("")
     if _shop_locked_first_run(rpg):
-        lines.append(f"{Style.DIM}Patch refuses to sell until you complete a loop.{Style.RESET_ALL}")
+        lines.append(f"{Style.DIM}Shop locked until one loop is cleared.{Style.RESET_ALL}")
         lines.append("")
+    limit_note = f"{Style.DIM}Limit: {SHOP_PURCHASE_LIMIT} trades per floor.{Style.RESET_ALL}"
+    lines.append(limit_note)
+    if rpg.get("shop_pending_item"):
+        lines.append(f"{Fore.YELLOW}Swap pending — [Y] confirm or [N] cancel.{Style.RESET_ALL}")
+    lines.append("")
     for idx, item in enumerate(stock, start=1):
         affordable = rpg.get("gold", 0) >= item.get("cost", 0)
         color = Fore.CYAN if affordable else Fore.LIGHTBLACK_EX
@@ -5153,19 +5817,33 @@ def build_shop_panel(rpg):
         if desc:
             lines.append(f"    {Style.DIM}{desc}{Style.RESET_ALL}")
     lines.append("")
-    lines.append("Digits buy · [C]limb to exit")
+    lines.append("Digits browse · [Y/N] decide swaps · [Q] exit")
     return lines
 
 
 def handle_shop_command(rpg, key):
-    if key == "c":
-        rpg_log("You nod; Patch waves you onward.")
+    pending = rpg.get("shop_pending_item")
+    if key == "y":
+        if pending:
+            select_rpg_shop_item(rpg, pending.get("index", -1), force=True)
+        else:
+            rpg_log("No swap awaiting confirmation.")
+        return
+    if key == "n":
+        if pending:
+            rpg["shop_pending_item"] = None
+            rpg_log("Loadout unchanged.")
+        else:
+            rpg_log("Nothing to cancel.")
+        return
+    if key == "q":
+        rpg_log("Shop exit confirmed.")
         close_rpg_shop(rpg)
         return
     if key.isdigit() and key != "0":
         select_rpg_shop_item(rpg, int(key) - 1)
         return
-    rpg_log("Digits buy wares; press C to climb.")
+    rpg_log("Use digits to pick crates; Y/N confirm swaps, Q exits.")
 
 
 def equip_rpg_weapon(rpg, item):
@@ -5191,6 +5869,93 @@ def equip_rpg_armor(rpg, item):
     rpg_log(f"Equipped {item.get('name', 'armor')} (+{bonus} DEF).")
 
 
+def _apply_trinket_stats(rpg, bonus, remove=False):
+    if not bonus:
+        return
+    sign = -1 if remove else 1
+    for key, value in bonus.items():
+        if not value:
+            continue
+        adj = sign * value
+        if key == "max_hp":
+            new_max = max(1, rpg.get("max_hp", RPG_PLAYER_START_HP) + adj)
+            current_hp = rpg.get("hp", new_max)
+            if remove:
+                adjusted = min(new_max, current_hp)
+            else:
+                adjusted = min(new_max, current_hp + value)
+            rpg["max_hp"] = new_max
+            rpg["hp"] = max(1, adjusted)
+        elif key == "atk":
+            rpg["atk"] = max(1, rpg.get("atk", RPG_PLAYER_START_ATK) + adj)
+        elif key == "def":
+            rpg["def"] = max(0, rpg.get("def", 0) + adj)
+
+
+def equip_rpg_trinket(rpg, item):
+    bonus = copy.deepcopy(item.get("trinket") or {})
+    prev = copy.deepcopy(rpg.get("gear_trinket_bonus") or {})
+    if prev:
+        _apply_trinket_stats(rpg, prev, remove=True)
+    if bonus:
+        _apply_trinket_stats(rpg, bonus)
+    rpg["gear_trinket_bonus"] = bonus
+    rpg.setdefault("gear", {})["trinket"] = item.get("name", "Unknown Trinket")
+    blips = []
+    if bonus.get("max_hp"):
+        blips.append(f"+{bonus['max_hp']} HP")
+    if bonus.get("atk"):
+        blips.append(f"+{bonus['atk']} ATK")
+    if bonus.get("def"):
+        blips.append(f"+{bonus['def']} DEF")
+    if bonus.get("crit_bonus"):
+        blips.append(f"+{int(round(bonus['crit_bonus'] * 100))}% crit")
+    summary = ", ".join(blips) if blips else "latent circuit hum"
+    rpg_log(f"Equipped {item.get('name', 'trinket')} ({summary}).")
+
+
+def apply_shop_boon(rpg, item):
+    floor = max(1, rpg.get("floor", 1))
+    name = item.get("name", "Boon")
+
+    def _heal():
+        heal = max(20, int(rpg.get("max_hp", 1) * random.uniform(0.25, 0.45)))
+        rpg["hp"] = min(rpg.get("max_hp", 1), rpg.get("hp", 1) + heal)
+        return f"+{heal} HP"
+
+    def _gold():
+        gold_gain = random.randint(70, 140) + floor * 15
+        rpg["gold"] = rpg.get("gold", 0) + gold_gain
+        return f"+{gold_gain} gold"
+
+    def _xp():
+        xp_gain = random.randint(60, 140) + floor * 8
+        rpg["xp"] = rpg.get("xp", 0) + xp_gain
+        check_rpg_level_up(rpg)
+        return f"+{xp_gain} XP"
+
+    def _potion():
+        inv = rpg.setdefault("inventory", {})
+        inv["potion"] = inv.get("potion", 0) + 1
+        return "+1 potion"
+
+    def _aura():
+        aura_id = random.choice(list(RPG_AURAS.keys()))
+        set_rpg_aura(rpg, aura_id, source=name)
+        label = RPG_AURAS.get(aura_id, {}).get("label", aura_id.title())
+        return f"Aura set to {label}"
+
+    def _tokens():
+        gain = random.randint(1, 3)
+        game["browser_tokens"] = game.get("browser_tokens", 0) + gain
+        plural = "s" if gain != 1 else ""
+        return f"+{gain} cache shard{plural}"
+
+    effect = random.choice([_heal, _gold, _xp, _potion, _aura, _tokens])
+    message = effect()
+    rpg_log(f"{name}: {message}.")
+
+
 def build_rpg_game_view(rpg, width, max_lines):
     lines = []
     floor = rpg.get("floor", 1)
@@ -5208,11 +5973,27 @@ def build_rpg_game_view(rpg, width, max_lines):
         f"ATK {rpg['atk']}  DEF {rpg.get('def', 0)}  RELICS {len(rpg.get('relics', []))}",
         f"Stairs ready on Floor {floor:02d}  Best {rpg.get('max_floor', 1):02d}",
     ]
+    vitals_body.append(
+        f"WPN {describe_rpg_gear_slot(rpg, 'weapon')}  ARM {describe_rpg_gear_slot(rpg, 'armor')}"
+    )
+    vitals_body.append(f"TRK {describe_rpg_gear_slot(rpg, 'trinket')}")
     aura_data, aura_id = _active_aura_data(rpg)
     vitals_body.append(f"Aura: {aura_data.get('label', aura_id.title())}")
+    theme = rpg.get("floor_theme") or floor_theme_for_floor(floor)
+    if theme:
+        span = f"Floors {theme.get('start_floor', floor)}-{theme.get('end_floor', floor)}"
+        color = _theme_color(theme)
+        vitals_body.append(f"{color}Theme: {theme.get('label')} ({span}){Style.RESET_ALL}")
+        desc = theme.get("desc")
+        if desc:
+            vitals_body.append(f"   {Style.DIM}{desc}{Style.RESET_ALL}")
     modifier = active_floor_modifier(rpg)
     if modifier:
         vitals_body.append(f"Modifier: {modifier['name']}")
+    if is_boss_floor(floor):
+        boss = RPG_BOSSES.get(floor)
+        if boss:
+            vitals_body.append(f"Boss: {boss.get('name')}")
     lines += _boxed_block("Vitals", vitals_body, width)
     lines.append("")
 
@@ -5235,7 +6016,7 @@ def build_rpg_game_view(rpg, width, max_lines):
         encounter_body.append(status)
     elif state == "shop":
         encounter_body = [
-            "Patch's cart blocks the stairwell.",
+            "Shop interface active.",
             "State: Shop",
         ]
     elif state == "transition":
@@ -5245,6 +6026,12 @@ def build_rpg_game_view(rpg, width, max_lines):
         ]
     elif state == "event":
         encounter_body = build_event_panel_lines(rpg, width)
+    elif state == "secret":
+        payload = rpg.get("secret_payload_active") or "annex"
+        encounter_body = [
+            f"Secret annex active ({payload}).",
+            "State: Secret",
+        ]
     else:
         encounter_body = [
             f"Exploring {describe_rpg_room(room)}",
@@ -5252,6 +6039,10 @@ def build_rpg_game_view(rpg, width, max_lines):
         ]
         if at_stairs:
             encounter_body.append("Stairs here — press [C] to climb.")
+        theme = rpg.get("floor_theme")
+        if theme and theme.get("label"):
+            color = _theme_color(theme)
+            encounter_body.append(f"{color}Theme: {theme['label']}{Style.RESET_ALL}")
     lines += _boxed_block("Encounter", encounter_body, width)
     lines.append("")
 
@@ -5267,7 +6058,7 @@ def build_rpg_game_view(rpg, width, max_lines):
     lines.append("")
 
     if state == "shop":
-        lines += _boxed_block("Patch's Cart", build_shop_panel(rpg), width)
+        lines += _boxed_block("Shop Cart", build_shop_panel(rpg), width)
         lines.append("")
 
     hidden_adjacent = bool(_adjacent_hidden_rooms(rpg)) if state == "explore" else False
@@ -5275,15 +6066,17 @@ def build_rpg_game_view(rpg, width, max_lines):
     if state == "combat":
         action_line = "▶ [A]ttack │ [P]otion │ [F]lee │ Enter disabled"
     elif state == "shop":
-        action_line = "▶ Digits buy │ [B]/[Enter]/[Q] climb │ Movement locked"
+        action_line = "▶ Digits pick │ [Y/N] confirm │ [Q]uit cart"
     elif state == "transition":
         action_line = "▶ Maze reassembling… hold position"
     elif state == "event":
         action_line = "▶ Event: follow on-screen prompts"
+    elif state == "secret":
+        action_line = "▶ WASD move │ P potion │ C seam exit"
     else:
         extras = []
         if hidden_adjacent:
-            extras.append("E enter seam")
+            extras.append("H slip seam")
         if at_stairs:
             extras.append("C climb")
         extra_text = " │ " + " │ ".join(extras) if extras else ""
@@ -5295,7 +6088,7 @@ def build_rpg_game_view(rpg, width, max_lines):
     return shaded[:max_lines]
 
 
-def build_monitor_frame(inner_lines, glass_width, term_w, term_h):
+def build_monitor_frame(inner_lines, glass_width, term_w, term_h, max_inner_lines):
     case_width = min(glass_width + 10, term_w - 4)
     case_width = max(12, case_width)
     glass_width = min(glass_width, case_width - 2)
@@ -5304,17 +6097,16 @@ def build_monitor_frame(inner_lines, glass_width, term_w, term_h):
     gap_right = gap_total - gap_left
     outer_width = case_width + 2
     left_pad = max(0, (term_w - outer_width) // 2)
-    max_glass_lines = max(12, term_h - 14)
+    case_extra = 9
+    available = max(4, term_h - case_extra)
+    max_glass_lines = min(max_inner_lines, max(4, available))
     content = inner_lines[:max_glass_lines]
     while len(content) < max_glass_lines:
         content.append("")
-    output = []
-    visible_height = max_glass_lines + 10
-    top_margin = max(0, (term_h - visible_height) // 2)
-    output.extend(["" for _ in range(top_margin)])
-    output.append(" " * left_pad + "╭" + "─" * case_width + "╮")
-    output.append(" " * left_pad + "│" + " " * case_width + "│")
-    output.append(
+    body = []
+    body.append(" " * left_pad + "╭" + "─" * case_width + "╮")
+    body.append(" " * left_pad + "│" + " " * case_width + "│")
+    body.append(
         " " * left_pad
         + "│"
         + " " * gap_left
@@ -5326,7 +6118,7 @@ def build_monitor_frame(inner_lines, glass_width, term_w, term_h):
     )
     for raw in content:
         padded = pad_visible_line(raw, glass_width)
-        output.append(
+        body.append(
             " " * left_pad
             + "│"
             + " " * gap_left
@@ -5336,7 +6128,7 @@ def build_monitor_frame(inner_lines, glass_width, term_w, term_h):
             + " " * gap_right
             + "│"
         )
-    output.append(
+    body.append(
         " " * left_pad
         + "│"
         + " " * gap_left
@@ -5347,13 +6139,20 @@ def build_monitor_frame(inner_lines, glass_width, term_w, term_h):
         + "│"
     )
     knob = ("◉" + " " * max(0, case_width - 6) + "▢").center(case_width)
-    output.append(" " * left_pad + "│" + knob + "│")
-    output.append(" " * left_pad + "╰" + "─" * case_width + "╯")
+    body.append(" " * left_pad + "│" + knob + "│")
+    body.append(" " * left_pad + "╰" + "─" * case_width + "╯")
     stand_center = left_pad + (outer_width // 2)
-    output.append(" " * max(0, stand_center - 2) + "╱╲")
-    output.append(" " * max(0, stand_center - 4) + "╱────╲")
-    output.append(" " * max(0, stand_center - 7) + "└────────┘")
-    return output
+    body.append(" " * max(0, stand_center - 2) + "╱╲")
+    body.append(" " * max(0, stand_center - 4) + "╱────╲")
+    body.append(" " * max(0, stand_center - 7) + "└────────┘")
+    visible_height = len(body)
+    if visible_height >= term_h:
+        return body[:term_h]
+    top_pad = max(0, (term_h - visible_height) // 2)
+    output = ["" for _ in range(top_pad)] + body
+    while len(output) < term_h:
+        output.append("")
+    return output[:term_h]
 
 
 def handle_rpg_desktop_input(key):
@@ -5384,9 +6183,11 @@ def render_rpg_screen():
     _ensure_desktop_hint_state()
     if view == "desktop":
         inner_lines = build_rpg_desktop_view(glass_width, max_lines)
+    elif view == "browser":
+        inner_lines = build_browser_view(glass_width, max_lines)
     else:
         inner_lines = build_rpg_game_view(rpg, glass_width, max_lines)
-    monitor_lines = build_monitor_frame(inner_lines, glass_width, term_w, term_h)
+    monitor_lines = build_monitor_frame(inner_lines, glass_width, term_w, term_h, max_lines)
     tab_line = build_tab_bar_text("rpg")
     if tab_line:
         monitor_lines.insert(0, ansi_center(tab_line, term_w))
@@ -5394,6 +6195,14 @@ def render_rpg_screen():
     while len(monitor_lines) < term_h:
         monitor_lines.append("")
     prepared = [pad_visible_line(line, term_w) for line in monitor_lines[:term_h]]
+    escape_banner = build_escape_banner_lines(term_w)
+    if escape_banner:
+        prepared = escape_banner + prepared
+        prepared = prepared[:term_h]
+    banner_line = build_time_banner_line(term_w)
+    if banner_line:
+        prepared = [banner_line] + prepared
+        prepared = prepared[:term_h]
     if resized:
         sys.stdout.write("\033[2J\033[H")
         last_size = current_size
@@ -5424,17 +6233,9 @@ def main_loop():
     threading.Thread(target=key_listener, daemon=True).start()
 
     if not game.get("intro_played", False):
-        msg = [
-            "You wake at a desk whose corners refuse to meet.",
-            "The dark hums like something counting you.",
-            "You don't remember how you got here.",
-            "",
-            "Something tilts when you try to stand.",
-        ]
-        typewriter_message(msg, title=" ??? ", speed=0.05)
+        set_settings_notice("Console boot complete.", duration=3.0)
         game["intro_played"] = True
         save_game()
-        time.sleep(1.0)
 
     if game.get("layer", 0) >= 1 and not game.get("inspiration_unlocked", False):
         game["inspiration_unlocked"] = True
@@ -5454,14 +6255,7 @@ def main_loop():
 
                 if not game.get("mystery_revealed", False) and game.get("money_since_reset", 0) >= 100:
                     game["mystery_revealed"] = True
-                    msg = [
-                        "The desk pays attention when you tap long enough.",
-                        "The value it hands back isn't money, but it obeys.",
-                        "",
-                        "Somewhere outside, a fourth shadow tilts its head."
-                    ]
-                    typewriter_message(msg, title=" Discovery ", speed=0.04)
-                    time.sleep(1.5)
+                    set_settings_notice("Deeper escape diagnostics unlocked.", duration=3.0)
                     save_game()
                     last_render = ""
 
@@ -5514,6 +6308,11 @@ def main_loop():
                                 last_render = ""
                             continue
                     elif k == "q":
+                        if current_screen == "rpg":
+                            rpg = ensure_rpg_state()
+                            if game.get("rpg_view") == "game" and rpg.get("state") == "shop":
+                                handle_shop_command(rpg, "q")
+                                continue
                         clear_screen()
                         last_render = ""
                         save_game()
@@ -5526,6 +6325,12 @@ def main_loop():
                             result = handle_rpg_desktop_input(k)
                             if result == "exit":
                                 current_screen = "work"
+                            continue
+                        elif view == "browser":
+                            outcome = handle_browser_input(k)
+                            if outcome == "exit":
+                                current_screen = "work"
+                            continue
                         else:
                             if k == "enter":
                                 if rpg.get("state") == "shop":
@@ -5594,7 +6399,7 @@ def main_loop():
                             last_render = ""
                         else:
                             tmp = boxed_lines(
-                                ["The console waits for a key you don't have."],
+                                ["Breach door locked. Key required."],
                                 title=" Breach Door ",
                                 pad_top=1,
                                 pad_bottom=1,

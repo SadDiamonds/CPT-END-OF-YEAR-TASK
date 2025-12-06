@@ -10,33 +10,32 @@ STABILITY_REWARD_EXP = 0.55
 WAKE_TIMER_START = 120
 WAKE_TIMER_UPGRADES = [
     {
-        "id": "Unlock_upgrade",
-        "name": "Newgame+",
+        "id": "wake_unlock",
+        "name": "Stabilizer Switch",
         "cost": 5,
-        "upgrades_unlocked": True,
-           "desc": "Unlocks the upgrade menu.",
+        "unlock_upgrades": True,
+        "desc": "Reboots the upgrade bay.",
     },
     {
         "id": "wake_breath",
-        "desc": "-7% delay base, -6% per level",
+        "name": "First Throttle",
         "cost": 15,
         "time_bonus": 60,
-           "desc": "Adds 60 seconds to the timer.",
+        "desc": "Adds 60 seconds to the escape window.",
     },
     {
         "id": "wake_anchor",
         "name": "Anchor Points",
         "cost": 250,
         "time_bonus": 180,
-           "desc": "Adds 180 seconds to the timer.",
+        "desc": "Adds 180 seconds to the escape window.",
     },
     {
         "id": "wake_lock",
         "name": "Phase Lock",
         "cost": 1000,
-        "time_bonus": 0,
         "grant_infinite": True,
-           "desc": "Stops the wake timer permanently.",
+        "desc": "Seals the window permanently.",
     },
 ]
 
@@ -119,6 +118,12 @@ FOCUS_MAX = 100
 
 INSPIRATION_UNLOCK_MONEY = LAYER_BY_KEY["corridor"]["unlock_money"]
 CONCEPTS_UNLOCK_MONEY = LAYER_BY_KEY["archive"]["unlock_money"]
+
+BREACH_KEY_BASE_COST = 100
+BREACH_KEY_MIN_COST = 60
+BREACH_KEY_MAX_COST = 150
+BREACH_TARGET_PROGRESS = 55
+BREACH_SLACK_PROGRESS = 35
 
 MOTIVATION_MAX = 100
 MAX_MOTIVATION_MULT = 3.0
@@ -427,7 +432,7 @@ CONCEPT_UPGRADES = [
     {
         "id": "concept_breach",
         "name": "A key",
-        "base_cost": 100,
+        "base_cost": BREACH_KEY_BASE_COST,
         "type": "unlock_rpg",
         "value": 1,
         "max_level": 1,
@@ -559,6 +564,39 @@ RPG_DESKTOP_APPS = [
 RPG_DESKTOP_COLS = 2
 RPG_MAP_WIDTH = 6
 RPG_MAP_HEIGHT = 6
+RPG_THEME_BLOCK_SIZE = 5
+RPG_THEME_ROTATION = [
+    {
+        "id": "threadbare",
+        "label": "Threadbare Vestibule",
+        "desc": "Canvas walls unravel to show copper stitches.",
+        "map_color": "CYAN",
+        "ambient_lines": [
+            "Loose thread halos drift through the corridor.",
+            "Something seams the walls back together, then gives up.",
+        ],
+    },
+    {
+        "id": "inkwell",
+        "label": "Inkwell Ducts",
+        "desc": "Black coolant drips in sync with your footfalls.",
+        "map_color": "MAGENTA",
+        "ambient_lines": [
+            "Ink beads hover midair before splashing upward.",
+            "Pooled shadows ripple like spilled letters.",
+        ],
+    },
+    {
+        "id": "glassorchard",
+        "label": "Glass Orchard",
+        "desc": "Crystalline branches hum beside every junction.",
+        "map_color": "BLUE",
+        "ambient_lines": [
+            "Glass fronds clink when you breathe.",
+            "Prismatic cracks chase your outline.",
+        ],
+    },
+]
 RPG_MAZE_VARIANTS = [
     {"id": "square", "label": "6x6 Balanced", "width": 6, "height": 6, "weight": 0.45, "min_floor": 1, "color": "CYAN"},
     {"id": "wide", "label": "8x5 Wide", "width": 8, "height": 5, "weight": 0.3, "min_floor": 2, "color": "MAGENTA"},
@@ -584,6 +622,10 @@ RPG_ROOM_DESCRIPTIONS = {
     "exit": "progress to next floor",
     "stairs": "progress to next floor",
     "secret": "optional bonus room",
+    "secret_vault": "vault chamber",
+    "secret_echo": "echo chamber",
+    "secret_sentinel": "sentinel arena",
+    "secret_exit": "fold seam",
 }
 RPG_POTION_HEAL_RATIO = 0.45
 RPG_LOG_MAX = 10
@@ -607,107 +649,188 @@ RPG_SECRET_BOSS_TEMPLATE = {
 }
 RPG_SHOP_STOCK = [
     {
-        "id": "iron_edge",
-        "name": "Iron Edge",
+        "id": "rust_bite",
+        "name": "Rust-Bite Shiv",
         "slot": "weapon",
         "cost": 90,
         "atk_bonus": 4,
         "floor_req": 1,
         "aura_hint": "crimson",
-        "desc": "Reliable +4 ATK, slight crimson tint",
+        "desc": "+4 ATK, still warm from the scrapyard",
     },
     {
-        "id": "signal_saber",
-        "name": "Signal Saber",
+        "id": "wifi_blade",
+        "name": "Wireshark Blade",
         "slot": "weapon",
         "cost": 180,
         "atk_bonus": 9,
         "floor_req": 3,
         "aura_hint": "amber",
-        "desc": "+9 ATK, crit bias from amber traces",
+        "desc": "+9 ATK, hums when crits are near",
     },
     {
-        "id": "ion_halberd",
-        "name": "Ion Halberd",
+        "id": "uplink_pike",
+        "name": "Forked Uplink Pike",
         "slot": "weapon",
         "cost": 260,
         "atk_bonus": 14,
         "floor_req": 5,
         "aura_hint": "crimson",
-        "desc": "+14 ATK, pulses twice each strike",
+        "desc": "+14 ATK, arcs twice when it lands",
     },
     {
-        "id": "chrono_lash",
-        "name": "Chrono Lash",
+        "id": "lag_whip",
+        "name": "Lagwhip",
         "slot": "weapon",
         "cost": 420,
         "atk_bonus": 20,
         "floor_req": 8,
         "aura_hint": "amber",
-        "desc": "+20 ATK, quickens crit window",
+        "desc": "+20 ATK, stretches crit windows",
     },
     {
-        "id": "patchwork_plate",
-        "name": "Patchwork Plate",
+        "id": "junk_harpoon",
+        "name": "Thunderjunk Harpoon",
+        "slot": "weapon",
+        "cost": 520,
+        "atk_bonus": 24,
+        "floor_req": 9,
+        "aura_hint": "crimson",
+        "desc": "+24 ATK, rattles foes on hit",
+    },
+    {
+        "id": "phase_breaker",
+        "name": "Phase Breaker",
+        "slot": "weapon",
+        "cost": 650,
+        "atk_bonus": 30,
+        "floor_req": 11,
+        "aura_hint": "amber",
+        "desc": "+30 ATK, smashes through shields",
+    },
+    {
+        "id": "borrowed_plate",
+        "name": "Borrowed Boilerplate",
         "slot": "armor",
         "cost": 85,
         "def_bonus": 2,
         "floor_req": 1,
-        "desc": "+2 DEF, cobbled from spare brackets",
+        "desc": "+2 DEF, smells like ozone",
     },
     {
-        "id": "mirror_cowl",
-        "name": "Mirror Cowl",
+        "id": "mirror_hoodie",
+        "name": "Mirror Hoodie",
         "slot": "armor",
-        "cost": 160,
+        "cost": 170,
         "def_bonus": 4,
         "floor_req": 3,
-        "desc": "+4 DEF, reflects minor chip damage",
+        "desc": "+4 DEF, glances chip damage",
     },
     {
-        "id": "resonant_mail",
-        "name": "Resonant Mail",
+        "id": "static_poncho",
+        "name": "Static Poncho",
         "slot": "armor",
-        "cost": 320,
+        "cost": 330,
         "def_bonus": 6,
         "floor_req": 6,
-        "desc": "+6 DEF, dampens charging attacks",
+        "desc": "+6 DEF, numbs charging hits",
     },
     {
-        "id": "amber_core",
-        "name": "Amber Core",
+        "id": "phase_jacket",
+        "name": "Phase Jacket",
+        "slot": "armor",
+        "cost": 460,
+        "def_bonus": 8,
+        "floor_req": 8,
+        "desc": "+8 DEF, sips incoming damage",
+    },
+    {
+        "id": "void_tabard",
+        "name": "Void Tabard",
+        "slot": "armor",
+        "cost": 620,
+        "def_bonus": 10,
+        "floor_req": 10,
+        "desc": "+10 DEF, laughs at static",
+    },
+    {
+        "id": "amber_fuse",
+        "name": "Amber Fuse",
         "slot": "aura",
         "cost": 120,
         "aura": "amber",
         "floor_req": 2,
-        "desc": "Switch aura to Amber Critical",
+        "desc": "Tune aura to Amber Critical",
     },
     {
-        "id": "cobalt_core",
-        "name": "Cobalt Core",
+        "id": "cobalt_patch",
+        "name": "Cobalt Patch",
         "slot": "aura",
         "cost": 120,
         "aura": "cobalt",
         "floor_req": 2,
-        "desc": "Switch aura to Cobalt Guard",
+        "desc": "Tune aura to Cobalt Guard",
     },
     {
-        "id": "verdant_core",
-        "name": "Verdant Core",
+        "id": "verdant_spool",
+        "name": "Verdant Spool",
         "slot": "aura",
         "cost": 120,
         "aura": "verdant",
         "floor_req": 2,
-        "desc": "Switch aura to Verdant Regen",
+        "desc": "Tune aura to Verdant Regen",
     },
     {
-        "id": "crimson_core",
-        "name": "Crimson Core",
+        "id": "crimson_knot",
+        "name": "Crimson Knot",
         "slot": "aura",
         "cost": 210,
         "aura": "crimson",
         "floor_req": 5,
-        "desc": "Switch aura to Crimson Critical",
+        "desc": "Tune aura to Crimson Critical",
+    },
+    {
+        "id": "lucky_fuses",
+        "name": "Bag of Lucky Fuses",
+        "slot": "boon",
+        "cost": 140,
+        "floor_req": 2,
+        "desc": "Crack open for a random spike of value",
+    },
+    {
+        "id": "cortex_token",
+        "name": "Cortex Token",
+        "slot": "boon",
+        "cost": 260,
+        "floor_req": 5,
+        "desc": "Redeem for a chaotic boon",
+    },
+    {
+        "id": "pocket_coil",
+        "name": "Pocket Coil Charm",
+        "slot": "trinket",
+        "cost": 150,
+        "floor_req": 3,
+        "trinket": {"max_hp": 25},
+        "desc": "Equip: +25 Max HP",
+    },
+    {
+        "id": "grit_charm",
+        "name": "Grit Charm",
+        "slot": "trinket",
+        "cost": 190,
+        "floor_req": 4,
+        "trinket": {"def": 2},
+        "desc": "Equip: +2 DEF",
+    },
+    {
+        "id": "crit_toggle",
+        "name": "Crit Toggle",
+        "slot": "trinket",
+        "cost": 210,
+        "floor_req": 5,
+        "trinket": {"crit_bonus": 0.03},
+        "desc": "Equip: +3% crit chance",
     },
 ]
 RPG_AURAS = {
