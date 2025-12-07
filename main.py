@@ -1,19 +1,6 @@
 import json, os, time, sys, threading, shutil, math, select, random, textwrap, subprocess, re, traceback, copy
 from collections import deque
 
-try:
-    import msvcrt
-except ImportError:
-    msvcrt = None
-
-try:
-    from wcwidth import wcwidth as _wcwidth
-except ImportError:
-    _wcwidth = None
-
-try:
-    from colorama import Fore, Back, Style, init as colorama_init
-
     colorama_init(autoreset=False)
 except ImportError:
     class _ColorCodes:
@@ -55,10 +42,6 @@ from config import (
     BREACH_SLACK_PROGRESS,
     MOTIVATION_MAX,
     MAX_MOTIVATION_MULT,
-    FOCUS_BOOST_FACTOR,
-    FOCUS_DURATION,
-    FOCUS_CHARGE_PER_EARN,
-    FOCUS_MAX,
     SAVE_SLOT_COUNT,
     MAIN_LOOP_MIN_DT,
     ENEMY_ANIM_DELAY,
@@ -75,6 +58,8 @@ from config import (
     STABILITY_CURRENCY_NAME,
     STABILITY_REWARD_MULT,
     STABILITY_REWARD_EXP,
+    SCIENTIFIC_THRESHOLD_DEFAULT,
+    SCIENTIFIC_THRESHOLD_OPTIONS,
     RESONANCE_MAX,
     RESONANCE_START,
     RESONANCE_TARGET_WIDTH,
@@ -118,6 +103,7 @@ from config import (
     RPG_GOLD_REWARD_SCALE,
     TIME_STRATA,
     format_number,
+    UPGRADE_REPLACEMENT,
 )
 
 import blackjack
@@ -149,6 +135,10 @@ EVENT_ANIMATIONS = {
         "delay": 0.25,
     },
 }
+
+AUTO_ONLY_UPGRADE_TYPES = {"work_mult", "reduce_delay", "reduce_cd"}
+MANUAL_TAP_THRESHOLD = 12
+MANUAL_TAP_GAP = 0.35
 
 ROOM_COLOR_MAP = {
     "start": Fore.WHITE,
@@ -322,13 +312,11 @@ def default_game_state():
         "money": 0.0,
         "money_since_reset": 0.0,
         "fatigue": 0,
-        "focus": 0,
         "inspiration": 0,
         "concepts": 0,
         "motivation": 0,
         "owned": [],
         "upgrade_levels": {},
-        "focus_unlocked": False,
         "auto_work_unlocked": False,
         "inspiration_unlocked": False,
         "concepts_unlocked": False,
@@ -336,7 +324,10 @@ def default_game_state():
         "concept_upgrades": [],
         "work_delay_multiplier": 1.0,
         "money_mult": 1.0,
-        "focus_max_bonus": 0,
+        "manual_tap_counter": 0,
+        "last_manual_press_ts": 0.0,
+        "hold_tip_shown": False,
+        "scientific_threshold_exp": SCIENTIFIC_THRESHOLD_DEFAULT,
         "charge": 0.0,
         "best_charge": 0.0,
         "charge_threshold": [],
@@ -389,11 +380,12 @@ def default_game_state():
         "browser_notice": "",
         "browser_notice_until": 0.0,
         "browser_cycles": 0,
+        "quick_travel_target": "work",
     }
 
 
 last_render, last_size = "", (0, 0)
-work_timer, KEY_PRESSED, running, focus_active_until = 0.0, None, True, 0.0
+work_timer, KEY_PRESSED, running = 0.0, None, True
 steam = []
 steam_last_update = time.time()
 view_offset_x = 0
@@ -761,8 +753,14 @@ def load_game():
     state.setdefault("time_stratum", 0)
     state.setdefault("time_velocity", 1.0)
     state.setdefault("time_reward_multiplier", 1.0)
+    state.setdefault("manual_tap_counter", 0)
+    state.setdefault("last_manual_press_ts", 0.0)
+    state.setdefault("hold_tip_shown", False)
+    state.setdefault("scientific_threshold_exp", SCIENTIFIC_THRESHOLD_DEFAULT)
+    state.setdefault("quick_travel_target", "work")
     game.clear()
     game.update(state)
+    sync_scientific_threshold(game.get("scientific_threshold_exp"))
     ensure_rpg_state()
     if not payload:
         save_game()
@@ -859,14 +857,164 @@ def set_settings_notice(message, duration=2.5):
     game["settings_notice_until"] = time.time() + duration
 
 
+def _scientific_options():
+    raw = getattr(config, "SCIENTIFIC_THRESHOLD_OPTIONS", SCIENTIFIC_THRESHOLD_OPTIONS)
+    try:
+        options = sorted({int(x) for x in raw if int(x) >= 3})
+    except Exception:
+        options = []
+    return options or [SCIENTIFIC_THRESHOLD_DEFAULT]
+
+
+def sync_scientific_threshold(exp=None):
+    options = _scientific_options()
+    if exp is None:
+        exp = game.get("scientific_threshold_exp", options[-1])
+    try:
+        exp = int(exp)
+    except Exception:
+        exp = options[-1]
+    if exp not in options:
+        exp = options[-1]
+    game["scientific_threshold_exp"] = exp
+    config.SCIENTIFIC_THRESHOLD_EXPONENT = exp
+    return exp
+
+
+def cycle_scientific_threshold():
+    options = _scientific_options()
+    current = sync_scientific_threshold()
+    idx = options.index(current)
+    nxt = options[(idx + 1) % len(options)]
+    return sync_scientific_threshold(nxt)
+
+
+def scientific_threshold_label():
+    exp = sync_scientific_threshold()
+    return f"1e{exp}"
+
+
+def _quick_travel_targets():
+    room_ready = breach_door_is_open()
+    targets = [
+        {
+            "id": "work",
+            "label": "Desk",
+            "screen": "work",
+            "available": True,
+            "hint": "Return to the main workstation.",
+        }
+    ]
+    targets.append(
+        {
+            "id": "rpg",
+            "label": "Room",
+            "screen": "rpg",
+            "available": room_ready,
+            "hint": "Unlock the breach door first." if not room_ready else "Explore the room view.",
+        }
+    )
+    return targets
+
+
+def current_quick_travel_target():
+    target = game.get("quick_travel_target", "work") or "work"
+    available_ids = {entry["id"] for entry in _quick_travel_targets() if entry["available"]}
+    if target not in available_ids:
+        target = "work"
+        game["quick_travel_target"] = target
+    return target
+
+
+def describe_quick_travel_target(target_id):
+    for entry in _quick_travel_targets():
+        if entry["id"] != target_id:
+            continue
+        label = entry["label"]
+        if not entry["available"]:
+            label += " (locked)"
+        return label
+    return "Desk"
+
+
+def open_quick_travel_menu():
+    global KEY_PRESSED
+    selected = 0
+    active = current_quick_travel_target()
+    for idx, entry in enumerate(_quick_travel_targets()):
+        if entry["id"] == active:
+            selected = idx
+            break
+    while True:
+        targets = _quick_travel_targets()
+        if not targets:
+            return None
+        if selected >= len(targets):
+            selected = len(targets) - 1
+        lines = ["Configure where Quick Travel sends you.", ""]
+        for idx, entry in enumerate(targets):
+            marker = f"{Fore.CYAN}»{Style.RESET_ALL}" if idx == selected else " "
+            label = entry["label"]
+            if not entry["available"]:
+                label += f" {Style.DIM}(locked){Style.RESET_ALL}"
+            lines.append(f"{marker} [{idx + 1}] {label}")
+            if entry.get("hint"):
+                hint_style = Style.DIM if not entry["available"] else ""
+                hint = entry["hint"]
+                lines.append(f"    {hint_style}{hint}{Style.RESET_ALL}")
+        lines += [
+            "",
+            f"Use W/S or digits to select. Enter confirms, B cancels.",
+        ]
+        box = boxed_lines(lines, title=" Quick Travel ", pad_top=1, pad_bottom=1)
+        render_frame(box)
+        time.sleep(0.05)
+        if not KEY_PRESSED:
+            continue
+        k = KEY_PRESSED.lower() if isinstance(KEY_PRESSED, str) else KEY_PRESSED
+        KEY_PRESSED = None
+        if isinstance(k, str) and k.startswith("\x1b"):
+            if k == "\x1b[A":
+                k = "w"
+            elif k == "\x1b[B":
+                k = "s"
+            else:
+                continue
+        if k == "b":
+            return None
+        if k in {"w", "s"}:
+            delta = -1 if k == "w" else 1
+            selected = (selected + delta) % len(targets)
+            continue
+        if isinstance(k, str) and k.isdigit():
+            idx = int(k) - 1
+            if 0 <= idx < len(targets):
+                selected = idx
+            continue
+        if k == "enter":
+            choice = targets[selected]
+            if not choice["available"]:
+                continue
+            return choice["id"]
+def record_manual_press(now):
+    prev = float(game.get("last_manual_press_ts", 0.0))
+    gap = now - prev if prev else None
+    counter = int(game.get("manual_tap_counter", 0))
+    if gap is None or gap > MANUAL_TAP_GAP:
+        counter = min(9999, counter + 1)
+    else:
+        counter = max(0, counter - 1)
+    game["manual_tap_counter"] = counter
+    game["last_manual_press_ts"] = now
+    if not game.get("hold_tip_shown", False) and counter >= MANUAL_TAP_THRESHOLD:
+        set_settings_notice("Tip: Hold W to work continuously.")
+        game["hold_tip_shown"] = True
+
+
 def get_settings_menu_options():
     options = []
-    if breach_door_is_open():
-        quick_text = "[1] Room tab unlocked — use , and . to switch."
-    elif breach_key_available():
-        quick_text = "[1] Door sealed — press X at the desk to unlock."
-    else:
-        quick_text = "[1] Door locked — find the key first."
+    target = describe_quick_travel_target(current_quick_travel_target())
+    quick_text = f"[1] Quick travel target: {target}"
     options.append({"id": "quick_travel", "label": quick_text, "hotkey": "1", "spacer_after": True})
 
     steam_flag = "OFF" if game.get("settings_disable_steam", False) else "ON"
@@ -885,6 +1033,11 @@ def get_settings_menu_options():
         "id": "recenter",
         "label": "[4] Recenter desk view",
         "hotkey": "4",
+    })
+    options.append({
+        "id": "scientific",
+        "label": f"[5] Scientific cutoff: {scientific_threshold_label()}",
+        "hotkey": "5",
     })
     options.append({
         "id": "back",
@@ -910,12 +1063,12 @@ def activate_settings_option(option_id):
         set_settings_notice("Back to the desk.")
         return "back"
     if option_id == "quick_travel":
-        if breach_door_is_open():
-            set_settings_notice("Use the Room tab or ,/. to travel there.")
-        elif breach_key_available():
-            set_settings_notice("Press X at the desk to unlock the door.")
-        else:
-            set_settings_notice("The doorway is still sealed.")
+        destination = open_quick_travel_menu()
+        if destination:
+            game["quick_travel_target"] = destination
+            label = describe_quick_travel_target(destination)
+            set_settings_notice(f"Quick travel set to {label}.")
+            return ("switch", destination)
         return "stay"
     if option_id == "steam":
         game["settings_disable_steam"] = not game.get("settings_disable_steam", False)
@@ -927,6 +1080,10 @@ def activate_settings_option(option_id):
         state = "visible" if game["settings_show_signal_debug"] else "hidden"
         set_settings_notice(f"Signal multiplier {state} next to gain.")
         return "refresh"
+    if option_id == "scientific":
+        new_exp = cycle_scientific_threshold()
+        set_settings_notice(f"Scientific notation after 1e{new_exp}.")
+        return "refresh"
     if option_id == "recenter":
         view_offset_x = 0
         view_offset_y = 0
@@ -935,7 +1092,7 @@ def activate_settings_option(option_id):
     return None
 
 
-def focus_settings_option(option_id, options=None):
+def select_settings_option(option_id, options=None):
     options = options or get_settings_menu_options()
     for idx, entry in enumerate(options):
         if entry.get("id") == option_id:
@@ -987,14 +1144,15 @@ def handle_settings_menu_input(k):
         "2": "steam",
         "3": "signal_debug",
         "4": "recenter",
+        "5": "scientific",
         "b": "back",
     }
     if k in ("b", "s"):
-        focus_settings_option("back", options)
+        select_settings_option("back", options)
         return activate_settings_option("back")
     if k in key_map:
         option_id = key_map[k]
-        focus_settings_option(option_id, options)
+        select_settings_option(option_id, options)
         return activate_settings_option(option_id)
     return None
 
@@ -1092,8 +1250,12 @@ def build_slot_card(summary, width, height, highlight=False, phase=0):
         lines.append(frame_line(""))
         lines.append(frame_line(""))
         lines.append(frame_line(""))
-    while len(lines) < height - 1:
-        lines.append(frame_line(""))
+    target_inner = max(1, height - 1)
+    if len(lines) > target_inner:
+        lines = lines[:target_inner]
+    elif len(lines) < target_inner:
+        while len(lines) < target_inner:
+            lines.append(frame_line(""))
     accent = glow_char * inner_w if highlight else style["h"] * inner_w
     bottom = style["bl"] + accent + style["br"]
     lines.append(bottom)
@@ -1188,6 +1350,16 @@ def choose_save_slot_windows():
                 elif code == "K":
                     selected = (selected - 1) % SAVE_SLOT_COUNT
                 break
+            if ch == "D":
+                confirm = input(f"Erase slot {selected + 1}? Type YES to confirm: ")
+                if confirm.strip().lower() == "yes":
+                    path = slot_save_path(selected)
+                    if os.path.exists(path):
+                        os.remove(path)
+                    if selected == 0 and os.path.exists(LEGACY_SAVE_PATH):
+                        os.remove(LEGACY_SAVE_PATH)
+                    summaries = collect_slot_summaries()
+                break
             lower = ch.lower()
             if lower == "q":
                 clear_screen()
@@ -1206,16 +1378,6 @@ def choose_save_slot_windows():
             if lower == "a":
                 selected = (selected - 1) % SAVE_SLOT_COUNT
                 continue
-            if ch == "D":
-                confirm = input(f"Erase slot {selected + 1}? Type YES to confirm: ")
-                if confirm.strip().lower() == "yes":
-                    path = slot_save_path(selected)
-                    if os.path.exists(path):
-                        os.remove(path)
-                    if selected == 0 and os.path.exists(LEGACY_SAVE_PATH):
-                        os.remove(LEGACY_SAVE_PATH)
-                    summaries = collect_slot_summaries()
-                break
             if ch in ("\r", "\n"):
                 play_slot_select_animation(selected)
                 finalize_slot_choice(selected)
@@ -1283,6 +1445,19 @@ def choose_save_slot():
                         selected = (selected - 1) % SAVE_SLOT_COUNT
                         continue
                     continue
+                if ch == "D":
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    try:
+                        confirm = input(f"Erase slot {selected + 1}? Type YES to confirm: ")
+                    finally:
+                        tty.setcbreak(fd)
+                    if confirm.strip().lower() == "yes":
+                        path = slot_save_path(selected)
+                        if os.path.exists(path):
+                            os.remove(path)
+                        if selected == 0 and os.path.exists(LEGACY_SAVE_PATH):
+                            os.remove(LEGACY_SAVE_PATH)
+                    continue
                 lower = ch.lower()
                 if lower == "w":
                     selected = (selected - 2) % SAVE_SLOT_COUNT
@@ -1300,19 +1475,6 @@ def choose_save_slot():
                     clear_screen()
                     print("Exiting.")
                     sys.exit(0)
-                if ch == "D":
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                    try:
-                        confirm = input(f"Erase slot {selected + 1}? Type YES to confirm: ")
-                    finally:
-                        tty.setcbreak(fd)
-                    if confirm.strip().lower() == "yes":
-                        path = slot_save_path(selected)
-                        if os.path.exists(path):
-                            os.remove(path)
-                        if selected == 0 and os.path.exists(LEGACY_SAVE_PATH):
-                            os.remove(LEGACY_SAVE_PATH)
-                    continue
                 if ch in ("\r", "\n"):
                     play_slot_select_animation(selected)
                     finalize_slot_choice(selected)
@@ -1328,6 +1490,15 @@ def choose_save_slot():
             lower_choice = raw_choice.lower()
             if lower_choice == "q":
                 sys.exit(0)
+            if raw_choice == "D":
+                confirm = input(f"Erase slot {selected + 1}? Type YES to confirm: ")
+                if confirm.strip().lower() == "yes":
+                    path = slot_save_path(selected)
+                    if os.path.exists(path):
+                        os.remove(path)
+                    if selected == 0 and os.path.exists(LEGACY_SAVE_PATH):
+                        os.remove(LEGACY_SAVE_PATH)
+                continue
             if lower_choice in {"w", "a", "s", "d"}:
                 if lower_choice == "w":
                     selected = (selected - 2) % SAVE_SLOT_COUNT
@@ -1337,15 +1508,6 @@ def choose_save_slot():
                     selected = (selected + 1) % SAVE_SLOT_COUNT
                 elif lower_choice == "a":
                     selected = (selected - 1) % SAVE_SLOT_COUNT
-                continue
-            if raw_choice == "D":
-                confirm = input(f"Erase slot {selected + 1}? Type YES to confirm: ")
-                if confirm.strip().lower() == "yes":
-                    path = slot_save_path(selected)
-                    if os.path.exists(path):
-                        os.remove(path)
-                    if selected == 0 and os.path.exists(LEGACY_SAVE_PATH):
-                        os.remove(LEGACY_SAVE_PATH)
                 continue
             if lower_choice.isdigit():
                 idx = int(lower_choice) - 1
@@ -1703,7 +1865,6 @@ def compute_gain_and_delay(auto=False):
     gain_add = 0.0
     gain_mult = 1.0
     delay_mult = 1.0
-    game["focus_max_bonus"] = 0
     for entry in game.get("inspiration_upgrades", []):
         upg_id, level = (
             (entry.get("id"), entry.get("level", 1))
@@ -1723,8 +1884,6 @@ def compute_gain_and_delay(auto=False):
             gain_add += val
         elif t in ("work_mult", "reduce_delay"):
             delay_mult *= val
-        elif t in ("focus_max", "focus_max_bonus"):
-            game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + val
     for entry in game.get("concept_upgrades", []):
         upg_id, level = (
             (entry.get("id"), entry.get("level", 1))
@@ -1765,10 +1924,9 @@ def compute_gain_and_delay(auto=False):
             gain_add += val
         elif t in ("work_mult", "reduce_delay", "reduce_cd"):
             delay_mult *= val
-        elif t in ("focus_max", "focus_max_bonus"):
-            game["focus_max_bonus"] = game.get("focus_max_bonus", 0) + val
         elif t == "unlock_focus" and lvl > 0:
-            game["focus_unlocked"] = True
+            # Focus system retired; keep flag for old saves
+            pass
         elif t == "unlock_charge" and lvl > 0:
             game["charge_unlocked"] = True
         elif t == "unlock_rpg" and lvl > 0:
@@ -1788,8 +1946,6 @@ def compute_gain_and_delay(auto=False):
                 gain_mult *= rval * buff_mult
             elif rtype == "-cd":
                 delay_mult *= rval**buff_mult
-    if time.time() < focus_active_until:
-        delay_mult *= FOCUS_BOOST_FACTOR
     time_reward = get_time_reward_multiplier()
     game["time_reward_multiplier"] = time_reward
     gain_mult *= get_time_money_multiplier(time_reward)
@@ -1897,17 +2053,25 @@ def render_desk_table():
         table[1] = "║     Where am I?       ║"
     elif total_money < 30:
         table[1] = "║      A desk...        ║"
-    elif total_money < 100:
-        table[1] = "║     A workspace       ║"
-    elif total_money < 1000:
-        table[1] = "║    System Terminal    ║"
-    elif total_money < 5000:
-        table[1] = "║    Command Center     ║"
         
-    owned_ids = [u["id"] for u in config.UPGRADES if u["id"] in game.get("owned", [])]
-    for new, old in getattr(config, "UPGRADE_REPLACEMENT", {}).items():
-        if new in owned_ids and old in owned_ids:
-            owned_ids.remove(old)
+    owned_set = set(game.get("owned", []))
+    replacement_pairs = getattr(config, "UPGRADE_REPLACEMENT", {}) or {}
+    replacement_by_old = {old: new for new, old in replacement_pairs.items()}
+    owned_ids = []
+    seen = set()
+    for entry in config.UPGRADES:
+        uid = entry["id"]
+        if uid not in owned_set:
+            continue
+        display_id = replacement_by_old.get(uid)
+        if display_id and display_id in owned_set:
+            target_id = display_id
+        else:
+            target_id = uid
+        if target_id in seen:
+            continue
+        seen.add(target_id)
+        owned_ids.append(target_id)
     # keep the order from config.UPGRADES (don't sort) so placement is predictable
     owned_arts = [uid for uid in owned_ids if uid in UPGRADE_ART]
 
@@ -2059,7 +2223,6 @@ def perform_stability_collapse():
             "money": 0.0,
             "money_since_reset": 0.0,
             "fatigue": 0,
-            "focus": 0,
             "charge": 0.0,
             "best_charge": 0.0,
             "charge_threshold": [],
@@ -2239,17 +2402,27 @@ def get_timebond_level():
     return 0
 
 
+def get_time_velocity_bonus_multiplier():
+    velocity = max(1.0, game.get("time_velocity", 1.0))
+    if velocity <= 1.0:
+        return 1.0
+    bonus = max(0.0, math.sqrt(velocity) - 1.0)
+    # Diminishing returns keep the bonus steady even with extreme velocity.
+    return 1.0 + min(2.5, bonus * 0.35)
+
+
 def get_time_money_multiplier(time_reward=None):
+    velocity_bonus = get_time_velocity_bonus_multiplier()
     level = get_timebond_level()
     if level <= 0:
-        return 1.0
+        return velocity_bonus
     if time_reward is None:
         time_reward = get_time_reward_multiplier()
     excess = max(0.0, time_reward - 1.0)
     if excess <= 0:
-        return 1.0
+        return velocity_bonus
     ratio = min(0.55, 0.12 * level)
-    return 1.0 + excess * ratio
+    return velocity_bonus * (1.0 + excess * ratio)
 
 
 def build_time_banner_line(width):
@@ -2331,7 +2504,7 @@ def build_escape_banner_lines(width):
     state = compute_escape_vector_state()
     if not state:
         return []
-    header = f"{Fore.CYAN}ESCAPE VECTOR{Style.RESET_ALL} · {state['phase']}"
+    header = f"{Fore.CYAN}GAME{Style.RESET_ALL} · {state['phase']}"
     details = "   ".join(
         entry for entry in [state["window_text"], state["route_text"], state["signal_text"]] if entry
     )
@@ -2350,20 +2523,6 @@ def check_charge_thresholds():
         req = t["amount"]
         if req not in earned and total >= req:
             earned.append(req)
-
-
-def activate_focus():
-    global focus_active_until
-    if not game.get("focus_unlocked", False):
-        return False, "Focus not unlocked."
-    if game.get("focus", 0) < 10:
-        return False, "Not enough focus charge."
-    game["focus"] = 0
-    focus_active_until = time.time() + FOCUS_DURATION
-    save_game()
-    return True, f"Focus active for {FOCUS_DURATION}s."
-
-
 def get_tree_selection(upgrades, page_key, digit):
     term_w, term_h = get_term_size()
     max_lines = term_h // 2 - 6
@@ -2636,16 +2795,15 @@ def reset_for_inspiration():
             "money": 0.0,
             "money_since_reset": 0.0,
             "fatigue": 0,
-            "focus": 0,
             "owned": [],
             "upgrade_levels": {},
-            "focus_unlocked": False,
             "inspiration_unlocked": True,
             "layer": max(game.get("layer", 0), 1),
             "charge": 0.0,
             "best_charge": 0.0,
             "charge_threshold": [],
             "charge_unlocked": False,
+            "motivation": config.MOTIVATION_MAX,
         }
     )
     game["inspiration_resets"] = previous_resets + 1
@@ -2701,7 +2859,6 @@ def reset_for_concepts():
             "money_since_reset": 0.0,
             "fatigue": 0,
             "resonance_val": RESONANCE_START,
-            "focus": 0,
             "owned": [],
             "upgrade_levels": {},
             "concepts_unlocked": True,
@@ -2827,6 +2984,21 @@ def buy_wake_timer_upgrade(upg):
     return base_msg
 
 
+def upgrade_is_visible(upgrade):
+    if not upgrade:
+        return False
+    uid = upgrade.get("id")
+    owned_ids = set(game.get("owned", []))
+    auto_ready = game.get("auto_work_unlocked", False)
+    if (
+        upgrade.get("type") in AUTO_ONLY_UPGRADE_TYPES
+        and uid not in owned_ids
+        and not auto_ready
+    ):
+        return False
+    return True
+
+
 def open_upgrade_menu():
     global KEY_PRESSED
     if not game.get("upgrades_unlocked", False):
@@ -2848,15 +3020,14 @@ def open_upgrade_menu():
     while True:
         work_tick()
         catalogue_known = is_known("ui_upgrade_catalogue")
-        unlocked = [
-            u
-            for u in config.UPGRADES
-            if u.get("unlocked", False)
-            or all(
-                dep in game.get("owned", [])
-                for dep in config.UPGRADE_DEPENDENCIES.get(u["id"], [])
-            )
-        ]
+        unlocked = []
+        owned_items = game.get("owned", [])
+        for u in config.UPGRADES:
+            if not upgrade_is_visible(u):
+                continue
+            deps = config.UPGRADE_DEPENDENCIES.get(u["id"], [])
+            if u.get("unlocked", False) or all(dep in owned_items for dep in deps):
+                unlocked.append(u)
         money_available = game.get("money", 0)
         current_money = format_currency(money_available)
         term_w, term_h = get_term_size()
@@ -2894,7 +3065,7 @@ def open_upgrade_menu():
             ]
             if level >= max_level:
                 block.append(
-                    f"    {Fore.GREEN}MAXED — persists across collapses{Style.RESET_ALL}"
+                    f"    {Fore.GREEN}MAXED{Style.RESET_ALL}"
                 )
             else:
                 block.extend(
@@ -2990,6 +3161,8 @@ def open_upgrade_menu():
                 idx = int(k) - 1
                 if 0 <= idx < len(unlocked):
                     buy_idx_upgrade(unlocked[idx])
+                    last_box = None
+                    continue
 
 
 def buy_idx_upgrade(upg):
@@ -3013,9 +3186,7 @@ def buy_idx_upgrade(upg):
         if not game.get("upgrades_unlocked", False):
             game["upgrades_unlocked"] = True
         mark_known(f"upgrade_{uid}")
-        if upg.get("type") == "unlock_focus" and current_level > 0:
-            game["focus_unlocked"] = True
-        elif upg.get("type") == "unlock_charge" and current_level > 0:
+        if upg.get("type") == "unlock_charge" and current_level > 0:
             game["charge_unlocked"] = True
         elif upg.get("type") == "unlock_rpg" and current_level > 0:
             game["rpg_unlocked"] = True
@@ -3283,8 +3454,10 @@ def render_ui(screen="work"):
     insp_title = conc_title = insp_tree_title = conc_tree_title = ""
 
     if screen != "settings":
-        calc_insp = calculate_inspiration(game.get("money_since_reset", 0))
-        calc_conc = calculate_concepts(game.get("money_since_reset", 0))
+        total_earnings = game.get("money_since_reset", 0)
+        wallet_money = max(0.0, game.get("money", 0.0))
+        calc_insp = calculate_inspiration(wallet_money)
+        calc_conc = calculate_concepts(wallet_money)
         time_next = predict_next_inspiration_point()
         conc_time_next = predict_next_concept_point()
 
@@ -3299,7 +3472,7 @@ def render_ui(screen="work"):
         conc_title = f"=== {Fore.CYAN}{archive_name}{Style.RESET_ALL} ==="
         conc_tree_title = f"=== {Fore.CYAN}{archive_name} board{Style.RESET_ALL} ==="
         if (
-            game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY // 2
+            total_earnings >= INSPIRATION_UNLOCK_MONEY // 2
             or game.get("inspiration_unlocked", False) is True
         ):
             top_left_lines += [
@@ -3308,7 +3481,7 @@ def render_ui(screen="work"):
                 f"Holdings: {Fore.LIGHTYELLOW_EX}{format_number(game.get('inspiration', 0))}{Style.RESET_ALL} {corridor_currency}",
                 "",
             ]
-            if game.get("money_since_reset", 0) >= INSPIRATION_UNLOCK_MONEY:
+            if total_earnings >= INSPIRATION_UNLOCK_MONEY:
                 top_left_lines.append(
                     f"[I] Step into {corridor_name} for {Fore.LIGHTYELLOW_EX}{format_number(calc_insp)}{Style.RESET_ALL} {corridor_currency}"
                 )
@@ -3340,7 +3513,17 @@ def render_ui(screen="work"):
                     "\033[1m[B] Back to Work\033[0m",
                 ]
 
-        if (game.get("money_since_reset", 0) >= CONCEPTS_UNLOCK_MONEY // 2) or game.get(
+        if game.get("motivation_unlocked", False):
+            mot = max(0, min(MOTIVATION_MAX, game.get("motivation", 0)))
+            mot_ratio = mot / max(1, MOTIVATION_MAX)
+            mot_mult = 1 + mot_ratio * (MAX_MOTIVATION_MULT - 1)
+            mot_pct = int(round(mot_ratio * 100))
+            top_left_lines += [
+                "",
+                f"Motivation: {Fore.GREEN}{mot_pct}%{Style.RESET_ALL}  x{mot_mult:.2f} boost",
+            ]
+
+        if (total_earnings >= CONCEPTS_UNLOCK_MONEY // 2) or game.get(
             "concepts_unlocked", False
         ):
             bottom_left_lines += [
@@ -3355,7 +3538,7 @@ def render_ui(screen="work"):
                 rpg_depth = game.get("rpg_data", {}).get("floor", 1)
                 bottom_left_lines.append(f"Loop Depth: Floor {rpg_depth}")
                 bottom_left_lines.append("")
-            if game.get("money_since_reset", 0) >= CONCEPTS_UNLOCK_MONEY:
+            if total_earnings >= CONCEPTS_UNLOCK_MONEY:
                 bottom_left_lines.append(
                     f"[C] Enter {archive_name} for {Fore.CYAN}{format_number(calc_conc)}{Style.RESET_ALL} {archive_currency}"
                 )
@@ -3394,18 +3577,7 @@ def render_ui(screen="work"):
             middle_lines.append("[T] Stabilize window")
         middle_lines.append("")
         middle_lines += render_desk_table()
-        if game.get("focus_unlocked", False):
-            focus_max = FOCUS_MAX + game.get("focus_max_bonus", 0)
-            fprog = min(game.get("focus", 0) / float(focus_max), 1.0)
-            fbar_len = 36
-            ffilled = int(fprog * fbar_len)
-            middle_lines += [
-                f"FOCUS: {int(fprog * 100):3d}%",
-                "[" + "#" * ffilled + "-" * (fbar_len - ffilled) + "]",
-                "",
-            ]
-
-        total_money = game.get("money_since_reset", 0)
+        total_money = total_earnings
         mystery_phase = total_money < 100
 
         show_money = total_money >= 10
@@ -3449,7 +3621,6 @@ def render_ui(screen="work"):
             option_payload += "[U] Upgrades  "
         else:
             option_payload += "[U] Offline  "
-        option_payload += "[S] Settings  "
         option_payload += "[J] Blackjack  [Q] Quit"
         options_known = is_known("ui_options_full")
         if mystery_phase and not options_known:
@@ -3472,11 +3643,22 @@ def render_ui(screen="work"):
             middle_lines.append("??? offline.")
 
     term_width, term_height = get_term_size()
-    while len(top_left_lines) < term_height - 4:
+    raw_escape_banner = build_escape_banner_lines(term_width)
+    raw_banner_line = build_time_banner_line(term_width)
+    max_banner_lines = len(raw_escape_banner) + (1 if raw_banner_line else 0)
+    content_height = min(term_height, max(4, term_height - max_banner_lines))
+    available_banner_slots = max(0, term_height - content_height)
+    banner_line = raw_banner_line if raw_banner_line and available_banner_slots > 0 else None
+    if banner_line:
+        available_banner_slots -= 1
+    escape_banner = raw_escape_banner[:available_banner_slots]
+    inner_target = max(0, content_height - 4)
+
+    while len(top_left_lines) < inner_target:
         top_left_lines.append("")
-    while len(bottom_left_lines) < term_height - 4:
+    while len(bottom_left_lines) < inner_target:
         bottom_left_lines.append("")
-    while len(middle_lines) < term_height - 4:
+    while len(middle_lines) < inner_target:
         middle_lines.insert(0, "")
 
     left_w = max(18, int(term_width * 0.25))
@@ -3521,6 +3703,10 @@ def render_ui(screen="work"):
         combined_lines.append(
             left_part + " " * right_pad + mid_part + " " * right_pad + right_part
         )
+
+    max_scroll = max(0, len(combined_lines) - inner_target)
+    view_offset_y = max(0, min(view_offset_y, max_scroll))
+    window_lines = combined_lines[view_offset_y : view_offset_y + inner_target]
     
     tab_line = build_tab_bar_text(screen)
     if tab_line:
@@ -3528,7 +3714,7 @@ def render_ui(screen="work"):
     else:
         layer_title = f" {current_layer_label()} "
     box = boxed_lines(
-        combined_lines, title=layer_title, pad_top=1, pad_bottom=1
+        window_lines, title=layer_title, pad_top=1, pad_bottom=1
     )
 
     if resized:
@@ -3537,19 +3723,19 @@ def render_ui(screen="work"):
         last_render = ""
         view_offset_x = 0
         view_offset_y = 0
-    visible_lines = box[view_offset_y : view_offset_y + term_height]
+    visible_lines = box[:content_height]
+    while len(visible_lines) < content_height:
+        visible_lines.append(" " * term_width)
     visible_lines = [
         pad_visible_line(ansi_visible_slice(line, view_offset_x, term_width), term_width)
         for line in visible_lines
     ]
-    escape_banner = build_escape_banner_lines(term_width)
     if escape_banner:
         visible_lines = escape_banner + visible_lines
-        visible_lines = visible_lines[:term_height]
-    banner_line = build_time_banner_line(term_width)
     if banner_line:
         visible_lines = [banner_line] + visible_lines
-        visible_lines = visible_lines[:term_height]
+    if len(visible_lines) > term_height:
+        visible_lines = visible_lines[-term_height:]
     frame = "\033[H" + "\n".join(visible_lines)
     if frame != last_render:
         sys.stdout.write(frame)
@@ -6356,9 +6542,16 @@ def main_loop():
                         if result == "back":
                             current_screen = "work"
                             last_render = ""
+                        elif isinstance(result, tuple) and result and result[0] == "switch":
+                            _, target = result
+                            current_screen = target
+                            last_render = ""
+                        elif result == "refresh":
+                            last_render = ""
                         continue
                     elif k == "w":
                         now = time.time()
+                        record_manual_press(now)
                         if now - last_manual_time > 0.1:
                             gain, eff_delay = compute_gain_and_delay(auto=False)
                             if not game.get("auto_work_unlocked", False):
@@ -6378,11 +6571,6 @@ def main_loop():
                         clear_screen()
                         open_wake_timer_menu()
                         render_ui(screen=current_screen)
-                    elif k == "f":
-                        ok, msg = activate_focus()
-                        tmp = boxed_lines([msg], title=" Focus ", pad_top=1, pad_bottom=1)
-                        render_frame(tmp)
-                        time.sleep(1.0)
                     elif k == "i":
                         reset_for_inspiration()
                         current_screen = "work"

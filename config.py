@@ -1,3 +1,8 @@
+import math
+
+SCIENTIFIC_THRESHOLD_OPTIONS = [3, 33, 303]
+SCIENTIFIC_THRESHOLD_DEFAULT = 303
+SCIENTIFIC_THRESHOLD_EXPONENT = SCIENTIFIC_THRESHOLD_DEFAULT
 BASE_MONEY_GAIN = 1.0
 BASE_WORK_DELAY = 6.7
 BASE_MONEY_MULT = 1.0
@@ -26,16 +31,16 @@ WAKE_TIMER_UPGRADES = [
     {
         "id": "wake_anchor",
         "name": "Anchor Points",
-        "cost": 250,
+        "cost": 40,
         "time_bonus": 180,
         "desc": "Adds 180 seconds to the escape window.",
     },
     {
         "id": "wake_lock",
         "name": "Phase Lock",
-        "cost": 1000,
+        "cost": 120,
         "grant_infinite": True,
-        "desc": "Seals the window permanently.",
+        "desc": "Locks the escape window open permanently.",
     },
 ]
 
@@ -110,11 +115,6 @@ LAYER_FLOW = [
 
 LAYER_BY_KEY = {entry["key"]: entry for entry in LAYER_FLOW}
 LAYER_BY_ID = {entry["id"]: entry for entry in LAYER_FLOW}
-
-FOCUS_BOOST_FACTOR = 0.5
-FOCUS_DURATION = 12
-FOCUS_CHARGE_PER_EARN = 12
-FOCUS_MAX = 100
 
 INSPIRATION_UNLOCK_MONEY = LAYER_BY_KEY["corridor"]["unlock_money"]
 CONCEPTS_UNLOCK_MONEY = LAYER_BY_KEY["archive"]["unlock_money"]
@@ -234,6 +234,7 @@ UPGRADES = [
         "value_mult": 0.94,
         "max_level": 4,
         "cost_mult": 2.6,
+        "desc": "-7% auto delay, -6% per level",
         "unlocked": False,
     },
     {
@@ -274,6 +275,11 @@ UPGRADE_DEPENDENCIES = {
     "chrono_lattice": ["whiteboard"],
 }
 
+UPGRADE_REPLACEMENT = {
+    "dual_monitors": "monitor",
+    "mech_keyboard": "keyboard",
+}
+
 INSPIRE_UPGRADES = [
     {
         "id": "inspire_motiv",
@@ -295,16 +301,6 @@ INSPIRE_UPGRADES = [
         "base_value": 1.25,
         "value_mult": 1.15,
         "desc": "x1.25 income, +15% per level",
-    },
-    {
-        "id": "inspire_focus_cap",
-        "name": "Mindspace",
-        "base_cost": 5,
-        "type": "focus_max",
-        "max_level": 3,
-        "cost_mult": 2.0,
-        "value": 100,
-        "desc": "+100 Focus cap per level",
     },
     {
         "id": "inspire_scaling",
@@ -867,6 +863,34 @@ TIME_STRATA = [
     {"label": "Eons", "scale": 31_536_000_000_000.0, "reward_mult": 40.0},
 ]
 
+SHORT_SCALE_GROUPS = [
+    ["K", "M", "B", "T", "Qd", "Qn", "Sx", "Sp", "Oc", "No"],
+    ["De", "UD", "Dd", "Td", "QdD", "QnD", "SxD", "SpD", "OcD", "NoD"],
+    ["Vg", "UVg", "DVg", "TVg", "QdVg", "QnVg", "SxVg", "SpVg", "OcVg", "NoVg"],
+    ["Tg", "UTg", "DTg", "TTg", "QdTg", "QnTg", "SxTg", "SpTg", "OcTg", "NoTg"],
+    ["Qag", "UQag", "DQag", "TQag", "QdQag", "QnQag", "SxQag", "SpQag", "OcQag", "NoQag"],
+    ["Qig", "UQig", "DQig", "TQig", "QdQig", "QnQig", "SxQig", "SpQig", "OcQig", "NoQig"],
+    ["Sxg", "USxg", "DSxg", "TSxg", "QdSxg", "QnSxg", "SxSxg", "SpSxg", "OcSxg", "NoSxg"],
+    ["Spg", "USpg", "DSpg", "TSpg", "QdSpg", "QnSpg", "SxSpg", "SpSpg", "OcSpg", "NoSpg"],
+    ["Ocg", "UOcg", "DOcg", "TOcg", "QdOcg", "QnOcg", "SxOcg", "SpOcg", "OcOcg", "NoOcg"],
+    ["Nog", "UNog", "DNog", "TNog", "QdNog", "QnNog", "SxNog", "SpNog", "OcNog", "NoNog"],
+    ["Ce", "UCe", "DCe", "TCe", "QdCe", "QnCe", "SxCe", "SpCe", "OcCe", "NoCe"],
+]
+
+
+def _build_short_scale_suffixes():
+    entries = []
+    for tier_idx, names in enumerate(SHORT_SCALE_GROUPS):
+        base_exp = 3 + tier_idx * 30
+        for offset, label in enumerate(names):
+            exponent = base_exp + offset * 3
+            entries.append((exponent, label))
+    entries.sort(reverse=True)
+    return [(10 ** exponent, label) for exponent, label in entries]
+
+
+SHORT_SCALE_SUFFIXES = _build_short_scale_suffixes()
+
 BORDERS = {
     0: {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "│"},
     1: {"tl": "╭", "tr": "╮", "bl": "╰", "br": "╯", "h": "─", "v": "│"},
@@ -885,114 +909,32 @@ def format_number(n):
     neg = n < 0
     n = abs(n)
 
-    suffixes = [
-        (10**303, "e303"),
-        (10**300, "e300"),
-        (10**297, "e297"),
-        (10**294, "e294"),
-        (10**291, "e291"),
-        (10**288, "e288"),
-        (10**285, "e285"),
-        (10**282, "e282"),
-        (10**279, "e279"),
-        (10**276, "e276"),
-        (10**273, "e273"),
-        (10**270, "e270"),
-        (10**267, "e267"),
-        (10**264, "e264"),
-        (10**261, "e261"),
-        (10**258, "e258"),
-        (10**255, "e255"),
-        (10**252, "e252"),
-        (10**249, "e249"),
-        (10**246, "e246"),
-        (10**243, "e243"),
-        (10**240, "e240"),
-        (10**237, "e237"),
-        (10**234, "e234"),
-        (10**231, "e231"),
-        (10**228, "e228"),
-        (10**225, "e225"),
-        (10**222, "e222"),
-        (10**219, "e219"),
-        (10**216, "e216"),
-        (10**213, "e213"),
-        (10**210, "e210"),
-        (10**207, "e207"),
-        (10**204, "e204"),
-        (10**201, "e201"),
-        (10**198, "e198"),
-        (10**195, "e195"),
-        (10**192, "e192"),
-        (10**189, "e189"),
-        (10**186, "e186"),
-        (10**183, "e183"),
-        (10**180, "e180"),
-        (10**177, "e177"),
-        (10**174, "e174"),
-        (10**171, "e171"),
-        (10**168, "e168"),
-        (10**165, "e165"),
-        (10**162, "e162"),
-        (10**159, "e159"),
-        (10**156, "e156"),
-        (10**153, "e153"),
-        (10**150, "e150"),
-        (10**147, "e147"),
-        (10**144, "e144"),
-        (10**141, "e141"),
-        (10**138, "e138"),
-        (10**135, "e135"),
-        (10**132, "e132"),
-        (10**129, "e129"),
-        (10**126, "e126"),
-        (10**123, "e123"),
-        (10**120, "e120"),
-        (10**117, "e117"),
-        (10**114, "e114"),
-        (10**111, "e111"),
-        (10**108, "e108"),
-        (10**105, "e105"),
-        (10**102, "e102"),
-        (10**99, "e99"),
-        (10**96, "e96"),
-        (10**93, "e93"),
-        (10**90, "e90"),
-        (10**87, "e87"),
-        (10**84, "e84"),
-        (10**81, "e81"),
-        (10**78, "e78"),
-        (10**75, "e75"),
-        (10**72, "e72"),
-        (10**69, "e69"),
-        (10**66, "e66"),
-        (10**63, "e63"),
-        (10**60, "e60"),
-        (10**57, "e57"),
-        (10**54, "e54"),
-        (10**51, "e51"),
-        (10**48, "e48"),
-        (10**45, "e45"),
-        (10**42, "e42"),
-        (10**39, "e39"),
-        (10**36, "e36"),
-        (10**33, "De"),
-        (10**30, "No"),
-        (10**27, "Oc"),
-        (10**24, "Sp"),
-        (10**21, "Sx"),
-        (10**18, "Qn"),
-        (10**15, "Qd"),
-        (10**12, "T"),
-        (10**9, "B"),
-        (10**6, "M"),
-        (10**3, "K"),
-    ]
+    suffixes = SHORT_SCALE_SUFFIXES
+
+    threshold = max(3, int(SCIENTIFIC_THRESHOLD_EXPONENT))
+    if n >= 1000:
+        if isinstance(n, int):
+            exponent = len(str(n)) - 1
+        else:
+            try:
+                exponent = int(math.log10(n)) if n > 0 else 0
+            except (ValueError, OverflowError):
+                exponent = threshold
+        if exponent >= threshold:
+            base = 10 ** exponent
+            mantissa = n / base if base else 0
+            s = f"{mantissa:.2f}".rstrip("0").rstrip(".")
+            out = f"{s}e{exponent}"
+            return f"-{out}" if neg else out
 
     for value, symbol in suffixes:
+        exp_value = int(round(math.log10(value))) if value > 0 else 0
+        if exp_value >= threshold:
+            continue
         if n >= value:
             s = f"{n / value:.2f}".rstrip("0").rstrip(".")
-            return f"-{s}{symbol}" if neg else f"{s}{symbol}"
+            out = f"{s}{symbol}"
+            return f"-{out}" if neg else out
 
     s = f"{n:.2f}".rstrip("0").rstrip(".")
     return f"-{s}" if neg else s
