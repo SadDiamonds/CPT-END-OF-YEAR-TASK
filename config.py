@@ -129,6 +129,41 @@ MOTIVATION_MAX = 100
 MAX_MOTIVATION_MULT = 5.0
 MOTIVATION_REGEN_RATE = 0.25  # motivation recovered per second when unlocked
 
+INSTABILITY_RETURN_CONCEPT_RESETS = 2
+INSTABILITY_WAVE_COOLDOWN = (140, 220)  # seconds between surge windows
+INSTABILITY_WAVE_DURATION = (25, 45)  # duration of a surge window
+
+CHALLENGES = [
+    {
+        "id": "stability_drill",
+        "name": "Stability Drill",
+        "desc": "Trigger 3 collapse recoveries across any runs.",
+        "goal_type": "stability_resets",
+        "goal_value": 3,
+        "reward": {"type": "unlock_autowork"},
+    },
+    {
+        "id": "corridor_prodigy",
+        "name": "Corridor Prodigy",
+        "desc": "Perform 2 Inspiration resets to hone the cadence.",
+        "goal_type": "inspiration_resets",
+        "goal_value": 2,
+        "reward": {"type": "money_mult", "value": 1.07},
+        "unlock_type": "stability_resets",
+        "unlock_value": 1,
+    },
+    {
+        "id": "archive_wayfarer",
+        "name": "Archive Wayfarer",
+        "desc": "Complete 1 Concept reset to revisit the deep instability.",
+        "goal_type": "concept_resets",
+        "goal_value": 1,
+        "reward": {"type": "motivation_cap", "value": 30},
+        "unlock_type": "inspiration_resets",
+        "unlock_value": 1,
+    },
+]
+
 STEAM_SPEED = 2.45 
 STEAM_CHANCE = 0.8 
 STEAM_SPREAD = 3
@@ -365,11 +400,12 @@ CONCEPT_UPGRADES = [
         "id": "concept_autowork",
         "name": "Signal Tuner",
         "cost": 1,
-        "type": "unlock_autowork",
-        "value": 1,
-        "max_level": 1,
-        "cost_mult": 1.3,
-        "desc": "Unlocks automatic work cycles.",
+        "type": "money_mult",
+        "base_value": 1.15,
+        "value_mult": 1.08,
+        "max_level": 3,
+        "cost_mult": 1.6,
+        "desc": "+15% manual income, +8% per level.",
     },
     {
         "id": "concept_autospeed",

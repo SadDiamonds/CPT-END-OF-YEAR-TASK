@@ -73,6 +73,9 @@ from config import (
     STABILITY_CURRENCY_NAME,
     STABILITY_REWARD_MULT,
     STABILITY_REWARD_EXP,
+    INSTABILITY_RETURN_CONCEPT_RESETS,
+    INSTABILITY_WAVE_COOLDOWN,
+    INSTABILITY_WAVE_DURATION,
     SCIENTIFIC_THRESHOLD_DEFAULT,
     SCIENTIFIC_THRESHOLD_OPTIONS,
     RESONANCE_MAX,
@@ -119,9 +122,12 @@ from config import (
     TIME_STRATA,
     format_number,
     UPGRADE_REPLACEMENT,
+    CHALLENGES,
 )
 
 import blackjack
+
+CHALLENGE_BY_ID = {entry["id"]: entry for entry in CHALLENGES}
 
 EVENT_ANIMATIONS = {
     "campfire": {
@@ -312,6 +318,101 @@ def default_rpg_data():
     }
 
 
+def default_challenge_state():
+    return {
+        "active_id": None,
+        "baseline": {},
+        "started_at": 0.0,
+    }
+
+
+def challenge_state_data():
+    state = game.setdefault("challenge_state", default_challenge_state())
+    baseline = state.get("baseline")
+    if not isinstance(baseline, dict):
+        baseline = {}
+        state["baseline"] = baseline
+    return state
+
+
+def current_challenge_id():
+    state = challenge_state_data()
+    cid = state.get("active_id")
+    return cid if isinstance(cid, str) else None
+
+
+def active_challenge_entry():
+    cid = current_challenge_id()
+    return CHALLENGE_BY_ID.get(cid) if cid else None
+
+
+def auto_work_online():
+    return bool(game.get("auto_work_unlocked", False))
+
+
+def challenge_feature_ready():
+    return bool(game.get("concept_resets", 0) >= 1 or game.get("concepts_unlocked", False))
+
+
+def ensure_challenge_feature():
+    if game.get("challenges_feature_unlocked", False):
+        return False
+    if not challenge_feature_ready():
+        return False
+    game["challenges_feature_unlocked"] = True
+    if not game.get("challenge_intro_seen", False):
+        set_settings_notice("Challenge board unlocked. Press H to review trials.", duration=4.0)
+        game["challenge_intro_seen"] = True
+    return True
+
+
+def challenge_feature_active():
+    return bool(game.get("challenges_feature_unlocked", False))
+
+
+def _challenge_goal(info):
+    return max(1, int(info.get("goal_value", 1)))
+
+
+def _challenge_baseline(metric):
+    state = challenge_state_data()
+    baseline = state.get("baseline", {})
+    return baseline.get(metric, challenge_metric(metric))
+
+
+def activate_challenge(entry):
+    if not entry or entry.get("id") is None:
+        return False
+    if current_challenge_id():
+        return False
+    metric = entry.get("goal_type")
+    state = challenge_state_data()
+    state["active_id"] = entry["id"]
+    state["baseline"] = {metric: challenge_metric(metric)} if metric else {}
+    state["started_at"] = time.time()
+    set_settings_notice(f"Challenge activated: {entry.get('name', 'Unknown')}.")
+    return True
+
+
+def clear_active_challenge(notice=None):
+    state = challenge_state_data()
+    state["active_id"] = None
+    state["baseline"] = {}
+    state["started_at"] = 0.0
+    if notice:
+        set_settings_notice(notice)
+
+
+def forfeit_active_challenge():
+    entry = active_challenge_entry()
+    if not entry:
+        return False
+    clear_active_challenge(
+        notice=f"Challenge forfeited: {entry.get('name', 'Unknown')}. Progress reset."
+    )
+    return True
+
+
 def slot_save_path(idx):
     idx = max(0, min(SAVE_SLOT_COUNT - 1, int(idx)))
     return os.path.join(DATA_DIR, f"save_slot_{idx + 1}.json")
@@ -398,6 +499,16 @@ def default_game_state():
         "browser_notice": "",
         "browser_notice_until": 0.0,
         "browser_cycles": 0,
+        "challenges_feature_unlocked": False,
+        "challenge_intro_seen": False,
+        "challenge_state": default_challenge_state(),
+        "challenge_cursor": 0,
+        "challenges_completed": [],
+        "instability_wave_active": False,
+        "instability_wave_end": 0.0,
+        "instability_next_wave": 0.0,
+        "instability_wave_intro_seen": False,
+        "instability_wave_count": 0,
         "quick_travel_target": "work",
     }
 
@@ -835,14 +946,34 @@ def load_game():
     state.setdefault("motivation_unlocked", False)
     state.setdefault("motivation_cap_bonus", 0)
     state.setdefault("motivation_strength_mult", 1.0)
+    state.setdefault("challenges_feature_unlocked", False)
+    state.setdefault("challenge_intro_seen", False)
+    state.setdefault("challenge_cursor", 0)
+    challenge_state = state.get("challenge_state")
+    if not isinstance(challenge_state, dict):
+        state["challenge_state"] = default_challenge_state()
+    else:
+        challenge_state.setdefault("active_id", None)
+        baseline = challenge_state.get("baseline")
+        if not isinstance(baseline, dict):
+            challenge_state["baseline"] = {}
+        challenge_state.setdefault("started_at", 0.0)
+    state.setdefault("challenges_completed", [])
+    state.setdefault("instability_wave_active", False)
+    state.setdefault("instability_wave_end", 0.0)
+    state.setdefault("instability_next_wave", 0.0)
+    state.setdefault("instability_wave_intro_seen", False)
+    state.setdefault("instability_wave_count", 0)
     game.clear()
     game.update(state)
     sync_scientific_threshold(game.get("scientific_threshold_exp"))
     ensure_rpg_state()
     apply_inspiration_effects()
     apply_concept_effects()
+    ensure_challenge_feature()
     if game.get("motivation_unlocked", False):
         clamp_motivation()
+    check_challenges("load")
     if not payload:
         save_game()
     return state
@@ -936,6 +1067,16 @@ def perform_breach_unlock_sequence():
 def set_settings_notice(message, duration=2.5):
     game["settings_notice"] = escape_text(message)
     game["settings_notice_until"] = time.time() + duration
+
+
+def enable_auto_work(show_notice=True):
+    if auto_work_online():
+        return False
+    game["auto_work_unlocked"] = True
+    if show_notice:
+        set_settings_notice("Auto-work cycles synchronized.", duration=3.5)
+    attempt_reveal("ui_auto_prompt")
+    return True
 
 
 def _scientific_options():
@@ -1851,7 +1992,6 @@ def build_tree_lines(upgrades, get_info_fn, page_key):
             desc_text = f"→ {u['desc']}"
             if level > 0 and u["type"] not in (
                 "unlock_motivation",
-                "unlock_autowork",
                 "timeflow_bonus",
                 "motivation_cap",
                 "motivation_strength",
@@ -1949,14 +2089,300 @@ def apply_concept_effects():
         u = next((x for x in CONCEPT_UPGRADES if x["id"] == upg_id), None)
         if not u:
             continue
-        if u["type"] == "unlock_autowork" and level > 0:
-            game["auto_work_unlocked"] = True
-        elif u["type"] == "unlock_rpg" and level > 0:
+        if u["type"] == "unlock_rpg" and level > 0:
             game["breach_key_obtained"] = True
 
     gained_key = game.get("breach_key_obtained", False) and not had_key
     if gained_key:
         announce_breach_door_manifestation()
+
+
+def challenge_metric(metric_id):
+    if metric_id == "money_since_reset":
+        return game.get("money_since_reset", 0.0)
+    if metric_id == "play_time":
+        return game.get("play_time", 0.0)
+    if metric_id == "stability_resets":
+        return game.get("stability_resets", 0)
+    if metric_id == "inspiration_resets":
+        return game.get("inspiration_resets", 0)
+    if metric_id == "concept_resets":
+        return game.get("concept_resets", 0)
+    return game.get(metric_id, 0)
+
+
+def challenge_unlocked(info):
+    if not info:
+        return False
+    unlock_metric = info.get("unlock_type")
+    if not unlock_metric:
+        return True
+    threshold = info.get("unlock_value", info.get("goal_value", 0))
+    return challenge_metric(unlock_metric) >= threshold
+
+
+def challenge_progress(info):
+    if not info:
+        return (0, 1)
+    goal = _challenge_goal(info)
+    cid = info.get("id")
+    completed = cid in game.get("challenges_completed", [])
+    if completed:
+        return goal, goal
+    metric = info.get("goal_type")
+    total = challenge_metric(metric)
+    state = challenge_state_data()
+    if state.get("active_id") == cid:
+        baseline = state.get("baseline", {}).get(metric, total)
+        progress = max(0, total - baseline)
+    else:
+        progress = 0
+    return progress, goal
+
+
+def challenge_reward_summary(info):
+    reward = info.get("reward") or {}
+    rtype = reward.get("type")
+    value = reward.get("value")
+    if rtype == "money_mult" and value:
+        pct = (float(value) - 1.0) * 100
+        return f"+{pct:.0f}% money gain"
+    if rtype == "motivation_cap" and value:
+        return f"+{int(value)} motivation cap"
+    if rtype == "unlock_autowork":
+        return "Unlock auto-work cycles"
+    return "Permanent bonus unlocked"
+
+
+def apply_challenge_reward(info):
+    reward = info.get("reward") or {}
+    rtype = reward.get("type")
+    value = reward.get("value")
+    if rtype == "money_mult" and value:
+        mult = max(0.0, float(game.get("money_mult", 1.0)))
+        game["money_mult"] = max(0.0, mult * float(value))
+    elif rtype == "motivation_cap" and value:
+        bonus = int(value)
+        game["motivation_cap_bonus"] = game.get("motivation_cap_bonus", 0) + bonus
+        if game.get("motivation_unlocked", False):
+            clamp_motivation()
+    elif rtype == "unlock_autowork":
+        enable_auto_work(show_notice=True)
+
+
+def check_challenges(reason=None):
+    entry = active_challenge_entry()
+    if not entry:
+        return False
+    completed = set(game.get("challenges_completed", []))
+    cid = entry.get("id")
+    if not cid or cid in completed:
+        return False
+    progress, goal = challenge_progress(entry)
+    if progress < goal:
+        return False
+    completed.add(cid)
+    game["challenges_completed"] = list(completed)
+    apply_challenge_reward(entry)
+    summary = challenge_reward_summary(entry)
+    set_settings_notice(
+        f"Challenge complete: {entry.get('name', 'Unknown')} ({summary}).",
+        duration=3.5,
+    )
+    clear_active_challenge()
+    return True
+
+
+def challenge_status(entry):
+    if not entry:
+        return "unknown"
+    cid = entry.get("id")
+    if not cid:
+        return "unknown"
+    if cid in game.get("challenges_completed", []):
+        return "completed"
+    if current_challenge_id() == cid:
+        return "active"
+    if not challenge_unlocked(entry):
+        return "locked"
+    return "ready"
+
+
+def challenge_unlock_progress(entry):
+    metric = entry.get("unlock_type")
+    if not metric:
+        return None
+    current = challenge_metric(metric)
+    goal = entry.get("unlock_value", entry.get("goal_value", 1))
+    return current, goal
+
+
+def challenge_ready_to_claim(entry):
+    progress, goal = challenge_progress(entry)
+    return progress >= goal and goal > 0
+
+
+def build_challenge_summary_line():
+    if not challenge_feature_ready():
+        return ""
+    if not challenge_feature_active():
+        return (
+            f"{Fore.LIGHTBLACK_EX}Complete a Concept reset to unlock challenges.{Style.RESET_ALL}"
+        )
+    entry = active_challenge_entry()
+    if entry:
+        progress, goal = challenge_progress(entry)
+        ratio = 0 if goal <= 0 else min(1.0, progress / goal)
+        pct = int(ratio * 100)
+        progress_text = f"{format_number(progress)} / {format_number(goal)}"
+        return (
+            f"{Fore.LIGHTBLUE_EX}Challenge{Style.RESET_ALL}: {entry['name']} — "
+            f"{progress_text} ({pct}%)"
+        )
+    completed_ids = set(game.get("challenges_completed", []))
+    ready = [c for c in CHALLENGES if c.get("id") not in completed_ids and challenge_unlocked(c)]
+    if not ready:
+        if len(completed_ids) == len(CHALLENGES) and CHALLENGES:
+            return f"{Fore.LIGHTGREEN_EX}All challenges cleared!{Style.RESET_ALL}"
+        return f"{Fore.LIGHTBLACK_EX}Challenges locked — meet unlock goals to begin.{Style.RESET_ALL}"
+    next_up = ready[0]
+    return f"No active challenge. Press [H] to begin '{next_up['name']}'."
+
+
+def build_challenge_board_lines():
+    lines = []
+    if not challenge_feature_active():
+        lines.append("Challenge board offline.")
+        lines.append("Complete a Concept reset to enable optional trials.")
+        lines.append("")
+        lines.append("Press B to return.")
+        return lines
+    lines.append("Optional objectives grant permanent buffs.")
+    lines.append("")
+    cursor = max(0, min(len(CHALLENGES) - 1, int(game.get("challenge_cursor", 0))))
+    game["challenge_cursor"] = cursor
+    completed_ids = set(game.get("challenges_completed", []))
+
+    for idx, entry in enumerate(CHALLENGES):
+        status = challenge_status(entry)
+        marker = f"{Fore.CYAN}›{Style.RESET_ALL}" if idx == cursor else " "
+        if status == "completed":
+            color = Fore.GREEN
+            tag = "CLEARED"
+        elif status == "active":
+            color = Fore.YELLOW
+            tag = "ACTIVE"
+        elif status == "ready":
+            color = Fore.CYAN
+            tag = "READY"
+        else:
+            color = Fore.LIGHTBLACK_EX
+            tag = "LOCKED"
+        name_line = f"{marker} {color}{entry['name']}{Style.RESET_ALL} [{tag}]"
+        lines.append(name_line)
+        lines.append(f"   {entry['desc']}")
+        reward = challenge_reward_summary(entry)
+        if reward:
+            lines.append(f"   Reward: {reward}")
+        if status == "locked":
+            unlock = challenge_unlock_progress(entry)
+            if unlock:
+                current, goal = unlock
+                lines.append(
+                    f"   Unlock progress: {format_number(current)} / {format_number(goal)}"
+                )
+        elif status == "active":
+            progress, goal = challenge_progress(entry)
+            pct = 0 if goal <= 0 else min(100, int((progress / goal) * 100))
+            bar = build_progress_bar(pct, width=18)
+            lines.append(f"   {bar}")
+            lines.append(
+                f"   Progress: {format_number(progress)} / {format_number(goal)}"
+            )
+        elif status == "ready":
+            lines.append("   Press Enter to begin tracking this challenge.")
+        elif status == "completed":
+            lines.append("   Completed!")
+        lines.append("")
+
+    if not CHALLENGES:
+        lines.append("No challenges configured.")
+    lines.append(
+        f"{Fore.YELLOW}Use W/S to move, Enter to start/claim, F to forfeit, B to exit.{Style.RESET_ALL}"
+    )
+    return lines
+
+
+def open_challenge_board():
+    global KEY_PRESSED
+    if not challenge_feature_ready():
+        tmp = boxed_lines(
+            ["Challenge board offline.", "Reach the Archive once to enable trials."],
+            title=" Challenge Board ",
+            pad_top=1,
+            pad_bottom=1,
+        )
+        render_frame(tmp)
+        time.sleep(1.2)
+        return
+    ensure_challenge_feature()
+    if not challenge_feature_active():
+        tmp = boxed_lines(
+            ["Stabilize deeper layers to enable optional trials."],
+            title=" Challenge Board ",
+            pad_top=1,
+            pad_bottom=1,
+        )
+        render_frame(tmp)
+        time.sleep(1.0)
+        return
+    last_frame = None
+    last_size = get_term_size()
+    while True:
+        work_tick()
+        check_challenges("board")
+        lines = build_challenge_board_lines()
+        box = boxed_lines(lines, title=" Challenge Board ", pad_top=1, pad_bottom=1)
+        current_size = get_term_size()
+        frame = "\n".join(box)
+        if frame != last_frame or current_size != last_size:
+            render_frame(box)
+            last_frame = frame
+            last_size = current_size
+        time.sleep(0.05)
+        if not KEY_PRESSED:
+            continue
+        k = KEY_PRESSED
+        KEY_PRESSED = None
+        if isinstance(k, str):
+            k = k.lower()
+        if k in {"b", "q"}:
+            return
+        if k in {"w", "s"} and CHALLENGES:
+            delta = -1 if k == "w" else 1
+            current = int(game.get("challenge_cursor", 0))
+            game["challenge_cursor"] = (current + delta) % len(CHALLENGES)
+            continue
+        if k in {"enter", "a"} and CHALLENGES:
+            idx = max(0, min(len(CHALLENGES) - 1, int(game.get("challenge_cursor", 0))))
+            entry = CHALLENGES[idx]
+            status = challenge_status(entry)
+            if status == "locked":
+                set_settings_notice("Meet the unlock requirement first.")
+            elif status == "completed":
+                set_settings_notice("Challenge already cleared.")
+            elif status == "active":
+                if challenge_ready_to_claim(entry):
+                    check_challenges("manual-claim")
+                else:
+                    set_settings_notice("Challenge in progress — keep pushing.")
+            elif status == "ready":
+                activate_challenge(entry)
+            continue
+        if k == "f":
+            if not forfeit_active_challenge():
+                set_settings_notice("No active challenge to forfeit.")
+            continue
 
 
 def get_charge_bonus():
@@ -2298,6 +2724,7 @@ def perform_work(gain, eff_delay, manual=False):
         game["motivation"] = max(0, min(cap, current - 1))
     if not manual and game.get("auto_work_unlocked", False):
         work_timer = max(0.0, work_timer - eff_delay)
+    check_challenges("work")
     save_game()
     return True
 
@@ -2343,8 +2770,10 @@ def perform_stability_collapse():
     game["wake_timer_locked"] = False
     game["wake_timer_notified"] = False
     game["needs_stability_reset"] = False
+    reset_instability_state(clear_timer=False)
     recalc_wake_timer_state()
     refresh_knowledge_flags()
+    check_challenges("stability")
     save_game()
     last_render = ""
     if game.get("wake_timer_infinite", False):
@@ -2359,6 +2788,8 @@ def work_tick():
     delta = now - last_tick_time
     last_tick_time = now
     game["play_time"] = game.get("play_time", 0.0) + delta
+    ensure_challenge_feature()
+    update_instability_waves(delta)
     advance_time_flow(delta)
     if not game.get("wake_timer_infinite", False):
         current_timer = game.get("wake_timer", WAKE_TIMER_START)
@@ -2439,7 +2870,7 @@ def compute_time_velocity():
     base += 0.12 * len(game.get("concept_upgrades", []))
     money = max(1.0, game.get("money_since_reset", 0.0))
     base += math.log10(money + 1.0) * 0.4
-    if game.get("auto_work_unlocked", False):
+    if auto_work_online():
         base *= 1.15
     if game.get("concepts_unlocked", False):
         base *= 1.08
@@ -2452,6 +2883,11 @@ def compute_time_velocity():
 def advance_time_flow(delta):
     strata = TIME_STRATA or []
     if not strata:
+        return
+    if not timeflow_active():
+        game["time_velocity"] = 1.0
+        game["time_progress"] = 0.0
+        game["time_stratum"] = 0
         return
     velocity = compute_time_velocity()
     game["time_velocity"] = velocity
@@ -2466,7 +2902,7 @@ def advance_time_flow(delta):
 
 def get_time_reward_multiplier():
     strata = TIME_STRATA or []
-    if not strata:
+    if not strata or not timeflow_active():
         return 1.0
     idx = max(0, min(len(strata) - 1, int(game.get("time_stratum", 0))))
     current = strata[idx]
@@ -2484,7 +2920,7 @@ def get_time_reward_multiplier():
 
 def get_time_status():
     strata = TIME_STRATA or []
-    if not strata:
+    if not strata or not timeflow_active():
         return ("", 0.0, 1.0, 1.0)
     progress = max(0.0, game.get("time_progress", 0.0))
     idx = 0
@@ -2505,6 +2941,82 @@ def timeflow_display_unlocked():
     return bool(game.get("wake_timer_infinite", False))
 
 
+def timeflow_active():
+    return bool(
+        game.get("wake_timer_infinite", False)
+        and not game.get("needs_stability_reset", False)
+        and not game.get("instability_wave_active", False)
+    )
+
+
+def instability_system_ready():
+    threshold = max(0, int(INSTABILITY_RETURN_CONCEPT_RESETS))
+    return threshold <= 0 or game.get("concept_resets", 0) >= threshold
+
+
+def schedule_next_instability_wave(delay=None):
+    if delay is None:
+        low, high = INSTABILITY_WAVE_COOLDOWN
+        delay = random.uniform(low, high)
+    game["instability_next_wave"] = time.time() + max(1.0, delay)
+
+
+def start_instability_wave():
+    if not instability_system_ready():
+        return
+    if game.get("instability_wave_active", False):
+        return
+    duration = random.uniform(*INSTABILITY_WAVE_DURATION)
+    game["instability_wave_active"] = True
+    game["instability_wave_end"] = time.time() + max(5.0, duration)
+    game["instability_wave_count"] = game.get("instability_wave_count", 0) + 1
+    set_settings_notice("Instability surge! Timeflow offline until it calms.", duration=3.5)
+
+
+def end_instability_wave():
+    if not game.get("instability_wave_active", False):
+        return
+    game["instability_wave_active"] = False
+    game["instability_wave_end"] = 0.0
+    schedule_next_instability_wave()
+    set_settings_notice("Instability receded. Timeflow recalibrating.", duration=2.8)
+
+
+def reset_instability_state(clear_timer=False):
+    game["instability_wave_active"] = False
+    game["instability_wave_end"] = 0.0
+    if clear_timer:
+        game["instability_next_wave"] = 0.0
+
+
+def update_instability_waves(delta):
+    if not instability_system_ready():
+        if game.get("instability_wave_active"):
+            game["instability_wave_active"] = False
+            game["instability_wave_end"] = 0.0
+        game["instability_next_wave"] = 0.0
+        return
+    if not game.get("instability_wave_intro_seen", False):
+        game["instability_wave_intro_seen"] = True
+        set_settings_notice(
+            "Deep instability occasionally severs timeflow now.", duration=4.0
+        )
+        schedule_next_instability_wave()
+    if game.get("needs_stability_reset", False):
+        return
+    now = time.time()
+    if game.get("instability_wave_active", False):
+        if now >= game.get("instability_wave_end", 0.0):
+            end_instability_wave()
+        return
+    next_wave = game.get("instability_next_wave", 0.0)
+    if not next_wave:
+        schedule_next_instability_wave()
+        return
+    if now >= next_wave:
+        start_instability_wave()
+
+
 def get_timebond_level():
     for entry in game.get("concept_upgrades", []):
         upg_id, level = (
@@ -2518,6 +3030,8 @@ def get_timebond_level():
 
 
 def get_time_velocity_bonus_multiplier():
+    if not timeflow_active():
+        return 1.0
     velocity = max(1.0, game.get("time_velocity", 1.0))
     if velocity <= 1.0:
         return 1.0
@@ -2527,6 +3041,8 @@ def get_time_velocity_bonus_multiplier():
 
 
 def get_time_money_multiplier(time_reward=None):
+    if not timeflow_active():
+        return 1.0
     velocity_bonus = get_time_velocity_bonus_multiplier()
     level = get_timebond_level()
     if level <= 0:
@@ -2541,13 +3057,30 @@ def get_time_money_multiplier(time_reward=None):
 
 
 def build_time_banner_line(width):
-    if not timeflow_display_unlocked():
+    if not timeflow_active():
         return ""
     label, value, _, _ = get_time_status()
     if value <= 0:
         return ""
     text = f"Timeflow • {value:,.2f} {label}"
     return pad_visible_line(ansi_center(text, width), width)
+
+
+def build_instability_status_line():
+    if not instability_system_ready():
+        return ""
+    if game.get("instability_wave_active", False):
+        remaining = max(0.0, game.get("instability_wave_end", 0.0) - time.time())
+        seconds = max(0, int(remaining))
+        return (
+            f"{Fore.LIGHTRED_EX}Instability surge active — timeflow offline for {seconds}s."
+            f"{Style.RESET_ALL}"
+        )
+    next_wave = game.get("instability_next_wave", 0.0)
+    if next_wave <= 0:
+        return ""
+    eta = max(0, int(next_wave - time.time()))
+    return f"{Fore.RED}Next instability surge in ≈{eta}s.{Style.RESET_ALL}"
 
 
 def compute_escape_vector_state():
@@ -2689,7 +3222,7 @@ def get_tree_selection(upgrades, page_key, digit):
             block.extend([cost_line, have_line])
         if u.get("desc"):
             desc_text = f"→ {u['desc']}"
-            if level > 0 and u["type"] not in ("unlock_motivation", "unlock_autowork"):
+            if level > 0 and u["type"] not in ("unlock_motivation",):
                 desc_text += f" (x{total_mult:.2f})"
             wrapped = wrap_ui_text(desc_text, width=desc_width, reserved=4)
             block += [f"    {Fore.LIGHTBLACK_EX}{w}{Style.RESET_ALL}" for w in wrapped]
@@ -2946,6 +3479,7 @@ def reset_for_inspiration():
     apply_inspiration_effects()
     if game.get("motivation_unlocked", False):
         game["motivation"] = motivation_capacity()
+    check_challenges("inspiration")
     save_game()
     done_msg = boxed_lines(
         [f"Gained {Fore.LIGHTYELLOW_EX}{gained}{Style.RESET_ALL} {corridor_currency}."],
@@ -3002,11 +3536,14 @@ def reset_for_concepts():
             "charge_unlocked": False,
         }
     )
+    reset_instability_state(clear_timer=True)
     game["concept_resets"] = game.get("concept_resets", 0) + 1
+    ensure_challenge_feature()
     attempt_reveal("layer_archive")
     attempt_reveal("currency_archive")
     apply_concept_effects()
     apply_inspiration_effects()
+    check_challenges("concept")
     save_game()
     done_msg = boxed_lines(
         [f"Gained {Fore.CYAN}{gained}{Style.RESET_ALL} {archive_currency}."],
@@ -3706,10 +4243,17 @@ def render_ui(screen="work"):
         bottom_left_lines += build_breach_door_lines()
 
         status_line = build_status_ribbon(calc_insp, calc_conc, mot_pct, mot_mult)
+        challenge_line = build_challenge_summary_line()
+        instability_line = build_instability_status_line()
 
         middle_lines = []
         if status_line:
             middle_lines.append(status_line)
+        if challenge_line:
+            middle_lines.append(challenge_line)
+        if instability_line:
+            middle_lines.append(instability_line)
+        if middle_lines:
             middle_lines.append("")
         middle_lines.append(build_wake_timer_line())
         if not game.get("wake_timer_infinite", False):
@@ -3764,7 +4308,10 @@ def render_ui(screen="work"):
             option_payload += "[U] Upgrades  "
         else:
             option_payload += "[U] Offline  "
-        option_payload += "[J] Blackjack  [Q] Quit"
+        option_payload += "[J] Blackjack  "
+        if challenge_feature_ready():
+            option_payload += "[H] Challenges  "
+        option_payload += "[Q] Quit"
         options_known = is_known("ui_options_full")
         if mystery_phase and not options_known:
             option_line = reveal_text(
@@ -6709,6 +7256,22 @@ def main_loop():
                     elif k == "j" and current_screen == "work":
                         open_blackjack_layer()
                         current_screen = "work"
+                    elif k == "h" and current_screen == "work":
+                        if not challenge_feature_ready():
+                            tmp = boxed_lines(
+                                [
+                                    "Challenge board offline.",
+                                    "Reach the Archive once to enable trials.",
+                                ],
+                                title=" Challenge Board ",
+                                pad_top=1,
+                                pad_bottom=1,
+                            )
+                            render_frame(tmp)
+                            time.sleep(1.0)
+                        else:
+                            open_challenge_board()
+                            render_ui(screen=current_screen)
                     elif k == "t" and not game.get("wake_timer_infinite", False):
                         current_screen = "work"
                         clear_screen()
