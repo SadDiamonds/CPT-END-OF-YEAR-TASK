@@ -54,7 +54,7 @@ LAYER_FLOW = [
         "storage_key": "money",
         "unlock_money": 0,
         "border_id": 0,
-           "desc": "Primary money layer.",
+        "desc": "Primary money layer.",
     },
     {
         "id": 1,
@@ -65,7 +65,7 @@ LAYER_FLOW = [
         "storage_key": "inspiration",
         "unlock_money": 100_000,
         "border_id": 1,
-           "desc": "Generates and spends Inspiration currency.",
+        "desc": "Generates and spends Inspiration currency.",
     },
     {
         "id": 2,
@@ -76,7 +76,7 @@ LAYER_FLOW = [
         "storage_key": "concepts",
         "unlock_money": 100_000_000,
         "border_id": 2,
-           "desc": "Generates and spends Concept currency.",
+        "desc": "Generates and spends Concept currency.",
     },
     {
         "id": 3,
@@ -87,7 +87,7 @@ LAYER_FLOW = [
         "storage_key": "pulses",
         "unlock_money": 5_000_000_000_000,
         "border_id": 3,
-           "desc": "Future prestige layer.",
+        "desc": "Future prestige layer.",
     },
     {
         "id": 4,
@@ -98,7 +98,7 @@ LAYER_FLOW = [
         "storage_key": "veils",
         "unlock_money": 10**18,
         "border_id": 4,
-           "desc": "Future meta-progression layer.",
+        "desc": "Future meta-progression layer.",
     },
     {
         "id": 5,
@@ -109,7 +109,7 @@ LAYER_FLOW = [
         "storage_key": "sigils",
         "unlock_money": 10**24,
         "border_id": 4,
-           "desc": "Future endgame layer.",
+        "desc": "Future endgame layer.",
     },
 ]
 
@@ -118,6 +118,7 @@ LAYER_BY_ID = {entry["id"]: entry for entry in LAYER_FLOW}
 
 INSPIRATION_UNLOCK_MONEY = LAYER_BY_KEY["corridor"]["unlock_money"]
 CONCEPTS_UNLOCK_MONEY = LAYER_BY_KEY["archive"]["unlock_money"]
+SIGIL_UNLOCK_MONEY = LAYER_BY_KEY["threshold"]["unlock_money"]
 
 BREACH_KEY_BASE_COST = 100
 BREACH_KEY_MIN_COST = 60
@@ -126,7 +127,7 @@ BREACH_TARGET_PROGRESS = 55
 BREACH_SLACK_PROGRESS = 35
 
 MOTIVATION_MAX = 100
-MAX_MOTIVATION_MULT = 3.0
+MAX_MOTIVATION_MULT = 5.0
 
 STEAM_SPEED = 2.45 
 STEAM_CHANCE = 0.8 
@@ -290,6 +291,28 @@ INSPIRE_UPGRADES = [
         "max_level": 1,
         "cost_mult": 1.3,
         "desc": "Unlocks the Motivation buff.",
+    },
+    {
+        "id": "inspire_drive",
+        "name": "Drive Reservoirs",
+        "base_cost": 4,
+        "type": "motivation_cap",
+        "max_level": 7,
+        "cost_mult": 1.65,
+        "base_value": 20,
+        "value_mult": 1.3,
+        "desc": "+20 Motivation capacity, +30% per level.",
+    },
+    {
+        "id": "inspire_peak",
+        "name": "Peak Output",
+        "base_cost": 12,
+        "type": "motivation_strength",
+        "max_level": 5,
+        "cost_mult": 1.8,
+        "base_value": 1.15,
+        "value_mult": 1.12,
+        "desc": "Boosts Motivation multiplier cap +15%, +12% per level.",
     },
     {
         "id": "inspire_efficiency",
