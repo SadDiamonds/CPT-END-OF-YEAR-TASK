@@ -129,21 +129,38 @@ MOTIVATION_MAX = 100
 MAX_MOTIVATION_MULT = 5.0
 MOTIVATION_REGEN_RATE = 0.25  # motivation recovered per second when unlocked
 
-INSTABILITY_RETURN_CONCEPT_RESETS = 2
-INSTABILITY_WAVE_COOLDOWN = (140, 220)  # seconds between surge windows
-INSTABILITY_WAVE_DURATION = (25, 45)  # duration of a surge window
-
 CHALLENGES = [
     {
         "id": "stability_drill",
+        "group": "Stability",
         "name": "Stability Drill",
-        "desc": "Trigger 3 collapse recoveries across any runs.",
-        "goal_type": "stability_resets",
+        "desc": "Trigger 3 manual collapses while this challenge is active.",
+        "goal_type": "stability_manual_resets",
         "goal_value": 3,
         "reward": {"type": "unlock_autowork"},
+        "modifiers": {
+            "money_gain_mult": 0.8,
+            "time_velocity_mult": 0.85,
+        },
+    },
+    {
+        "id": "stability_reserve",
+        "group": "Stability",
+        "name": "Stability Reserve",
+        "desc": "Earn 1,000 Stability Sparks after starting the challenge.",
+        "goal_type": "stability_currency",
+        "goal_value": 1000,
+        "reward": {"type": "money_mult", "value": 1.06},
+        "unlock_type": "stability_resets",
+        "unlock_value": 2,
+        "modifiers": {
+            "money_gain_mult": 0.55,
+            "motivation_cap_mult": 0.7,
+        },
     },
     {
         "id": "corridor_prodigy",
+        "group": "Corridor",
         "name": "Corridor Prodigy",
         "desc": "Perform 2 Inspiration resets to hone the cadence.",
         "goal_type": "inspiration_resets",
@@ -151,16 +168,59 @@ CHALLENGES = [
         "reward": {"type": "money_mult", "value": 1.07},
         "unlock_type": "stability_resets",
         "unlock_value": 1,
+        "modifiers": {
+            "inspiration_gain_mult": 0.45,
+            "money_gain_mult": 0.75,
+        },
+    },
+    {
+        "id": "corridor_velocity",
+        "group": "Corridor",
+        "name": "Corridor Velocity",
+        "desc": "Generate 500,000 money after beginning the challenge.",
+        "goal_type": "money_since_reset",
+        "goal_value": 500_000,
+        "reward": {"type": "motivation_cap", "value": 25},
+        "unlock_type": "inspiration_resets",
+        "unlock_value": 1,
+        "modifiers": {
+            "money_gain_mult": 0.4,
+            "auto_delay_mult": 1.35,
+            "motivation_cap_mult": 0.6,
+        },
     },
     {
         "id": "archive_wayfarer",
+        "group": "Archive",
         "name": "Archive Wayfarer",
-        "desc": "Complete 1 Concept reset to revisit the deep instability.",
+        "desc": "Complete 1 Concept reset to revisit the deep currents.",
         "goal_type": "concept_resets",
         "goal_value": 1,
         "reward": {"type": "motivation_cap", "value": 30},
         "unlock_type": "inspiration_resets",
         "unlock_value": 1,
+        "modifiers": {
+            "money_gain_mult": 0.7,
+            "concept_gain_mult": 0.6,
+            "time_velocity_mult": 0.75,
+        },
+    },
+    {
+        "id": "archive_persistence",
+        "group": "Archive",
+        "name": "Archive Persistence",
+        "desc": "Perform 2 additional Concept resets while this challenge runs.",
+        "goal_type": "concept_resets",
+        "goal_value": 2,
+        "reward": {"type": "money_mult", "value": 1.12},
+        "unlock_type": "concept_resets",
+        "unlock_value": 1,
+        "modifiers": {
+            "money_gain_mult": 0.55,
+            "concept_gain_mult": 0.5,
+            "auto_delay_mult": 1.5,
+            "motivation_cap_mult": 0.5,
+        },
     },
 ]
 
@@ -495,6 +555,42 @@ CONCEPT_UPGRADES = [
         "desc": "Unlocks the RPG mode.",
     },
 ]
+
+AUTOMATION_UPGRADES = [
+        {
+            "id": "automation_sync",
+            "name": "Sync Mesh",
+            "base_cost": 6,
+            "type": "auto_delay_mult",
+            "max_level": 6,
+            "cost_mult": 1.65,
+            "base_value": 0.94,
+            "value_mult": 0.96,
+            "desc": "Shaves 6% off automation cycles, -4% delay per level.",
+        },
+        {
+            "id": "automation_directives",
+            "name": "Directive Loops",
+            "base_cost": 9,
+            "type": "auto_money_mult",
+            "max_level": 6,
+            "cost_mult": 1.7,
+            "base_value": 1.18,
+            "value_mult": 1.12,
+            "desc": "+18% automation payout, +12% per level.",
+        },
+        {
+            "id": "automation_procurement",
+            "name": "Procurement Scripts",
+            "base_cost": 12,
+            "type": "automation_synergy",
+            "max_level": 5,
+            "cost_mult": 1.85,
+            "base_value": 1.12,
+            "value_mult": 1.1,
+            "desc": "+12% manual gain while automation is online, +10% per level.",
+        },
+    ]
 
 RESONANCE_MAX = 100
 RESONANCE_START = 50

@@ -47,6 +47,7 @@ from config import (
     BASE_MONEY_MULT,
     INSPIRE_UPGRADES,
     CONCEPT_UPGRADES,
+    AUTOMATION_UPGRADES,
     INSPIRATION_UNLOCK_MONEY,
     CONCEPTS_UNLOCK_MONEY,
     BREACH_KEY_BASE_COST,
@@ -73,9 +74,6 @@ from config import (
     STABILITY_CURRENCY_NAME,
     STABILITY_REWARD_MULT,
     STABILITY_REWARD_EXP,
-    INSTABILITY_RETURN_CONCEPT_RESETS,
-    INSTABILITY_WAVE_COOLDOWN,
-    INSTABILITY_WAVE_DURATION,
     SCIENTIFIC_THRESHOLD_DEFAULT,
     SCIENTIFIC_THRESHOLD_OPTIONS,
     RESONANCE_MAX,
@@ -128,6 +126,105 @@ from config import (
 import blackjack
 
 CHALLENGE_BY_ID = {entry["id"]: entry for entry in CHALLENGES}
+CHALLENGE_GROUPS = []
+for entry in CHALLENGES:
+    group = entry.get("group", "Trials")
+    if group not in CHALLENGE_GROUPS:
+        CHALLENGE_GROUPS.append(group)
+if not CHALLENGE_GROUPS:
+    CHALLENGE_GROUPS = ["Trials"]
+
+CHALLENGE_GROUP_RESET = {
+    "stability": "stability",
+    "corridor": "inspiration",
+    "archive": "concept",
+}
+
+CHALLENGE_LAYER_TARGET = {
+    "stability": 0,
+    "inspiration": 1,
+    "concept": 2,
+}
+
+CHALLENGE_RESET_LAYER_KEY = {
+    "stability": "wake",
+    "inspiration": "corridor",
+    "concept": "archive",
+}
+
+GUIDE_TOPICS = [
+    {
+        "id": "wake_basics",
+        "title": "Desk Operations",
+        "lines": [
+            "{wake} is your baseline loop. Press W (or let automation) to earn money {currency_symbol}.",
+            "Stability Sparks keep the wake timer open; spend them in the Stabilizer menu (T).",
+            "Most upgrades only persist until the next layer reset, so invest steadily between collapses.",
+            "Open this Field Guide anywhere on the desk with the [G] key when you need a refresher.",
+        ],
+    },
+    {
+        "id": "stability",
+        "title": "Stability Collapses",
+        "requires": {"stability_resets": 1},
+        "lines": [
+            "Triggering a collapse converts your highest {wake} earnings into {sparks}.",
+            "Collapses wipe desk upgrades and charge, but permanent unlocks (like concepts) persist.",
+            "Upgrading the Stabilizer extends or locks the wake window, enabling Timeflow later on.",
+            "Press [L] anytime to trigger a manual collapse instead of waiting for the timer to expire.",
+        ],
+    },
+    {
+        "id": "inspiration",
+        "title": "Inspiration Resets",
+        "requires": {"inspiration_resets": 1},
+        "lines": [
+            "Spending a run in {corridor} converts desk profits into Inspiration, unlocking new skill trees.",
+            "An Inspiration reset wipes money gear but keeps sparks, automation unlocks, and previous Inspiration purchases.",
+            "Aim to chain collapses and autos together before banking Inspiration for larger upgrades.",
+        ],
+    },
+    {
+        "id": "concepts",
+        "title": "Concept Depth",
+        "requires": {"concept_resets": 1},
+        "lines": [
+            "{archive} is gated behind completing all listed challenges once, then reaching its money goal.",
+            "Concept resets grant Echoes used for powerful global modifiers but wipe Inspiration progress and motivation.",
+            "Expect to rebuild automation from scratch when diving this deep—plan long runs before committing.",
+        ],
+    },
+    {
+        "id": "automation",
+        "title": "Automation Systems",
+        "requires": {"auto_work_unlocked": True},
+        "lines": [
+            "Auto-work repeats the basic cycle, while auto-buyers spend money using the Automation Lab.",
+            "Delay and gain modifiers stack from upgrades, Inspiration, Concepts, and active challenges.",
+            "Automation synergy scales with total resets, so keep prestiging even after unlocking the lab.",
+        ],
+    },
+    {
+        "id": "timeflow",
+        "title": "Timeflow",
+        "unlock_if": "timeflow_display_unlocked",
+        "lines": [
+            "Once the wake window is sealed, Timeflow tracks how fast loops run and grants a separate reward multiplier.",
+            "Time velocity rises with layers, upgrades, and some challenges; higher tiers boost both reward and money gain.",
+            "Check the top banner or this guide to see how velocity and reward convert into raw income.",
+        ],
+    },
+    {
+        "id": "challenges",
+        "title": "Challenge Runs",
+        "unlock_if": "challenge_feature_ready",
+        "lines": [
+            "Each challenge belongs to a layer. Starting one applies that layer's reset, then adds the listed debuffs.",
+            "Goals track progress made after activation. Finish a run to bank the permanent reward on your main timeline.",
+            "Use Z/X on the board to switch reset layers and review what each debuff targets before committing.",
+        ],
+    },
+]
 
 EVENT_ANIMATIONS = {
     "campfire": {
@@ -156,7 +253,6 @@ EVENT_ANIMATIONS = {
         "delay": 0.25,
     },
 }
-
 AUTO_ONLY_UPGRADE_TYPES = {"work_mult", "reduce_delay", "reduce_cd"}
 MANUAL_TAP_THRESHOLD = 12
 MANUAL_TAP_GAP = 0.35
@@ -227,7 +323,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 LEGACY_SAVE_PATH = os.path.join(DATA_DIR, "save.json")
-ACTIVE_SLOT_INDEX = 0
+ACTIVE_SLOT_INDEX = 2
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 RESET_SEQ = getattr(Style, "RESET_ALL", "\x1b[0m")
@@ -346,12 +442,248 @@ def active_challenge_entry():
     return CHALLENGE_BY_ID.get(cid) if cid else None
 
 
-def auto_work_online():
+def active_challenge_modifiers():
+    entry = active_challenge_entry()
+    if not entry:
+        return {}
+    mods = entry.get("modifiers")
+    return mods if isinstance(mods, dict) else {}
+
+
+def get_challenge_modifier(key, default=None):
+    mods = active_challenge_modifiers()
+    return mods.get(key, default)
+
+
+def auto_work_allowed():
+    if get_challenge_modifier("disable_auto_work", False):
+        return False
     return bool(game.get("auto_work_unlocked", False))
 
 
+def auto_buyer_allowed():
+    if get_challenge_modifier("disable_auto_buyer", False):
+        return False
+    return bool(game.get("auto_buyer_unlocked", False))
+
+
+def automation_online():
+    if get_challenge_modifier("disable_automation", False):
+        return False
+    return bool(auto_work_allowed() or auto_buyer_allowed())
+
+
+def challenges_completed_count():
+    return len(set(game.get("challenges_completed", [])))
+
+
+def total_challenges_configured():
+    return len(CHALLENGES)
+
+
+def all_challenges_cleared():
+    total = total_challenges_configured()
+    if total == 0:
+        return True
+    return challenges_completed_count() >= total
+
+
+def concept_layer_gate_met():
+    if game.get("concepts_unlocked", False) or game.get("concept_resets", 0) > 0:
+        return True
+    return all_challenges_cleared()
+
+
+def automation_lab_available():
+    return automation_online() or bool(game.get("automation_upgrades"))
+
+
+def challenge_run_active_flag():
+    return bool(game.get("challenge_run_active", False))
+
+
+def challenge_persistent_state():
+    if challenge_run_active_flag():
+        backup = game.get("_challenge_backup")
+        if isinstance(backup, dict):
+            return backup
+    return game
+
+
+def begin_challenge_run(entry):
+    if challenge_run_active_flag():
+        return False
+    backup = copy.deepcopy(game)
+    game["_challenge_backup"] = backup
+    game["challenge_run_active"] = True
+    game["challenge_run_id"] = entry.get("id") if entry else None
+    reset_progress_for_challenge(entry)
+    label = entry.get("name", "Challenge") if entry else "Challenge"
+    set_settings_notice(
+        f"Challenge run started: {label}. Layer reset applied; modifiers online.",
+        duration=3.0,
+    )
+    return True
+
+
+def restore_pre_challenge_state():
+    backup = game.pop("_challenge_backup", None)
+    game["challenge_run_active"] = False
+    game["challenge_run_id"] = None
+    if not isinstance(backup, dict):
+        return False
+    current_knowledge = game.get("knowledge") if isinstance(game, dict) else None
+    if isinstance(current_knowledge, dict):
+        stored = backup.setdefault("knowledge", {})
+        if isinstance(stored, dict):
+            for tag, flag in current_knowledge.items():
+                if flag:
+                    stored[tag] = True
+    game.clear()
+    game.update(backup)
+    ensure_rpg_state()
+    apply_inspiration_effects()
+    apply_concept_effects()
+    apply_automation_effects()
+    game.setdefault("_challenge_backup", None)
+    return True
+
+
+def challenge_board_pages():
+    return CHALLENGE_GROUPS or ["Trials"]
+
+
+def current_challenge_page_entries():
+    pages = challenge_board_pages()
+    total = len(pages)
+    if total <= 0:
+        return [], "Trials", 0, 1
+    page_idx = int(game.get("challenge_page", 0))
+    page_idx %= total
+    game["challenge_page"] = page_idx
+    group = pages[page_idx]
+    entries = [c for c in CHALLENGES if c.get("group", group) == group]
+    return entries, group, page_idx, total
+
+
+def reset_progress_for_challenge(entry):
+    group = (entry or {}).get("group", "Trials") or "Trials"
+    reset_key = CHALLENGE_GROUP_RESET.get(group.lower(), "stability")
+    if reset_key == "concept":
+        wipe_to_concept_baseline(game)
+        game["automation_upgrades"] = []
+        game["automation_page"] = 0
+    elif reset_key == "inspiration":
+        wipe_to_inspiration_baseline(game)
+    else:
+        wipe_to_stability_baseline(game)
+    disable_timeflow = reset_key == "stability"
+    game["_challenge_disable_wake_lock"] = disable_timeflow
+    if disable_timeflow:
+        game["wake_timer_infinite"] = False
+        game["wake_timer_locked"] = False
+        game["wake_timer_notified"] = False
+        game["needs_stability_reset"] = False
+        game["time_progress"] = 0.0
+        game["time_stratum"] = 0
+    recalc_wake_timer_state()
+    if disable_timeflow:
+        cap = game.get("wake_timer_cap", WAKE_TIMER_START)
+        game["wake_timer"] = cap
+    refresh_knowledge_flags()
+    apply_inspiration_effects()
+    apply_concept_effects()
+    apply_automation_effects()
+    if game.get("motivation_unlocked", False):
+        clamp_motivation()
+    else:
+        game["motivation"] = game.get("motivation", 0)
+    target_layer = CHALLENGE_LAYER_TARGET.get(reset_key, 0)
+    game["layer"] = target_layer
+    global work_timer
+    work_timer = 0.0
+    save_game()
+
+
+def challenge_layer_reset():
+    entry = active_challenge_entry()
+    if not entry or not challenge_run_active_flag():
+        set_settings_notice("No active challenge to reset.")
+        return False
+    reset_progress_for_challenge(entry)
+    group = (entry.get("group") or "Trials").lower()
+    reset_key = CHALLENGE_GROUP_RESET.get(group, "stability")
+    layer_key = CHALLENGE_RESET_LAYER_KEY.get(reset_key, "wake")
+    label = layer_name(layer_key, "layer")
+    if reset_key == "stability":
+        notice = "Challenge instability reset applied."
+    else:
+        notice = f"{label} baseline reapplied for this challenge run only."
+    set_settings_notice(notice, duration=3.0)
+    return True
+
+
+def challenge_reset_hint():
+    if not challenge_run_active_flag():
+        return ""
+    entry = active_challenge_entry()
+    if not entry:
+        return ""
+    group = (entry.get("group") or "Trials").lower()
+    reset_key = CHALLENGE_GROUP_RESET.get(group, "stability")
+    layer_key = CHALLENGE_RESET_LAYER_KEY.get(reset_key, "wake")
+    label = layer_name(layer_key, "Layer")
+    if reset_key == "stability":
+        desc = "instability"
+    else:
+        desc = f"{label} baseline"
+    return (
+        f"{Fore.YELLOW}[R] Challenge Reset{Style.RESET_ALL}: reapply"
+        f" {desc} just for this run."
+    )
+
+
+def describe_challenge_modifiers(entry):
+    mods = (entry or {}).get("modifiers") or {}
+    clauses = []
+
+    def add_percent(label, value):
+        if not isinstance(value, (int, float)) or value <= 0 or abs(value - 1.0) < 0.01:
+            return
+        delta = int(round(abs(1 - value) * 100))
+        if delta == 0:
+            return
+        if value < 1:
+            clauses.append(f"{label} -{delta}%")
+        else:
+            clauses.append(f"{label} +{delta}%")
+
+    add_percent("Income", mods.get("money_gain_mult"))
+    add_percent("Inspiration gain", mods.get("inspiration_gain_mult"))
+    add_percent("Concept gain", mods.get("concept_gain_mult"))
+    add_percent("Auto-work delay", mods.get("auto_delay_mult"))
+    add_percent("Motivation cap", mods.get("motivation_cap_mult"))
+    add_percent("Time velocity", mods.get("time_velocity_mult"))
+
+    if mods.get("disable_automation") or mods.get("disable_auto_work"):
+        clauses.append("Automation disabled")
+    if mods.get("disable_auto_buyer"):
+        clauses.append("Auto-buyers disabled")
+
+    return clauses
+
+
+def summarize_challenge_modifiers(entry):
+    clauses = describe_challenge_modifiers(entry)
+    return ", ".join(clauses) if clauses else ""
+
+
 def challenge_feature_ready():
-    return bool(game.get("concept_resets", 0) >= 1 or game.get("concepts_unlocked", False))
+    return bool(
+        game.get("stability_resets", 0) >= 1
+        or game.get("concept_resets", 0) >= 1
+        or game.get("concepts_unlocked", False)
+    )
 
 
 def ensure_challenge_feature():
@@ -385,6 +717,8 @@ def activate_challenge(entry):
         return False
     if current_challenge_id():
         return False
+    if not begin_challenge_run(entry):
+        return False
     metric = entry.get("goal_type")
     state = challenge_state_data()
     state["active_id"] = entry["id"]
@@ -394,13 +728,15 @@ def activate_challenge(entry):
     return True
 
 
-def clear_active_challenge(notice=None):
+def clear_active_challenge(notice=None, duration=2.5):
     state = challenge_state_data()
     state["active_id"] = None
     state["baseline"] = {}
     state["started_at"] = 0.0
+    restore_pre_challenge_state()
+    save_game()
     if notice:
-        set_settings_notice(notice)
+        set_settings_notice(notice, duration=duration)
 
 
 def forfeit_active_challenge():
@@ -408,7 +744,7 @@ def forfeit_active_challenge():
     if not entry:
         return False
     clear_active_challenge(
-        notice=f"Challenge forfeited: {entry.get('name', 'Unknown')}. Progress reset."
+        notice=f"Challenge forfeited: {entry.get('name', 'Unknown')}. Modifiers lifted."
     )
     return True
 
@@ -437,10 +773,12 @@ def default_game_state():
         "owned": [],
         "upgrade_levels": {},
         "auto_work_unlocked": False,
+        "auto_buyer_unlocked": False,
         "inspiration_unlocked": False,
         "concepts_unlocked": False,
         "inspiration_upgrades": [],
         "concept_upgrades": [],
+        "automation_upgrades": [],
         "work_delay_multiplier": 1.0,
         "money_mult": 1.0,
         "manual_tap_counter": 0,
@@ -464,6 +802,7 @@ def default_game_state():
         "concept_resets": 0,
         "stability_currency": 0.0,
         "stability_resets": 0,
+        "stability_manual_resets": 0,
         "wake_timer": WAKE_TIMER_START,
         "wake_timer_cap": WAKE_TIMER_START,
         "wake_timer_infinite": False,
@@ -503,12 +842,16 @@ def default_game_state():
         "challenge_intro_seen": False,
         "challenge_state": default_challenge_state(),
         "challenge_cursor": 0,
+        "challenge_page": 0,
         "challenges_completed": [],
-        "instability_wave_active": False,
-        "instability_wave_end": 0.0,
-        "instability_next_wave": 0.0,
-        "instability_wave_intro_seen": False,
-        "instability_wave_count": 0,
+        "guide_cursor": 0,
+        "automation_page": 0,
+        "automation_delay_mult": 1.0,
+        "automation_gain_mult": 1.0,
+        "automation_synergy_mult": 1.0,
+        "_challenge_backup": None,
+        "challenge_run_active": False,
+        "challenge_run_id": None,
         "quick_travel_target": "work",
     }
 
@@ -523,6 +866,51 @@ last_manual_time = 0.0
 listener_enabled = True
 
 game = default_game_state()
+
+
+def guide_topic_unlocked(topic):
+    if not topic:
+        return False
+    requirements = topic.get("requires") or {}
+    for key, requirement in requirements.items():
+        current = game.get(key)
+        if callable(requirement):
+            if not requirement():
+                return False
+        elif isinstance(requirement, bool):
+            if bool(current) != requirement:
+                return False
+        elif isinstance(requirement, (int, float)):
+            if float(current or 0) < float(requirement):
+                return False
+        elif isinstance(requirement, str):
+            if not game.get(requirement):
+                return False
+        else:
+            if not current:
+                return False
+    unlock_cond = topic.get("unlock_if")
+    if unlock_cond:
+        fn = unlock_cond
+        if isinstance(unlock_cond, str):
+            fn = globals().get(unlock_cond)
+        if not callable(fn) or not fn():
+            return False
+    return True
+
+
+def available_guide_topics():
+    return [topic for topic in GUIDE_TOPICS if guide_topic_unlocked(topic)]
+
+
+def guide_render_context():
+    return {
+        "wake": layer_name("wake", "Desk"),
+        "corridor": layer_name("corridor", "Hall"),
+        "archive": layer_name("archive", "Echo"),
+        "sparks": STABILITY_CURRENCY_NAME,
+        "currency_symbol": CURRENCY_SYMBOL,
+    }
 
 
 def browser_effect_totals():
@@ -637,7 +1025,11 @@ def mark_known(tag):
 
 def motivation_capacity():
     bonus = max(0, int(game.get("motivation_cap_bonus", 0)))
-    return max(1, MOTIVATION_MAX + bonus)
+    capacity = max(1, MOTIVATION_MAX + bonus)
+    cap_mult = get_challenge_modifier("motivation_cap_mult")
+    if isinstance(cap_mult, (int, float)) and cap_mult > 0:
+        capacity = max(1, int(round(capacity * cap_mult)))
+    return capacity
 
 
 def motivation_peak_multiplier():
@@ -645,27 +1037,32 @@ def motivation_peak_multiplier():
     return MAX_MOTIVATION_MULT * strength
 
 
-def clamp_motivation():
+def set_motivation(value):
     cap = motivation_capacity()
-    current = game.get("motivation", cap)
-    if current is None:
-        current = cap
-    clamped = max(0.0, min(float(cap), float(current)))
-    game["motivation"] = clamped
-    return clamped
+    if value is None:
+        value = cap
+    clamped = max(0.0, min(float(cap), float(value)))
+    rounded = round(clamped + 1e-8, 1)
+    game["motivation"] = rounded
+    return rounded
+
+
+def clamp_motivation():
+    current = game.get("motivation", motivation_capacity())
+    return set_motivation(current)
 
 
 def describe_motivation_state(pct):
     if pct is None:
         return None
     if pct >= 90:
-        return f"{Fore.GREEN}Laser focus{Style.RESET_ALL}"
+        return f"{Fore.GREEN}Motivation{Style.RESET_ALL}"
     if pct >= 60:
-        return f"{Fore.GREEN}Steady groove{Style.RESET_ALL}"
+        return f"{Fore.GREEN}.Motivation{Style.RESET_ALL}"
     if pct >= 35:
-        return f"{Fore.YELLOW}Flickering focus{Style.RESET_ALL}"
+        return f"{Fore.YELLOW}..Motivation{Style.RESET_ALL}"
     if pct >= 10:
-        return f"{Fore.YELLOW}Running on fumes{Style.RESET_ALL}"
+        return f"{Fore.YELLOW}...Motivation{Style.RESET_ALL}"
     return f"{Fore.RED}Burned out{Style.RESET_ALL}"
 
 
@@ -776,11 +1173,14 @@ def recalc_wake_timer_state():
     purchased = set(game.get("wake_timer_upgrades", []))
     cap = WAKE_TIMER_START
     infinite = game.get("wake_timer_infinite", False)
+    challenge_lock = bool(game.get("_challenge_disable_wake_lock", False))
     for upg in WAKE_TIMER_UPGRADES:
         if upg["id"] in purchased:
             cap += upg.get("time_bonus", 0)
             if upg.get("grant_infinite"):
                 infinite = True
+    if challenge_lock:
+        infinite = False
     game["wake_timer_cap"] = cap
     game["wake_timer_infinite"] = infinite
     if infinite:
@@ -949,6 +1349,16 @@ def load_game():
     state.setdefault("challenges_feature_unlocked", False)
     state.setdefault("challenge_intro_seen", False)
     state.setdefault("challenge_cursor", 0)
+    state.setdefault("challenge_page", 0)
+    state.setdefault("guide_cursor", 0)
+    state.setdefault("automation_upgrades", [])
+    state.setdefault("automation_page", 0)
+    state.setdefault("automation_delay_mult", 1.0)
+    state.setdefault("automation_gain_mult", 1.0)
+    state.setdefault("automation_synergy_mult", 1.0)
+    state.setdefault("_challenge_backup", None)
+    state.setdefault("challenge_run_active", False)
+    state.setdefault("challenge_run_id", None)
     challenge_state = state.get("challenge_state")
     if not isinstance(challenge_state, dict):
         state["challenge_state"] = default_challenge_state()
@@ -959,17 +1369,15 @@ def load_game():
             challenge_state["baseline"] = {}
         challenge_state.setdefault("started_at", 0.0)
     state.setdefault("challenges_completed", [])
-    state.setdefault("instability_wave_active", False)
-    state.setdefault("instability_wave_end", 0.0)
-    state.setdefault("instability_next_wave", 0.0)
-    state.setdefault("instability_wave_intro_seen", False)
-    state.setdefault("instability_wave_count", 0)
+    state.setdefault("auto_buyer_unlocked", False)
+    state.setdefault("stability_manual_resets", 0)
     game.clear()
     game.update(state)
     sync_scientific_threshold(game.get("scientific_threshold_exp"))
     ensure_rpg_state()
     apply_inspiration_effects()
     apply_concept_effects()
+    apply_automation_effects()
     ensure_challenge_feature()
     if game.get("motivation_unlocked", False):
         clamp_motivation()
@@ -1070,11 +1478,11 @@ def set_settings_notice(message, duration=2.5):
 
 
 def enable_auto_work(show_notice=True):
-    if auto_work_online():
+    if automation_online():
         return False
     game["auto_work_unlocked"] = True
     if show_notice:
-        set_settings_notice("Auto-work cycles synchronized.", duration=3.5)
+        set_settings_notice("Automation cycles synchronized.", duration=3.5)
     attempt_reveal("ui_auto_prompt")
     return True
 
@@ -1930,6 +2338,15 @@ def get_concept_info(upg_id):
     return False, 0
 
 
+def get_automation_info(upg_id):
+    for u in game.get("automation_upgrades", []):
+        if isinstance(u, dict) and u.get("id") == upg_id:
+            return True, u.get("level", 1)
+        elif isinstance(u, str) and u == upg_id:
+            return True, 1
+    return False, 0
+
+
 def wrap_ui_text(text, width=None, reserved=0):
     term_w, _ = get_term_size()
     box_w = max(config.MIN_BOX_WIDTH, term_w - config.BOX_MARGIN * 2)
@@ -1943,14 +2360,43 @@ def wrap_ui_text(text, width=None, reserved=0):
     return textwrap.wrap(clean, width=usable)
 
 
+def tree_catalogue_meta(upgrades):
+    if upgrades is INSPIRE_UPGRADES:
+        layer_key = "corridor"
+        return {
+            "pool_name": layer_name(layer_key),
+            "pool_currency": layer_currency_name(layer_key),
+            "currency_suffix": layer_currency_suffix(layer_key),
+            "holdings_key": "inspiration",
+            "applied_key": "inspiration_upgrades",
+        }
+    if upgrades is AUTOMATION_UPGRADES:
+        archive_key = "archive"
+        return {
+            "pool_name": "Automation Lab",
+            "pool_currency": layer_currency_name(archive_key),
+            "currency_suffix": layer_currency_suffix(archive_key),
+            "holdings_key": "concepts",
+            "applied_key": "automation_upgrades",
+        }
+    layer_key = "archive"
+    return {
+        "pool_name": layer_name(layer_key),
+        "pool_currency": layer_currency_name(layer_key),
+        "currency_suffix": layer_currency_suffix(layer_key),
+        "holdings_key": "concepts",
+        "applied_key": "concept_upgrades",
+    }
+
+
 def build_tree_lines(upgrades, get_info_fn, page_key):
     term_w, term_h = get_term_size()
     max_lines = term_h // 2 - 6
-    layer_key = "corridor" if upgrades is INSPIRE_UPGRADES else "archive"
-    suffix_raw = layer_currency_suffix(layer_key)
+    meta = tree_catalogue_meta(upgrades)
+    suffix_raw = meta.get("currency_suffix")
     suffix = f" {suffix_raw}" if suffix_raw else ""
-    pool_currency = layer_currency_name(layer_key)
-    holdings_key = "inspiration" if upgrades is INSPIRE_UPGRADES else "concepts"
+    pool_currency = meta.get("pool_currency", "")
+    holdings_key = meta.get("holdings_key", "concepts")
     # Left column in the main UI is ~25% of the terminal width; reserve padding for indent
     desc_width = max(int(term_w * 0.25) - 6, 18)
     pages, current, used = [], [], 0
@@ -2075,7 +2521,7 @@ def apply_inspiration_effects():
     if game.get("motivation_unlocked", False):
         clamp_motivation()
     else:
-        game["motivation"] = 0
+        set_motivation(0)
 
 
 def apply_concept_effects():
@@ -2097,6 +2543,31 @@ def apply_concept_effects():
         announce_breach_door_manifestation()
 
 
+def apply_automation_effects():
+    game["automation_delay_mult"] = 1.0
+    game["automation_gain_mult"] = 1.0
+    game["automation_synergy_mult"] = 1.0
+    for entry in game.get("automation_upgrades", []):
+        upg_id, level = (
+            (entry.get("id"), entry.get("level", 1))
+            if isinstance(entry, dict)
+            else (entry, 1)
+        )
+        u = next((x for x in AUTOMATION_UPGRADES if x["id"] == upg_id), None)
+        if not u:
+            continue
+        base = float(u.get("base_value", u.get("value", 1.0)))
+        step = float(u.get("value_mult", 1.0))
+        val = base * (step ** max(0, level - 1))
+        etype = u.get("type")
+        if etype == "auto_delay_mult":
+            game["automation_delay_mult"] *= max(0.01, val)
+        elif etype == "auto_money_mult":
+            game["automation_gain_mult"] *= max(0.0, val)
+        elif etype == "automation_synergy":
+            game["automation_synergy_mult"] *= max(0.0, val)
+
+
 def challenge_metric(metric_id):
     if metric_id == "money_since_reset":
         return game.get("money_since_reset", 0.0)
@@ -2104,6 +2575,8 @@ def challenge_metric(metric_id):
         return game.get("play_time", 0.0)
     if metric_id == "stability_resets":
         return game.get("stability_resets", 0)
+    if metric_id == "stability_manual_resets":
+        return game.get("stability_manual_resets", 0)
     if metric_id == "inspiration_resets":
         return game.get("inspiration_resets", 0)
     if metric_id == "concept_resets":
@@ -2150,31 +2623,37 @@ def challenge_reward_summary(info):
     if rtype == "motivation_cap" and value:
         return f"+{int(value)} motivation cap"
     if rtype == "unlock_autowork":
-        return "Unlock auto-work cycles"
+        return "Unlock automation (auto-work & auto-buyers)"
     return "Permanent bonus unlocked"
 
 
-def apply_challenge_reward(info):
+def apply_challenge_reward(info, target_state=None):
     reward = info.get("reward") or {}
     rtype = reward.get("type")
     value = reward.get("value")
+    state = target_state if target_state is not None else game
     if rtype == "money_mult" and value:
-        mult = max(0.0, float(game.get("money_mult", 1.0)))
-        game["money_mult"] = max(0.0, mult * float(value))
+        mult = max(0.0, float(state.get("money_mult", 1.0)))
+        state["money_mult"] = max(0.0, mult * float(value))
     elif rtype == "motivation_cap" and value:
         bonus = int(value)
-        game["motivation_cap_bonus"] = game.get("motivation_cap_bonus", 0) + bonus
-        if game.get("motivation_unlocked", False):
+        state["motivation_cap_bonus"] = state.get("motivation_cap_bonus", 0) + bonus
+        if state is game and game.get("motivation_unlocked", False):
             clamp_motivation()
     elif rtype == "unlock_autowork":
-        enable_auto_work(show_notice=True)
+        if state is game:
+            enable_auto_work(show_notice=True)
+        else:
+            state["auto_work_unlocked"] = True
+            state["auto_buyer_unlocked"] = True
 
 
 def check_challenges(reason=None):
     entry = active_challenge_entry()
     if not entry:
         return False
-    completed = set(game.get("challenges_completed", []))
+    persistent_state = challenge_persistent_state()
+    completed = set(persistent_state.get("challenges_completed", []))
     cid = entry.get("id")
     if not cid or cid in completed:
         return False
@@ -2182,14 +2661,15 @@ def check_challenges(reason=None):
     if progress < goal:
         return False
     completed.add(cid)
-    game["challenges_completed"] = list(completed)
-    apply_challenge_reward(entry)
+    completed_list = list(completed)
+    persistent_state["challenges_completed"] = completed_list
+    game["challenges_completed"] = completed_list
+    apply_challenge_reward(entry, target_state=persistent_state)
     summary = challenge_reward_summary(entry)
-    set_settings_notice(
-        f"Challenge complete: {entry.get('name', 'Unknown')} ({summary}).",
+    clear_active_challenge(
+        notice=f"Challenge complete: {entry.get('name', 'Unknown')} ({summary}).",
         duration=3.5,
     )
-    clear_active_challenge()
     return True
 
 
@@ -2231,12 +2711,16 @@ def build_challenge_summary_line():
         )
     entry = active_challenge_entry()
     if entry:
+        label = entry.get("name", "Challenge")
+        group = entry.get("group")
+        if group:
+            label = f"{label} ({group})"
         progress, goal = challenge_progress(entry)
         ratio = 0 if goal <= 0 else min(1.0, progress / goal)
         pct = int(ratio * 100)
         progress_text = f"{format_number(progress)} / {format_number(goal)}"
         return (
-            f"{Fore.LIGHTBLUE_EX}Challenge{Style.RESET_ALL}: {entry['name']} — "
+            f"{Fore.LIGHTBLUE_EX}Challenge{Style.RESET_ALL}: {label} — "
             f"{progress_text} ({pct}%)"
         )
     completed_ids = set(game.get("challenges_completed", []))
@@ -2245,27 +2729,43 @@ def build_challenge_summary_line():
         if len(completed_ids) == len(CHALLENGES) and CHALLENGES:
             return f"{Fore.LIGHTGREEN_EX}All challenges cleared!{Style.RESET_ALL}"
         return f"{Fore.LIGHTBLACK_EX}Challenges locked — meet unlock goals to begin.{Style.RESET_ALL}"
-    next_up = ready[0]
-    return f"No active challenge. Press [H] to begin '{next_up['name']}'."
+    return f"No active challenge. Press [H] to open the challenge board."
 
 
 def build_challenge_board_lines():
     lines = []
+    entries = []
+    page_label = "Trials"
+    page_idx = 0
+    total_pages = 1
     if not challenge_feature_active():
         lines.append("Challenge board offline.")
         lines.append("Complete a Concept reset to enable optional trials.")
         lines.append("")
         lines.append("Press B to return.")
-        return lines
-    lines.append("Optional objectives grant permanent buffs.")
-    lines.append("")
-    cursor = max(0, min(len(CHALLENGES) - 1, int(game.get("challenge_cursor", 0))))
+        return lines, entries, page_label, page_idx, total_pages
+
+    entries, page_label, page_idx, total_pages = current_challenge_page_entries()
+    cursor = int(game.get("challenge_cursor", 0))
+    if entries:
+        cursor = max(0, min(len(entries) - 1, cursor))
+    else:
+        cursor = 0
     game["challenge_cursor"] = cursor
     completed_ids = set(game.get("challenges_completed", []))
 
-    for idx, entry in enumerate(CHALLENGES):
+    header = f"Layer page: {page_label} ({page_idx + 1}/{total_pages})"
+    lines.append(header)
+    lines.append("Optional objectives grant permanent buffs.")
+    lines.append("")
+
+    for idx, entry in enumerate(entries):
         status = challenge_status(entry)
         marker = f"{Fore.CYAN}›{Style.RESET_ALL}" if idx == cursor else " "
+        display_name = entry.get("name", "Unknown")
+        entry_group = entry.get("group")
+        if entry_group:
+            display_name = f"{display_name} ({entry_group})"
         if status == "completed":
             color = Fore.GREEN
             tag = "CLEARED"
@@ -2278,9 +2778,12 @@ def build_challenge_board_lines():
         else:
             color = Fore.LIGHTBLACK_EX
             tag = "LOCKED"
-        name_line = f"{marker} {color}{entry['name']}{Style.RESET_ALL} [{tag}]"
+        name_line = f"{marker} {color}{display_name}{Style.RESET_ALL} [{tag}]"
         lines.append(name_line)
         lines.append(f"   {entry['desc']}")
+        mod_summary = summarize_challenge_modifiers(entry)
+        if mod_summary:
+            lines.append(f"   Debuffs: {mod_summary}")
         reward = challenge_reward_summary(entry)
         if reward:
             lines.append(f"   Reward: {reward}")
@@ -2305,12 +2808,18 @@ def build_challenge_board_lines():
             lines.append("   Completed!")
         lines.append("")
 
+    if not entries:
+        lines.append("No challenges configured for this layer yet.")
     if not CHALLENGES:
         lines.append("No challenges configured.")
-    lines.append(
-        f"{Fore.YELLOW}Use W/S to move, Enter to start/claim, F to forfeit, B to exit.{Style.RESET_ALL}"
-    )
-    return lines
+    control = "Use W/S to move, Enter to start/claim, F to forfeit, B to exit."
+    if total_pages > 1:
+        control += "  Z/X switch layer pages."
+    if challenge_run_active_flag():
+        control += "  R reapplies the active layer reset."
+    control += "  L triggers a manual collapse."
+    lines.append(f"{Fore.YELLOW}{control}{Style.RESET_ALL}")
+    return lines, entries, page_label, page_idx, total_pages
 
 
 def open_challenge_board():
@@ -2341,7 +2850,8 @@ def open_challenge_board():
     while True:
         work_tick()
         check_challenges("board")
-        lines = build_challenge_board_lines()
+        lines, entries, _, page_idx, total_pages = build_challenge_board_lines()
+        entry_count = len(entries)
         box = boxed_lines(lines, title=" Challenge Board ", pad_top=1, pad_bottom=1)
         current_size = get_term_size()
         frame = "\n".join(box)
@@ -2355,17 +2865,20 @@ def open_challenge_board():
         k = KEY_PRESSED
         KEY_PRESSED = None
         if isinstance(k, str):
-            k = k.lower()
+            if k in {"\r", "\n", "enter"}:
+                k = "enter"
+            else:
+                k = k.lower()
         if k in {"b", "q"}:
             return
-        if k in {"w", "s"} and CHALLENGES:
+        if k in {"w", "s"} and entry_count:
             delta = -1 if k == "w" else 1
             current = int(game.get("challenge_cursor", 0))
-            game["challenge_cursor"] = (current + delta) % len(CHALLENGES)
+            game["challenge_cursor"] = (current + delta) % entry_count
             continue
-        if k in {"enter", "a"} and CHALLENGES:
-            idx = max(0, min(len(CHALLENGES) - 1, int(game.get("challenge_cursor", 0))))
-            entry = CHALLENGES[idx]
+        if k in {"enter", "a"} and entry_count:
+            idx = max(0, min(entry_count - 1, int(game.get("challenge_cursor", 0))))
+            entry = entries[idx]
             status = challenge_status(entry)
             if status == "locked":
                 set_settings_notice("Meet the unlock requirement first.")
@@ -2379,12 +2892,79 @@ def open_challenge_board():
             elif status == "ready":
                 activate_challenge(entry)
             continue
+        if k in {"z", "x"} and total_pages > 1:
+            delta = -1 if k == "z" else 1
+            new_page = (page_idx + delta) % total_pages
+            game["challenge_page"] = new_page
+            game["challenge_cursor"] = 0
+            continue
         if k == "f":
             if not forfeit_active_challenge():
                 set_settings_notice("No active challenge to forfeit.")
             continue
+        if k == "r":
+            challenge_layer_reset()
+            continue
+        if k == "l":
+            manual_stability_collapse()
+            last_frame = None
+            continue
 
 
+def open_guide_book():
+    global KEY_PRESSED
+    last_frame = None
+    last_size = get_term_size()
+    while True:
+        work_tick()
+        topics = available_guide_topics()
+        cursor = int(game.get("guide_cursor", 0))
+        if topics:
+            cursor = max(0, min(len(topics) - 1, cursor))
+        else:
+            cursor = 0
+        game["guide_cursor"] = cursor
+        context = guide_render_context()
+        lines = ["Mechanics Field Guide", ""]
+        if topics:
+            for idx, topic in enumerate(topics):
+                marker = f"{Fore.CYAN}›{Style.RESET_ALL}" if idx == cursor else " "
+                lines.append(f"{marker} {topic['title']}")
+            lines.append("")
+            selected = topics[cursor]
+            lines.append(f"{Fore.LIGHTYELLOW_EX}{selected['title']}{Style.RESET_ALL}")
+            lines.append("")
+            for raw in selected.get("lines", []):
+                text = raw.format(**context)
+                wrapped = wrap_ui_text(text, width=70, reserved=3)
+                for seg in wrapped:
+                    lines.append(f"   {seg}")
+        else:
+            lines.append("No guide pages unlocked yet. Advance further to reveal more mechanics.")
+        lines.append("")
+        lines.append(f"{Fore.YELLOW}Use W/S to browse, B to exit.{Style.RESET_ALL}")
+        box = boxed_lines(lines, title=" Field Guide ", pad_top=1, pad_bottom=1)
+        current_size = get_term_size()
+        frame = "\n".join(box)
+        if frame != last_frame or current_size != last_size:
+            render_frame(box)
+            last_frame = frame
+            last_size = current_size
+        time.sleep(0.05)
+        if not KEY_PRESSED:
+            continue
+        k = KEY_PRESSED
+        KEY_PRESSED = None
+        if isinstance(k, str):
+            if k in {"\r", "\n", "enter"}:
+                k = "enter"
+            else:
+                k = k.lower()
+        if k == "b":
+            return
+        if k in {"w", "s"} and topics:
+            delta = -1 if k == "w" else 1
+            game["guide_cursor"] = (cursor + delta) % len(topics)
 def get_charge_bonus():
     charge = game.get("charge", 0)
     return 1.5 ** (math.log10(charge + 0.1))
@@ -2396,6 +2976,7 @@ def compute_gain_and_delay(auto=False):
     gain_add = 0.0
     gain_mult = 1.0
     delay_mult = 1.0
+    mods = active_challenge_modifiers()
     for entry in game.get("inspiration_upgrades", []):
         upg_id, level = (
             (entry.get("id"), entry.get("level", 1))
@@ -2484,6 +3065,21 @@ def compute_gain_and_delay(auto=False):
     signal_bonus = max(0.0, get_resonance_efficiency())
     signal_mult = 1.0 + signal_bonus
     game["signal_multiplier"] = signal_mult
+    automation_synergy = max(0.0, game.get("automation_synergy_mult", 1.0))
+    automation_gain = max(0.0, game.get("automation_gain_mult", 1.0))
+    automation_delay = max(0.01, game.get("automation_delay_mult", 1.0))
+    if automation_online():
+        gain_mult *= automation_synergy if automation_synergy > 0 else 1.0
+    if auto:
+        gain_mult *= automation_gain if automation_gain > 0 else 1.0
+        delay_mult *= automation_delay if automation_delay > 0 else 1.0
+    money_gain_mod = mods.get("money_gain_mult")
+    if isinstance(money_gain_mod, (int, float)) and money_gain_mod > 0:
+        gain_mult *= money_gain_mod
+    if auto:
+        auto_delay_mod = mods.get("auto_delay_mult")
+        if isinstance(auto_delay_mod, (int, float)) and auto_delay_mod > 0:
+            delay_mult *= auto_delay_mod
 
     eff_gain = base_gain * gain_mult + gain_add
     eff_gain *= BASE_MONEY_MULT
@@ -2721,8 +3317,8 @@ def perform_work(gain, eff_delay, manual=False):
     if game.get("motivation_unlocked", False):
         cap = motivation_capacity()
         current = game.get("motivation", cap)
-        game["motivation"] = max(0, min(cap, current - 1))
-    if not manual and game.get("auto_work_unlocked", False):
+        set_motivation(current - 1)
+    if not manual and auto_work_allowed():
         work_timer = max(0.0, work_timer - eff_delay)
     check_challenges("work")
     save_game()
@@ -2736,24 +3332,8 @@ def calculate_stability_reward(money_pool):
     return max(1, reward)
 
 
-def perform_stability_collapse():
-    global work_timer, last_render
-    if game.get("wake_timer_infinite", False):
-        return
-    money_pool = max(game.get("money", 0.0), game.get("money_since_reset", 0.0))
-    reward = calculate_stability_reward(money_pool)
-    game["stability_currency"] = game.get("stability_currency", 0.0) + reward
-    game["stability_resets"] = game.get("stability_resets", 0) + 1
-    lines = [
-        "Collapse triggered.",
-        f"Recovered {format_number(reward)} {STABILITY_CURRENCY_NAME}.",
-        "Spend sparks in the stabilizer menu (T).",
-    ]
-    tmp = boxed_lines(lines, title=" Collapse ", pad_top=1, pad_bottom=1)
-    render_frame(tmp)
-    time.sleep(1.2)
-    work_timer = 0.0
-    game.update(
+def wipe_to_stability_baseline(state):
+    state.update(
         {
             "money": 0.0,
             "money_since_reset": 0.0,
@@ -2766,11 +3346,32 @@ def perform_stability_collapse():
             "upgrade_levels": {},
         }
     )
-    game["wake_timer"] = game.get("wake_timer_cap", WAKE_TIMER_START)
-    game["wake_timer_locked"] = False
-    game["wake_timer_notified"] = False
-    game["needs_stability_reset"] = False
-    reset_instability_state(clear_timer=False)
+    state["wake_timer"] = state.get("wake_timer_cap", WAKE_TIMER_START)
+    state["wake_timer_locked"] = False
+    state["wake_timer_notified"] = False
+    state["needs_stability_reset"] = False
+
+
+def perform_stability_collapse(manual=False):
+    global work_timer, last_render
+    if game.get("wake_timer_infinite", False):
+        return
+    money_pool = max(game.get("money", 0.0), game.get("money_since_reset", 0.0))
+    reward = calculate_stability_reward(money_pool)
+    game["stability_currency"] = game.get("stability_currency", 0.0) + reward
+    game["stability_resets"] = game.get("stability_resets", 0) + 1
+    if manual:
+        game["stability_manual_resets"] = game.get("stability_manual_resets", 0) + 1
+    lines = [
+        "Collapse triggered.",
+        f"Recovered {format_number(reward)} {STABILITY_CURRENCY_NAME}.",
+        "Spend sparks in the stabilizer menu (T).",
+    ]
+    tmp = boxed_lines(lines, title=" Collapse ", pad_top=1, pad_bottom=1)
+    render_frame(tmp)
+    time.sleep(1.2)
+    work_timer = 0.0
+    wipe_to_stability_baseline(game)
     recalc_wake_timer_state()
     refresh_knowledge_flags()
     check_challenges("stability")
@@ -2782,6 +3383,15 @@ def perform_stability_collapse():
     last_render = ""
 
 
+def manual_stability_collapse():
+    if game.get("wake_timer_infinite", False):
+        set_settings_notice("Escape window sealed; disable the lock before collapsing.")
+        return False
+    perform_stability_collapse(manual=True)
+    set_settings_notice("Manual collapse triggered. Sparks stored.", duration=3.5)
+    return True
+
+
 def work_tick():
     global last_tick_time, work_timer
     now = time.time()
@@ -2789,7 +3399,6 @@ def work_tick():
     last_tick_time = now
     game["play_time"] = game.get("play_time", 0.0) + delta
     ensure_challenge_feature()
-    update_instability_waves(delta)
     advance_time_flow(delta)
     if not game.get("wake_timer_infinite", False):
         current_timer = game.get("wake_timer", WAKE_TIMER_START)
@@ -2810,10 +3419,11 @@ def work_tick():
         current = game.get("motivation", cap)
         regen = MOTIVATION_REGEN_RATE * delta
         if regen > 0 and current < cap:
-            game["motivation"] = min(cap, current + regen)
+            set_motivation(current + regen)
     
-    gain, eff_delay = compute_gain_and_delay(auto=True)
-    if game.get("auto_work_unlocked", False) and not wake_timer_blocked():
+    auto_ready = auto_work_allowed()
+    if auto_ready and not wake_timer_blocked():
+        gain, eff_delay = compute_gain_and_delay(auto=True)
         work_timer += delta
         if work_timer >= eff_delay:
             perform_work(gain, eff_delay, manual=False)
@@ -2857,6 +3467,10 @@ def get_time_velocity_multiplier_from_upgrades():
             continue
         multiplier *= upgrade_value(u, level)
 
+    time_mod = get_challenge_modifier("time_velocity_mult")
+    if isinstance(time_mod, (int, float)) and time_mod > 0:
+        multiplier *= time_mod
+
     return max(1.0, multiplier)
 
 
@@ -2870,7 +3484,7 @@ def compute_time_velocity():
     base += 0.12 * len(game.get("concept_upgrades", []))
     money = max(1.0, game.get("money_since_reset", 0.0))
     base += math.log10(money + 1.0) * 0.4
-    if auto_work_online():
+    if automation_online():
         base *= 1.15
     if game.get("concepts_unlocked", False):
         base *= 1.08
@@ -2945,76 +3559,7 @@ def timeflow_active():
     return bool(
         game.get("wake_timer_infinite", False)
         and not game.get("needs_stability_reset", False)
-        and not game.get("instability_wave_active", False)
     )
-
-
-def instability_system_ready():
-    threshold = max(0, int(INSTABILITY_RETURN_CONCEPT_RESETS))
-    return threshold <= 0 or game.get("concept_resets", 0) >= threshold
-
-
-def schedule_next_instability_wave(delay=None):
-    if delay is None:
-        low, high = INSTABILITY_WAVE_COOLDOWN
-        delay = random.uniform(low, high)
-    game["instability_next_wave"] = time.time() + max(1.0, delay)
-
-
-def start_instability_wave():
-    if not instability_system_ready():
-        return
-    if game.get("instability_wave_active", False):
-        return
-    duration = random.uniform(*INSTABILITY_WAVE_DURATION)
-    game["instability_wave_active"] = True
-    game["instability_wave_end"] = time.time() + max(5.0, duration)
-    game["instability_wave_count"] = game.get("instability_wave_count", 0) + 1
-    set_settings_notice("Instability surge! Timeflow offline until it calms.", duration=3.5)
-
-
-def end_instability_wave():
-    if not game.get("instability_wave_active", False):
-        return
-    game["instability_wave_active"] = False
-    game["instability_wave_end"] = 0.0
-    schedule_next_instability_wave()
-    set_settings_notice("Instability receded. Timeflow recalibrating.", duration=2.8)
-
-
-def reset_instability_state(clear_timer=False):
-    game["instability_wave_active"] = False
-    game["instability_wave_end"] = 0.0
-    if clear_timer:
-        game["instability_next_wave"] = 0.0
-
-
-def update_instability_waves(delta):
-    if not instability_system_ready():
-        if game.get("instability_wave_active"):
-            game["instability_wave_active"] = False
-            game["instability_wave_end"] = 0.0
-        game["instability_next_wave"] = 0.0
-        return
-    if not game.get("instability_wave_intro_seen", False):
-        game["instability_wave_intro_seen"] = True
-        set_settings_notice(
-            "Deep instability occasionally severs timeflow now.", duration=4.0
-        )
-        schedule_next_instability_wave()
-    if game.get("needs_stability_reset", False):
-        return
-    now = time.time()
-    if game.get("instability_wave_active", False):
-        if now >= game.get("instability_wave_end", 0.0):
-            end_instability_wave()
-        return
-    next_wave = game.get("instability_next_wave", 0.0)
-    if not next_wave:
-        schedule_next_instability_wave()
-        return
-    if now >= next_wave:
-        start_instability_wave()
 
 
 def get_timebond_level():
@@ -3066,21 +3611,30 @@ def build_time_banner_line(width):
     return pad_visible_line(ansi_center(text, width), width)
 
 
-def build_instability_status_line():
-    if not instability_system_ready():
+def build_time_hint_line():
+    if not timeflow_display_unlocked():
         return ""
-    if game.get("instability_wave_active", False):
-        remaining = max(0.0, game.get("instability_wave_end", 0.0) - time.time())
-        seconds = max(0, int(remaining))
+    if not timeflow_active():
         return (
-            f"{Fore.LIGHTRED_EX}Instability surge active — timeflow offline for {seconds}s."
-            f"{Style.RESET_ALL}"
+            f"{Fore.BLUE}Timeflow offline{Style.RESET_ALL} — lock the wake window open"
+            " to start building its reward multiplier."
         )
-    next_wave = game.get("instability_next_wave", 0.0)
-    if next_wave <= 0:
+    reward = get_time_reward_multiplier()
+    velocity = max(1.0, game.get("time_velocity", 1.0))
+    money_mult = get_time_money_multiplier(reward)
+    return (
+        f"{Fore.BLUE}Timeflow{Style.RESET_ALL}: velocity ×{velocity:.2f} builds"
+        f" reward ×{reward:.2f}, boosting income ×{money_mult:.2f}."
+    )
+
+
+def guide_hotkey_hint():
+    if not available_guide_topics():
         return ""
-    eta = max(0, int(next_wave - time.time()))
-    return f"{Fore.RED}Next instability surge in ≈{eta}s.{Style.RESET_ALL}"
+    return (
+        f"{Fore.YELLOW}[G] Guide{Style.RESET_ALL} — press G whenever your"
+        " confused."
+    )
 
 
 def compute_escape_vector_state():
@@ -3174,11 +3728,11 @@ def check_charge_thresholds():
 def get_tree_selection(upgrades, page_key, digit):
     term_w, term_h = get_term_size()
     max_lines = term_h // 2 - 6
-    layer_key = "corridor" if upgrades is INSPIRE_UPGRADES else "archive"
-    suffix_raw = layer_currency_suffix(layer_key)
+    meta = tree_catalogue_meta(upgrades)
+    suffix_raw = meta.get("currency_suffix")
     suffix = f" {suffix_raw}" if suffix_raw else ""
-    pool_currency = layer_currency_name(layer_key)
-    holdings_key = "inspiration" if upgrades is INSPIRE_UPGRADES else "concepts"
+    pool_currency = meta.get("pool_currency", "")
+    holdings_key = meta.get("holdings_key", "concepts")
     desc_width = max(int(term_w * 0.25) - 6, 18)
 
     blocks = []
@@ -3263,16 +3817,17 @@ def buy_tree_upgrade(upgrades, idx):
     if not (0 <= idx < len(upgrades)):
         return
     upg = upgrades[idx]
-    owned, level = (
-        get_inspire_info(upg["id"])
-        if upgrades is INSPIRE_UPGRADES
-        else get_concept_info(upg["id"])
-    )
+    if upgrades is INSPIRE_UPGRADES:
+        owned, level = get_inspire_info(upg["id"])
+    elif upgrades is AUTOMATION_UPGRADES:
+        owned, level = get_automation_info(upg["id"])
+    else:
+        owned, level = get_concept_info(upg["id"])
     max_level = upg.get("max_level", 1)
-    layer_key = "corridor" if upgrades is INSPIRE_UPGRADES else "archive"
-    pool_name = layer_name(layer_key)
-    pool_currency = layer_currency_name(layer_key)
-    pool_suffix = layer_currency_suffix(layer_key)
+    meta = tree_catalogue_meta(upgrades)
+    pool_name = meta.get("pool_name", layer_name("archive"))
+    pool_currency = meta.get("pool_currency", layer_currency_name("archive"))
+    pool_suffix = meta.get("currency_suffix")
     suffix_text = f" {pool_suffix}" if pool_suffix else ""
     if level >= max_level:
         msg = f"{upg['name']} is already at max level!"
@@ -3286,7 +3841,7 @@ def buy_tree_upgrade(upgrades, idx):
         time.sleep(0.7)
         return
     cost = get_tree_cost(upg, current_level=level)
-    pool_key = "inspiration" if upgrades is INSPIRE_UPGRADES else "concepts"
+    pool_key = meta.get("holdings_key", "concepts")
     if game.get(pool_key, 0) < cost:
         msg = f"Not enough {pool_currency} for {upg['name']} (cost {cost}{suffix_text})."
         tmp = boxed_lines(
@@ -3299,9 +3854,7 @@ def buy_tree_upgrade(upgrades, idx):
         time.sleep(0.7)
         return
     game[pool_key] -= cost
-    applied_list_key = (
-        "inspiration_upgrades" if upgrades is INSPIRE_UPGRADES else "concept_upgrades"
-    )
+    applied_list_key = meta.get("applied_key", "concept_upgrades")
     applied = False
     for i, u in enumerate(game.get(applied_list_key, [])):
         if isinstance(u, dict) and u.get("id") == upg["id"]:
@@ -3316,13 +3869,15 @@ def buy_tree_upgrade(upgrades, idx):
         game.setdefault(applied_list_key, []).append({"id": upg["id"], "level": 1})
     apply_inspiration_effects()
     apply_concept_effects()
+    if applied_list_key == "automation_upgrades":
+        apply_automation_effects()
     if upgrades is INSPIRE_UPGRADES and upg.get("type") in (
         "unlock_motivation",
         "motivation_cap",
         "motivation_strength",
     ):
         if game.get("motivation_unlocked", False):
-            game["motivation"] = motivation_capacity()
+            set_motivation(motivation_capacity())
     save_game()
     msg = f"Purchased {upg['name']} level {level + 1}!"
     tmp = boxed_lines(
@@ -3356,7 +3911,11 @@ def calculate_inspiration(money_since_reset):
             rate_mult *= val
         elif u["type"] == "inspire_mult":
             final_mult *= val
-    return int(base_gain * rate_mult * final_mult)
+    total = int(base_gain * rate_mult * final_mult)
+    gain_mod = get_challenge_modifier("inspiration_gain_mult")
+    if isinstance(gain_mod, (int, float)) and gain_mod > 0:
+        total = int(max(0, round(total * gain_mod)))
+    return total
 
 
 def calculate_concepts(money_since_reset):
@@ -3391,7 +3950,11 @@ def calculate_concepts(money_since_reset):
         signal_bonus = max(0.0, get_resonance_efficiency())
         final_mult *= 1.0 + signal_bonus
         
-    return int(base_gain * rate_mult * final_mult)
+    total = int(base_gain * rate_mult * final_mult)
+    gain_mod = get_challenge_modifier("concept_gain_mult")
+    if isinstance(gain_mod, (int, float)) and gain_mod > 0:
+        total = int(max(0, round(total * gain_mod)))
+    return total
 
 
 def predict_next_inspiration_point():
@@ -3428,6 +3991,25 @@ def predict_next_concept_point():
     return round(remaining, 2)
 
 
+def wipe_to_inspiration_baseline(state):
+    state.update(
+        {
+            "money": 0.0,
+            "money_since_reset": 0.0,
+            "fatigue": 0,
+            "owned": [],
+            "upgrade_levels": {},
+            "inspiration_unlocked": True,
+            "layer": max(state.get("layer", 0), 1),
+            "charge": 0.0,
+            "best_charge": 0.0,
+            "charge_threshold": [],
+            "charge_unlocked": False,
+            "motivation": config.MOTIVATION_MAX,
+        }
+    )
+
+
 def reset_for_inspiration():
     now = time.time()
     if now - game.get("last_inspiration_reset_time", 0) < 0.05:
@@ -3450,22 +4032,7 @@ def reset_for_inspiration():
     play_inspiration_reset_animation()
     game["inspiration"] = game.get("inspiration", 0) + gained
     previous_resets = game.get("inspiration_resets", 0)
-    game.update(
-        {
-            "money": 0.0,
-            "money_since_reset": 0.0,
-            "fatigue": 0,
-            "owned": [],
-            "upgrade_levels": {},
-            "inspiration_unlocked": True,
-            "layer": max(game.get("layer", 0), 1),
-            "charge": 0.0,
-            "best_charge": 0.0,
-            "charge_threshold": [],
-            "charge_unlocked": False,
-            "motivation": config.MOTIVATION_MAX,
-        }
-    )
+    wipe_to_inspiration_baseline(game)
     game["inspiration_resets"] = previous_resets + 1
     game["last_inspiration_reset_time"] = now
     attempt_reveal("layer_corridor")
@@ -3478,7 +4045,7 @@ def reset_for_inspiration():
     refresh_knowledge_flags()
     apply_inspiration_effects()
     if game.get("motivation_unlocked", False):
-        game["motivation"] = motivation_capacity()
+        set_motivation(motivation_capacity())
     check_challenges("inspiration")
     save_game()
     done_msg = boxed_lines(
@@ -3493,28 +4060,8 @@ def reset_for_inspiration():
     time.sleep(1.0)
 
 
-def reset_for_concepts():
-    now = time.time()
-    if now - game.get("last_concepts_reset_time", 0) < 0.05:
-        return
-    archive_name = layer_name("archive")
-    archive_currency = layer_currency_name("archive")
-    if game.get("money_since_reset", 0) < CONCEPTS_UNLOCK_MONEY:
-        tmp = boxed_lines(
-            [f"Reach {format_currency(CONCEPTS_UNLOCK_MONEY)} to access {archive_name}."],
-            title=f" {archive_name} ",
-            pad_top=1,
-            pad_bottom=1,
-        )
-        render_frame(tmp)
-        global last_render
-        last_render = ""
-        time.sleep(1.0)
-        return
-    gained = calculate_concepts(game.get("money_since_reset", 0))
-    play_concepts_animation()
-    game["concepts"] = game.get("concepts", 0) + gained
-    game.update(
+def wipe_to_concept_baseline(state):
+    state.update(
         {
             "money": 0.0,
             "money_since_reset": 0.0,
@@ -3523,7 +4070,7 @@ def reset_for_concepts():
             "owned": [],
             "upgrade_levels": {},
             "concepts_unlocked": True,
-            "layer": max(game.get("layer", 0), 2),
+            "layer": max(state.get("layer", 0), 2),
             "inspiration_upgrades": [],
             "inspiration": 0,
             "motivation": 0,
@@ -3536,7 +4083,53 @@ def reset_for_concepts():
             "charge_unlocked": False,
         }
     )
-    reset_instability_state(clear_timer=True)
+
+
+def reset_for_concepts():
+    global last_render
+    now = time.time()
+    if now - game.get("last_concepts_reset_time", 0) < 0.05:
+        return
+    archive_name = layer_name("archive")
+    archive_currency = layer_currency_name("archive")
+    if not concept_layer_gate_met():
+        total = total_challenges_configured()
+        completed = challenges_completed_count()
+        remaining = max(0, total - completed)
+        requirement = "Complete all challenges to enter the Echo."
+        if total > 0:
+            requirement = (
+                f"Complete all {total} challenges to enter the Echo "
+                f"({completed}/{total} cleared, {remaining} remaining)."
+            )
+        tmp = boxed_lines(
+            ["Challenge lock detected.", requirement],
+            title=" Challenge Lock ",
+            pad_top=1,
+            pad_bottom=1,
+        )
+        render_frame(tmp)
+        last_render = ""
+        time.sleep(1.1)
+        return
+    if game.get("money_since_reset", 0) < CONCEPTS_UNLOCK_MONEY:
+        tmp = boxed_lines(
+            [f"Reach {format_currency(CONCEPTS_UNLOCK_MONEY)} to access {archive_name}."],
+            title=f" {archive_name} ",
+            pad_top=1,
+            pad_bottom=1,
+        )
+        render_frame(tmp)
+        last_render = ""
+        time.sleep(1.0)
+        return
+    gained = calculate_concepts(game.get("money_since_reset", 0))
+    play_concepts_animation()
+    game["concepts"] = game.get("concepts", 0) + gained
+    wipe_to_concept_baseline(game)
+    game["automation_upgrades"] = []
+    game["automation_page"] = 0
+    apply_automation_effects()
     game["concept_resets"] = game.get("concept_resets", 0) + 1
     ensure_challenge_feature()
     attempt_reveal("layer_archive")
@@ -3669,7 +4262,7 @@ def upgrade_is_visible(upgrade):
 
 
 def open_upgrade_menu():
-    global KEY_PRESSED
+    global KEY_PRESSED, last_render
     if not game.get("upgrades_unlocked", False):
         tmp = boxed_lines(
             [
@@ -3815,7 +4408,6 @@ def open_upgrade_menu():
             k = KEY_PRESSED.lower()
             KEY_PRESSED = None
             if k == "b":
-                global last_render
                 last_render = ""
                 return
             elif k == "z":
@@ -4084,12 +4676,11 @@ def render_ui(screen="work"):
     term_w, term_h = get_term_size()
     current_size = get_term_size()
     resized = current_size != last_size
-    effective_gain, effective_delay = compute_gain_and_delay(
-        auto=game.get("auto_work_unlocked", False)
-    )
+    auto_ready = auto_work_allowed()
+    effective_gain, effective_delay = compute_gain_and_delay(auto=auto_ready)
     prog = (
         min(work_timer / effective_delay, 1.0)
-        if game.get("auto_work_unlocked", False)
+        if auto_ready
         else 0
     )
     bar_len = 36
@@ -4194,7 +4785,7 @@ def render_ui(screen="work"):
             mot_pct = int(round(mot_ratio * 100))
             top_left_lines += [
                 "",
-                f"Motivation: {Fore.GREEN}{mot_pct}%{Style.RESET_ALL} ({mot}/{cap})  x{mot_mult:.2f}",
+                f"Motivation: {Fore.GREEN}{round(mot_pct, 0)}%{Style.RESET_ALL} ({mot}/{cap})  x{mot_mult:.2f}",
             ]
 
         if (total_earnings >= CONCEPTS_UNLOCK_MONEY // 2) or game.get(
@@ -4227,6 +4818,17 @@ def render_ui(screen="work"):
                 )
                 bottom_left_lines.append("")
                 bottom_left_lines.append(f"[2] Open {archive_name} board")
+            if not concept_layer_gate_met() and CHALLENGES:
+                total = total_challenges_configured()
+                completed = challenges_completed_count()
+                gate_hint = (
+                    f"Complete challenges ({completed}/{total}) to unlock {archive_name}."
+                    if total
+                    else "Complete the current challenge list to unlock the Echo."
+                )
+                bottom_left_lines.append(
+                    f"{Fore.LIGHTBLACK_EX}{gate_hint}{Style.RESET_ALL}"
+                )
             if screen == "concepts":
                 visible_lines, footer, _ = build_tree_lines(
                     CONCEPT_UPGRADES, get_concept_info, "concept_page"
@@ -4240,20 +4842,56 @@ def render_ui(screen="work"):
                     "\033[1m[B] Back to Work\033[0m",
                 ]
 
+        if automation_lab_available():
+            auto_entries = game.get("automation_upgrades", [])
+            owned_nodes = len(auto_entries)
+            invested = sum(
+                max(1, int(entry.get("level", 1))) if isinstance(entry, dict) else 1
+                for entry in auto_entries
+            )
+            total_nodes = max(1, len(AUTOMATION_UPGRADES))
+            auto_title = f"=== {Fore.MAGENTA}Automation Lab{Style.RESET_ALL} ==="
+            bottom_left_lines += [
+                "",
+                auto_title,
+                f"Ranks invested: {invested}  Nodes unlocked: {owned_nodes}/{total_nodes}",
+            ]
+            if screen == "automation":
+                auto_lines, auto_footer, _ = build_tree_lines(
+                    AUTOMATION_UPGRADES, get_automation_info, "automation_page"
+                )
+                bottom_left_lines += [
+                    "",
+                    *auto_lines,
+                    "",
+                    auto_footer,
+                    "\033[1m[B] Back to Work\033[0m",
+                ]
+            else:
+                bottom_left_lines.append("[3] Open Automation Lab")
+
         bottom_left_lines += build_breach_door_lines()
 
         status_line = build_status_ribbon(calc_insp, calc_conc, mot_pct, mot_mult)
         challenge_line = build_challenge_summary_line()
-        instability_line = build_instability_status_line()
 
         middle_lines = []
+        time_hint_line = build_time_hint_line()
+        if time_hint_line:
+            middle_lines.append(time_hint_line)
+        guide_hint_line = guide_hotkey_hint()
+        if guide_hint_line:
+            middle_lines.append(guide_hint_line)
+        if middle_lines:
+            middle_lines.append("")
         if status_line:
             middle_lines.append(status_line)
         if challenge_line:
             middle_lines.append(challenge_line)
-        if instability_line:
-            middle_lines.append(instability_line)
-        if middle_lines:
+        reset_hint = challenge_reset_hint()
+        if reset_hint:
+            middle_lines.append(reset_hint)
+        if status_line or challenge_line or reset_hint:
             middle_lines.append("")
         middle_lines.append(build_wake_timer_line())
         if not game.get("wake_timer_infinite", False):
@@ -4262,6 +4900,7 @@ def render_ui(screen="work"):
                 f"{STABILITY_CURRENCY_NAME}: {Fore.MAGENTA}{sparks_amount}{Style.RESET_ALL}"
             )
             middle_lines.append("[T] Stabilize window")
+            middle_lines.append("[L] Collapse now (manual reset)")
         middle_lines.append("")
         middle_lines += render_desk_table()
         total_money = total_earnings
@@ -4297,7 +4936,7 @@ def render_ui(screen="work"):
             middle_lines.append("")
 
         work_prompt = reveal_text("ui_work_prompt", "Press W to work", "Press W...")
-        auto_prompt = reveal_text("ui_auto_prompt", "Auto-work: ENABLED", "Auto-work: ???")
+        auto_prompt = reveal_text("ui_auto_prompt", "Automation: ONLINE", "Automation: ???")
         if game.get("auto_work_unlocked", False):
             middle_lines.append(auto_prompt)
         else:
@@ -4309,8 +4948,13 @@ def render_ui(screen="work"):
         else:
             option_payload += "[U] Offline  "
         option_payload += "[J] Blackjack  "
+        if automation_lab_available():
+            option_payload += "[3] Automation  "
         if challenge_feature_ready():
             option_payload += "[H] Challenges  "
+        option_payload += "[G] Guide  "
+        if not game.get("wake_timer_infinite", False):
+            option_payload += "[L] Collapse  "
         option_payload += "[Q] Quit"
         options_known = is_known("ui_options_full")
         if mystery_phase and not options_known:
@@ -7272,6 +7916,14 @@ def main_loop():
                         else:
                             open_challenge_board()
                             render_ui(screen=current_screen)
+                    elif k == "r" and current_screen == "work":
+                        challenge_layer_reset()
+                    elif k == "g" and current_screen == "work":
+                        open_guide_book()
+                        render_ui(screen=current_screen)
+                    elif k == "l" and current_screen == "work":
+                        manual_stability_collapse()
+                        render_ui(screen=current_screen)
                     elif k == "t" and not game.get("wake_timer_infinite", False):
                         current_screen = "work"
                         clear_screen()
@@ -7316,6 +7968,12 @@ def main_loop():
                         )
                     ):
                         current_screen = "concepts"
+                    elif (
+                        current_screen == "work"
+                        and k == "3"
+                        and automation_lab_available()
+                    ):
+                        current_screen = "automation"
                     elif current_screen == "inspiration":
                         if k == "b":
                             current_screen = "work"
@@ -7345,6 +8003,24 @@ def main_loop():
                             idx = get_tree_selection(CONCEPT_UPGRADES, "concept_page", k)
                             if 0 <= idx < len(CONCEPT_UPGRADES):
                                 buy_tree_upgrade(CONCEPT_UPGRADES, idx)
+                            time.sleep(0.2)
+                    elif current_screen == "automation":
+                        if k == "b":
+                            current_screen = "work"
+                        elif k == "z":
+                            total_pages = max(1, game.get("automation_page_pages", 1))
+                            game["automation_page"] = max(
+                                0,
+                                min(game.get("automation_page", 0) - 1, total_pages - 1),
+                            )
+                        elif k == "x":
+                            total_pages = max(1, game.get("automation_page_pages", 1))
+                            if game.get("automation_page", 0) < total_pages - 1:
+                                game["automation_page"] = game.get("automation_page", 0) + 1
+                        elif k.isdigit():
+                            idx = get_tree_selection(AUTOMATION_UPGRADES, "automation_page", k)
+                            if 0 <= idx < len(AUTOMATION_UPGRADES):
+                                buy_tree_upgrade(AUTOMATION_UPGRADES, idx)
                             time.sleep(0.2)
             finally:
                 loop_elapsed = time.time() - loop_start
