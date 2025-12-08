@@ -118,7 +118,6 @@ LAYER_BY_ID = {entry["id"]: entry for entry in LAYER_FLOW}
 
 INSPIRATION_UNLOCK_MONEY = LAYER_BY_KEY["corridor"]["unlock_money"]
 CONCEPTS_UNLOCK_MONEY = LAYER_BY_KEY["archive"]["unlock_money"]
-SIGIL_UNLOCK_MONEY = LAYER_BY_KEY["threshold"]["unlock_money"]
 
 BREACH_KEY_BASE_COST = 100
 BREACH_KEY_MIN_COST = 60
@@ -128,6 +127,7 @@ BREACH_SLACK_PROGRESS = 35
 
 MOTIVATION_MAX = 100
 MAX_MOTIVATION_MULT = 5.0
+MOTIVATION_REGEN_RATE = 0.25  # motivation recovered per second when unlocked
 
 STEAM_SPEED = 2.45 
 STEAM_CHANCE = 0.8 
