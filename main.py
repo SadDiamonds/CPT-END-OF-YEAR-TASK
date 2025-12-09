@@ -171,7 +171,7 @@ GUIDE_TOPICS = [
             "Triggering a collapse converts your highest {wake} earnings into {sparks}.",
             "Collapses wipe desk upgrades and charge, but permanent unlocks (like concepts) persist.",
             "Upgrading the Stabilizer extends or locks the wake window, enabling Timeflow later on.",
-            "Press [L] anytime to trigger a manual collapse instead of waiting for the timer to expire.",
+            "During instability trials, press [L] to trigger a manual collapse instead of waiting for the timer to expire.",
         ],
     },
     {
@@ -211,6 +211,7 @@ GUIDE_TOPICS = [
         "lines": [
             "Once the wake window is sealed, Timeflow tracks how fast loops run and grants a separate reward multiplier.",
             "Time velocity rises with layers, upgrades, and some challenges; higher tiers boost both reward and money gain.",
+            "Install Phase Lock in the Stabilizer (T) using Sparks to ignite Timeflow and move the story forward.",
             "Check the top banner or this guide to see how velocity and reward convert into raw income.",
         ],
     },
@@ -225,6 +226,8 @@ GUIDE_TOPICS = [
         ],
     },
 ]
+
+FIELD_GUIDE_UNLOCK_TOTAL = 120.0
 
 EVENT_ANIMATIONS = {
     "campfire": {
@@ -500,6 +503,21 @@ def automation_lab_available():
 
 def challenge_run_active_flag():
     return bool(game.get("challenge_run_active", False))
+
+
+def instability_challenge_active():
+    if not challenge_run_active_flag():
+        return False
+    entry = active_challenge_entry()
+    if not entry:
+        return False
+    group = (entry.get("group") or "").lower()
+    reset_key = CHALLENGE_GROUP_RESET.get(group, "")
+    return reset_key == "stability"
+
+
+def manual_collapse_available():
+    return instability_challenge_active()
 
 
 def challenge_persistent_state():
@@ -845,6 +863,7 @@ def default_game_state():
         "challenge_page": 0,
         "challenges_completed": [],
         "guide_cursor": 0,
+        "guide_unlocked": False,
         "automation_page": 0,
         "automation_delay_mult": 1.0,
         "automation_gain_mult": 1.0,
@@ -866,6 +885,25 @@ last_manual_time = 0.0
 listener_enabled = True
 
 game = default_game_state()
+
+
+def guide_available():
+    return bool(game.get("guide_unlocked", False))
+
+
+def ensure_field_guide_unlock():
+    if guide_available():
+        return False
+    total_money = max(
+        float(game.get("money_since_reset", 0.0)),
+        float(game.get("money", 0.0)),
+    )
+    if total_money >= FIELD_GUIDE_UNLOCK_TOTAL or game.get("stability_resets", 0) >= 1:
+        game["guide_unlocked"] = True
+        set_settings_notice("Field Guide synced. Press G anywhere.", duration=3.0)
+        save_game()
+        return True
+    return False
 
 
 def guide_topic_unlocked(topic):
@@ -900,6 +938,8 @@ def guide_topic_unlocked(topic):
 
 
 def available_guide_topics():
+    if not guide_available():
+        return []
     return [topic for topic in GUIDE_TOPICS if guide_topic_unlocked(topic)]
 
 
@@ -1351,6 +1391,7 @@ def load_game():
     state.setdefault("challenge_cursor", 0)
     state.setdefault("challenge_page", 0)
     state.setdefault("guide_cursor", 0)
+    state.setdefault("guide_unlocked", False)
     state.setdefault("automation_upgrades", [])
     state.setdefault("automation_page", 0)
     state.setdefault("automation_delay_mult", 1.0)
@@ -1371,6 +1412,13 @@ def load_game():
     state.setdefault("challenges_completed", [])
     state.setdefault("auto_buyer_unlocked", False)
     state.setdefault("stability_manual_resets", 0)
+    if not state.get("guide_unlocked"):
+        total_money = max(
+            float(state.get("money_since_reset", 0.0)),
+            float(state.get("money", 0.0)),
+        )
+        if total_money >= FIELD_GUIDE_UNLOCK_TOTAL or state.get("stability_resets", 0) >= 1:
+            state["guide_unlocked"] = True
     game.clear()
     game.update(state)
     sync_scientific_threshold(game.get("scientific_threshold_exp"))
@@ -2690,6 +2738,12 @@ def challenge_status(entry):
     return "ready"
 
 
+def challenge_completed(challenge_id):
+    if not challenge_id:
+        return False
+    return challenge_id in game.get("challenges_completed", [])
+
+
 def challenge_unlock_progress(entry):
     metric = entry.get("unlock_type")
     if not metric:
@@ -2706,10 +2760,12 @@ def challenge_ready_to_claim(entry):
 
 def build_challenge_summary_line():
     if not challenge_feature_ready():
-        return ""
+        return (
+            f"{Fore.LIGHTBLACK_EX}Trigger a Stability collapse to unlock challenge runs.{Style.RESET_ALL}"
+        )
     if not challenge_feature_active():
         return (
-            f"{Fore.LIGHTBLACK_EX}Complete a Concept reset to unlock challenges.{Style.RESET_ALL}"
+            f"{Fore.LIGHTBLACK_EX}Challenge board syncing — collapse once more if it stays offline.{Style.RESET_ALL}"
         )
     entry = active_challenge_entry()
     if entry:
@@ -2742,7 +2798,7 @@ def build_challenge_board_lines():
     total_pages = 1
     if not challenge_feature_active():
         lines.append("Challenge board offline.")
-        lines.append("Complete a Concept reset to enable optional trials.")
+        lines.append("Trigger a Stability collapse to enable optional trials.")
         lines.append("")
         lines.append("Press B to return.")
         return lines, entries, page_label, page_idx, total_pages
@@ -2819,7 +2875,8 @@ def build_challenge_board_lines():
         control += "  Z/X switch layer pages."
     if challenge_run_active_flag():
         control += "  R reapplies the active layer reset."
-    control += "  L triggers a manual collapse."
+    if manual_collapse_available():
+        control += "  L triggers a manual collapse."
     lines.append(f"{Fore.YELLOW}{control}{Style.RESET_ALL}")
     return lines, entries, page_label, page_idx, total_pages
 
@@ -2828,7 +2885,7 @@ def open_challenge_board():
     global KEY_PRESSED
     if not challenge_feature_ready():
         tmp = boxed_lines(
-            ["Challenge board offline.", "Reach the Archive once to enable trials."],
+            ["Challenge board offline.", "Trigger a Stability collapse to enable trials."],
             title=" Challenge Board ",
             pad_top=1,
             pad_bottom=1,
@@ -2839,7 +2896,7 @@ def open_challenge_board():
     ensure_challenge_feature()
     if not challenge_feature_active():
         tmp = boxed_lines(
-            ["Stabilize deeper layers to enable optional trials."],
+            ["Challenge board syncing. Collapse again if it stays offline."],
             title=" Challenge Board ",
             pad_top=1,
             pad_bottom=1,
@@ -2908,13 +2965,22 @@ def open_challenge_board():
             challenge_layer_reset()
             continue
         if k == "l":
-            manual_stability_collapse()
-            last_frame = None
+            if manual_collapse_available():
+                manual_stability_collapse()
+                last_frame = None
+            else:
+                set_settings_notice(
+                    "Manual collapse only available during instability trials.",
+                    duration=2.5,
+                )
             continue
 
 
 def open_guide_book():
     global KEY_PRESSED
+    if not guide_available():
+        set_settings_notice("Field Guide offline. Earn more to sync it up.", duration=2.5)
+        return
     last_frame = None
     last_size = get_term_size()
     while True:
@@ -3386,6 +3452,9 @@ def perform_stability_collapse(manual=False):
 
 
 def manual_stability_collapse():
+    if not manual_collapse_available():
+        set_settings_notice("Manual collapse only available during instability trials.")
+        return False
     if game.get("wake_timer_infinite", False):
         set_settings_notice("Escape window sealed; disable the lock before collapsing.")
         return False
@@ -3401,6 +3470,7 @@ def work_tick():
     last_tick_time = now
     game["play_time"] = game.get("play_time", 0.0) + delta
     ensure_challenge_feature()
+    ensure_field_guide_unlock()
     advance_time_flow(delta)
     if not game.get("wake_timer_infinite", False):
         current_timer = game.get("wake_timer", WAKE_TIMER_START)
@@ -3554,7 +3624,9 @@ def get_time_status():
 
 
 def timeflow_display_unlocked():
-    return bool(game.get("wake_timer_infinite", False))
+    if game.get("wake_timer_infinite", False):
+        return True
+    return game.get("stability_resets", 0) >= 1
 
 
 def timeflow_active():
@@ -3630,12 +3702,50 @@ def build_time_hint_line():
     )
 
 
+def build_timeflow_focus_lines():
+    if not timeflow_display_unlocked():
+        return []
+    lines = [f"{Fore.BLUE}Timeflow Directive{Style.RESET_ALL}"]
+    purchased = set(game.get("wake_timer_upgrades", []))
+    phase_lock = next((u for u in WAKE_TIMER_UPGRADES if u.get("grant_infinite")), None)
+    if game.get("wake_timer_infinite", False):
+        lines.append("Phase Lock sealed — keep loops running to build velocity.")
+    elif phase_lock:
+        cost = format_number(phase_lock.get("cost", 0))
+        sparks = format_number(game.get("stability_currency", 0))
+        if phase_lock.get("id") in purchased:
+            lines.append("Phase Lock installing… finish the cycle to ignite Timeflow.")
+        else:
+            lines.append(
+                f"Install Phase Lock ({cost} {STABILITY_CURRENCY_NAME}) to ignite Timeflow."
+            )
+            lines.append(f"Stored Sparks: {sparks}. Press [T] to stabilize.")
+    else:
+        lines.append("Stabilize the loop to unlock Timeflow.")
+    if not challenge_completed("stability_drill"):
+        lines.append("Complete the Lockbreak Drill challenge to proceed.")
+    return lines
+
+
 def guide_hotkey_hint():
-    if not available_guide_topics():
+    topics = available_guide_topics()
+    if topics:
+        return (
+            f"{Fore.YELLOW}[G] Guide{Style.RESET_ALL} — press G anywhere when things"
+            " stop making sense."
+        )
+    if guide_available():
         return ""
+    total_money = max(
+        float(game.get("money_since_reset", 0.0)),
+        float(game.get("money", 0.0)),
+    )
+    if total_money >= FIELD_GUIDE_UNLOCK_TOTAL or game.get("stability_resets", 0) >= 1:
+        return ""
+    target = format_currency(FIELD_GUIDE_UNLOCK_TOTAL)
     return (
-        f"{Fore.YELLOW}[G] Guide{Style.RESET_ALL} — press G whenever your"
-        " confused."
+        f"{Fore.LIGHTBLACK_EX}Field Guide offline — earn {target} total or trigger"
+        f" your first collapse to sync.{Style.RESET_ALL}"
     )
 
 
@@ -3663,11 +3773,7 @@ def compute_escape_vector_state():
         if wake_timer_blocked():
             window_text = "Window sealed"
 
-    resonance_ready = (
-        game.get("layer", 0) >= 2
-        or game.get("concepts_unlocked", False)
-        or game.get("concept_resets", 0) > 0
-    )
+    resonance_ready = resonance_system_active()
     if resonance_ready:
         signal_val = float(game.get("resonance_val", RESONANCE_START))
         signal_ratio = 1.0 - min(1.0, abs(50.0 - signal_val) / 50.0)
@@ -4018,6 +4124,19 @@ def reset_for_inspiration():
         return
     corridor_name = layer_name("corridor")
     corridor_currency = layer_currency_name("corridor")
+    if not challenge_completed("stability_drill"):
+        tmp = boxed_lines(
+            [
+                f"{corridor_name} is sealed.",
+                "Complete the Lockbreak Drill challenge (press H) to gain access.",
+            ],
+            title=f" {corridor_name} Locked ",
+            pad_top=1,
+            pad_bottom=1,
+        )
+        render_frame(tmp)
+        time.sleep(1.0)
+        return
     if game.get("money_since_reset", 0) < INSPIRATION_UNLOCK_MONEY:
         tmp = boxed_lines(
             [
@@ -4736,15 +4855,20 @@ def render_ui(screen="work"):
         )
         conc_title = f"=== {Fore.CYAN}{archive_name}{Style.RESET_ALL} ==="
         conc_tree_title = f"=== {Fore.CYAN}{archive_name} board{Style.RESET_ALL} ==="
-        if (
-            total_earnings >= INSPIRATION_UNLOCK_MONEY // 2
-            or game.get("inspiration_unlocked", False) is True
-        ):
+
+        time_panel = build_timeflow_focus_lines()
+        if time_panel:
+            top_left_lines += time_panel + [""]
+
+        inspiration_panel_visible = bool(
+            game.get("inspiration_unlocked", False) or game.get("inspiration_resets", 0) > 0
+        )
+        corridor_gate_cleared = challenge_completed("stability_drill")
+        if inspiration_panel_visible:
             top_left_lines += [
                 insp_title,
                 "",
                 f"Holdings: {Fore.LIGHTYELLOW_EX}{format_number(game.get('inspiration', 0))}{Style.RESET_ALL} {corridor_currency}",
-                "",
             ]
             if total_earnings >= INSPIRATION_UNLOCK_MONEY:
                 top_left_lines.append(
@@ -4753,17 +4877,11 @@ def render_ui(screen="work"):
                 top_left_lines.append(
                     f"{Fore.LIGHTYELLOW_EX}{format_number(time_next)}{Style.RESET_ALL} until next {corridor_currency}"
                 )
-                top_left_lines.append("")
-                top_left_lines.append(f"[1] Open {corridor_name} board")
             else:
                 top_left_lines.append(
                     f"Reach {format_currency(INSPIRATION_UNLOCK_MONEY)} to approach {corridor_name}."
                 )
-                if screen == "inspiration":
-                    top_left_lines.append("")
-                else:
-                    top_left_lines.append("")
-                    top_left_lines.append(f"[1] Open {corridor_name} board")
+            top_left_lines.append(f"[1] Open {corridor_name} board")
             if screen == "inspiration":
                 visible_lines, footer, _ = build_tree_lines(
                     INSPIRE_UPGRADES, get_inspire_info, "insp_page"
@@ -4777,6 +4895,15 @@ def render_ui(screen="work"):
                     "",
                     "\033[1m[B] Back to Work\033[0m",
                 ]
+        else:
+            if corridor_gate_cleared:
+                top_left_lines.append(
+                    f"{Fore.LIGHTYELLOW_EX}{corridor_name}{Style.RESET_ALL} awaits. Reach {format_currency(INSPIRATION_UNLOCK_MONEY)} then press [I] to reset."
+                )
+            else:
+                top_left_lines.append(
+                    f"{Fore.LIGHTBLACK_EX}Complete the Lockbreak Drill challenge (press [H]) to unlock {corridor_name}.{Style.RESET_ALL}"
+                )
 
         if game.get("motivation_unlocked", False):
             cap = motivation_capacity()
@@ -4790,9 +4917,10 @@ def render_ui(screen="work"):
                 f"Motivation: {Fore.GREEN}{round(mot_pct, 0)}%{Style.RESET_ALL} ({mot}/{cap})  x{mot_mult:.2f}",
             ]
 
-        if (total_earnings >= CONCEPTS_UNLOCK_MONEY // 2) or game.get(
-            "concepts_unlocked", False
-        ):
+        concept_panel_visible = bool(
+            game.get("concepts_unlocked", False) or game.get("concept_resets", 0) > 0
+        )
+        if concept_panel_visible:
             bottom_left_lines += [
                 conc_title,
                 "",
@@ -4843,6 +4971,10 @@ def render_ui(screen="work"):
                     footer,
                     "\033[1m[B] Back to Work\033[0m",
                 ]
+        elif inspiration_panel_visible:
+            bottom_left_lines.append(
+                f"{Fore.LIGHTBLACK_EX}Optional: Clear every challenge to unlock {archive_name}.{Style.RESET_ALL}"
+            )
 
         if automation_lab_available():
             auto_entries = game.get("automation_upgrades", [])
@@ -4902,7 +5034,8 @@ def render_ui(screen="work"):
                 f"{STABILITY_CURRENCY_NAME}: {Fore.MAGENTA}{sparks_amount}{Style.RESET_ALL}"
             )
             middle_lines.append("[T] Stabilize window")
-            middle_lines.append("[L] Collapse now (manual reset)")
+            if manual_collapse_available():
+                middle_lines.append("[L] Collapse now (trial-only reset)")
         middle_lines.append("")
         middle_lines += render_desk_table()
         total_money = total_earnings
@@ -4954,8 +5087,11 @@ def render_ui(screen="work"):
             option_payload += "[3] Automation  "
         if challenge_feature_ready():
             option_payload += "[H] Challenges  "
-        option_payload += "[G] Guide  "
-        if not game.get("wake_timer_infinite", False):
+        if guide_available():
+            option_payload += "[G] Guide  "
+        else:
+            option_payload += "[G] Offline  "
+        if manual_collapse_available():
             option_payload += "[L] Collapse  "
         option_payload += "[Q] Quit"
         options_known = is_known("ui_options_full")
@@ -5143,11 +5279,7 @@ def typewriter_message(lines, title, speed=0.03):
 
 
 def resonance_system_active():
-    return (
-        game.get("layer", 0) >= 2
-        or game.get("concepts_unlocked", False)
-        or game.get("concept_resets", 0) > 0
-    )
+    return game.get("layer", 0) >= 2
 
 
 def update_resonance(delta):
@@ -7759,9 +7891,8 @@ def main_loop():
         game["intro_played"] = True
         save_game()
 
-    if game.get("layer", 0) >= 1 and not game.get("inspiration_unlocked", False):
+    if game.get("inspiration_resets", 0) > 0 and not game.get("inspiration_unlocked", False):
         game["inspiration_unlocked"] = True
-        game["layer"] = 1
         save_game()
     current_screen = "work"
     global view_offset_x, view_offset_y
@@ -7821,6 +7952,19 @@ def main_loop():
                             except Exception:
                                 k = k_raw
 
+                    if k == "g":
+                        if guide_available():
+                            open_guide_book()
+                            if current_screen == "rpg":
+                                render_rpg_screen()
+                            else:
+                                render_ui(screen=current_screen)
+                        else:
+                            set_settings_notice(
+                                "Field Guide offline. Earn more to sync it up.",
+                                duration=2.5,
+                            )
+                        continue
                     if k in (",", "."):
                         direction = -1 if k == "," else 1
                         next_screen = cycle_screen(current_screen, direction)
@@ -7907,7 +8051,7 @@ def main_loop():
                             tmp = boxed_lines(
                                 [
                                     "Challenge board offline.",
-                                    "Reach the Archive once to enable trials.",
+                                    "Trigger a Stability collapse to enable trials.",
                                 ],
                                 title=" Challenge Board ",
                                 pad_top=1,
@@ -7920,12 +8064,15 @@ def main_loop():
                             render_ui(screen=current_screen)
                     elif k == "r" and current_screen == "work":
                         challenge_layer_reset()
-                    elif k == "g" and current_screen == "work":
-                        open_guide_book()
-                        render_ui(screen=current_screen)
                     elif k == "l" and current_screen == "work":
-                        manual_stability_collapse()
-                        render_ui(screen=current_screen)
+                        if manual_collapse_available():
+                            manual_stability_collapse()
+                            render_ui(screen=current_screen)
+                        else:
+                            set_settings_notice(
+                                "Manual collapse only available during instability trials.",
+                                duration=2.5,
+                            )
                     elif k == "t" and not game.get("wake_timer_infinite", False):
                         current_screen = "work"
                         clear_screen()
