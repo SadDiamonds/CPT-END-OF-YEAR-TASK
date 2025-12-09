@@ -1942,17 +1942,19 @@ def finalize_slot_choice(selected):
     summaries = collect_slot_summaries()
     summary = summaries[selected]
     if summary["legacy"] and summary.get("source_path"):
-        def choose_save_slot_windows():
-            # Clear any pending input
-            if msvcrt:
-                while msvcrt.kbhit():
-                    msvcrt.getwch()
-            ACTIVE_SLOT_INDEX = selected
-            clear_screen()
+        shutil.copy2(summary["source_path"], summary["target_path"])
+    elif not summary["exists"]:
+        template_path = os.path.join(DATA_DIR, "save_slot_template.json")
+        if os.path.exists(template_path):
+            shutil.copy2(template_path, summary["target_path"])
+        else:
+            with open(summary["target_path"], "w", encoding="utf-8") as fh:
+                json.dump(default_game_state(), fh)
+    ACTIVE_SLOT_INDEX = selected
+    clear_screen()
 
 
 def choose_save_slot_windows():
-    # Clear any pending input
     while msvcrt.kbhit():
         msvcrt.getwch()
 
