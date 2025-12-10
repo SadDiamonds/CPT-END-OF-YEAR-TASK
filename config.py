@@ -328,7 +328,7 @@ CHALLENGES = [
         "desc": "Calibrate Phase Lock to completion before the escape window collapses.",
         "goal_type": "phase_lock_completion",
         "goal_value": 1,
-        "reward": {"type": "money_mult", "value": 1.06},
+        "reward": {"type": "money_mult", "value": 106},
         "unlock_type": "stability_resets",
         "unlock_value": 2,
         "modifiers": {

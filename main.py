@@ -190,6 +190,70 @@ ACTIVE_SLOT_INDEX = 2
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 RESET_SEQ = getattr(Style, "RESET_ALL", "\x1b[0m")
 
+_FULLSCREEN_REQUESTED = False
+
+
+def request_fullscreen():
+    global _FULLSCREEN_REQUESTED
+    if _FULLSCREEN_REQUESTED:
+        return False
+    _FULLSCREEN_REQUESTED = True
+    try:
+        if sys.platform.startswith("darwin"):
+            term_program = (os.environ.get("TERM_PROGRAM") or "").lower()
+            if "apple" in term_program:
+                script = (
+                    "tell application \"Terminal\"\n"
+                    "    activate\n"
+                    "    try\n"
+                    "        tell application \"System Events\" to tell process \"Terminal\" "
+                    "to set value of attribute \"AXFullScreen\" of window 1 to true\n"
+                    "    end try\n"
+                    "end tell"
+                )
+            elif "iterm" in term_program:
+                script = (
+                    "tell application \"System Events\"\n"
+                    "    tell process \"iTerm2\"\n"
+                    "        try\n"
+                    "            set value of attribute \"AXFullScreen\" of window 1 to true\n"
+                    "        end try\n"
+                    "    end tell\n"
+                    "end tell"
+                )
+            else:
+                script = ""
+            if script:
+                subprocess.run(
+                    ["osascript", "-e", script],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                return True
+        elif os.name == "nt":
+            try:
+                import ctypes
+
+                kernel32 = ctypes.windll.kernel32
+                user32 = ctypes.windll.user32
+                hwnd = kernel32.GetConsoleWindow()
+                if hwnd:
+                    SW_MAXIMIZE = 3
+                    user32.ShowWindow(hwnd, SW_MAXIMIZE)
+                    user32.SetForegroundWindow(hwnd)
+                    return True
+            except Exception:
+                pass
+        # Fallback: request a very large terminal size via ANSI sequence.
+        cols = max(200, shutil.get_terminal_size((120, 40)).columns)
+        rows = max(60, shutil.get_terminal_size((120, 40)).lines)
+        sys.stdout.write(f"\033[8;{rows};{cols}t")
+        sys.stdout.flush()
+        return True
+    except Exception:
+        return False
+
 def escape_text(text):
     if not ESCAPE_MODE or not isinstance(text, str):
         return text
@@ -8016,6 +8080,7 @@ def render_rpg_screen():
 
 def main_loop():
     global KEY_PRESSED, running, work_timer, last_tick_time, last_manual_time, last_render
+    request_fullscreen()
     choose_save_slot()
     load_game()
     try:
