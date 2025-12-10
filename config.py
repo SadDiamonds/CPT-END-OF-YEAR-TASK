@@ -4,7 +4,7 @@ SCIENTIFIC_THRESHOLD_OPTIONS = [3, 33, 303]
 SCIENTIFIC_THRESHOLD_DEFAULT = 303
 SCIENTIFIC_THRESHOLD_EXPONENT = SCIENTIFIC_THRESHOLD_DEFAULT
 BASE_MONEY_GAIN = 1.0
-BASE_WORK_DELAY = 6.7
+BASE_WORK_DELAY = 5.0
 BASE_MONEY_MULT = 1.0
 
 GUIDE_TOPICS = [
@@ -84,6 +84,41 @@ GUIDE_TOPICS = [
             "Each challenge belongs to a layer. Starting one applies that layer's reset, then adds the listed debuffs.",
             "Goals track progress made after activation. Finish a run to bank the permanent reward on your main timeline.",
             "Use Z/X on the board to switch reset layers and review what each debuff targets before committing.",
+        ],
+    },
+    {
+        "id": "rpg_terminal",
+        "title": "DustOS Desktop",
+        "requires": {"rpg_unlocked": True},
+        "lines": [
+            "Press [,] or . to swap between the desk and the DustOS monitor at any time.",
+            "Move the cursor with arrow keys on the desktop grid; [Enter] launches the highlighted program.",
+            "GAME.EXE resumes the roguelike, while NET.EXE opens the cache browser for permanent boosts.",
+            "Use [B] to back out of the monitor if you need to return to the desk quickly.",
+        ],
+    },
+    {
+        "id": "rpg_browser",
+        "title": "Cache Browser",
+        "requires": {"rpg_unlocked": True},
+        "requires_known": ["currency_corridor"],
+        "lines": [
+            "Launch NET.EXE from the DustOS desktop to spend Cache Shards earned from RPG events.",
+            "Digits install upgrades, [Enter] hides the browser, and [B] exits back to the desktop.",
+            "Each upgrade grants permanent stats inside the RPG and can be purchased in any order.",
+            "If you're unsure what to buy, hover the listing to read the description before confirming.",
+        ],
+    },
+    {
+        "id": "escape_machine",
+        "title": "Reality Diverter",
+        "requires": {"escape_machine_unlocked": True},
+        "requires_known": ["escape_route"],
+        "lines": [
+            "Once the Diverter schematic downloads, press [M] on the desk to track its four components.",
+            "Each part ties to a loop: Sparks from collapses, Inspiration resets, Concept dives, and the RPG.",
+            "Complete every component to trigger a powered factory reset that doubles all future multipliers.",
+            "You can continue playing afterward—it's this is just the standard ending.",
         ],
     },
 ]
@@ -172,48 +207,53 @@ WAKE_TIMER_UPGRADES = [
     {
         "id": "wake_unlock",
         "name": "Stabilizer Switch",
-        "cost": 5,
-        "cost_scale": 2.4,
-        "time_bonus": 25,
-        "time_bonus_scale": 1.55,
+        "cost": 3,
+        "cost_scale": 1.85,
+        "time_bonus": 45,
+        "time_bonus_scale": 1.35,
+        "accent": "GREEN",
         "unlock_upgrades": True,
         "desc": "Reboots the upgrade bay. Each install adds rapidly growing window time.",
     },
     {
         "id": "wake_breath",
         "name": "First Throttle",
-        "cost": 15,
-        "cost_scale": 2.6,
-        "time_bonus": 60,
-        "time_bonus_scale": 1.45,
+        "cost": 9,
+        "cost_scale": 2.0,
+        "time_bonus": 90,
+        "time_bonus_scale": 1.3,
+        "accent": "CYAN",
         "desc": "Adds 60 seconds to the escape window, scaling harder with every purchase.",
     },
     {
         "id": "wake_anchor",
         "name": "Anchor Points",
-        "cost": 40,
-        "cost_scale": 2.75,
-        "time_bonus": 180,
-        "time_bonus_scale": 1.35,
+        "cost": 20,
+        "cost_scale": 2.15,
+        "time_bonus": 210,
+        "time_bonus_scale": 1.28,
+        "accent": "MAGENTA",
         "desc": "Adds 180 seconds to the escape window. Each anchor multiplies the gain.",
     },
     {
         "id": "wake_trials",
         "name": "Instability Array",
-        "cost": 65,
-        "cost_scale": 2.9,
-        "time_bonus": 240,
-        "time_bonus_scale": 1.25,
+        "cost": 32,
+        "cost_scale": 2.25,
+        "time_bonus": 260,
+        "time_bonus_scale": 1.22,
+        "accent": "YELLOW",
         "desc": "Channels collapse energy into an optional trial grid. Unlocks challenges and keeps stretching the window.",
         "unlock_challenges": True,
     },
     {
         "id": "wake_lock",
         "name": "Phase Lock",
-        "cost": 120,
-        "cost_scale": 3.0,
-        "time_bonus": 300,
-        "time_bonus_scale": 1.2,
+        "cost": 48,
+        "cost_scale": 2.35,
+        "time_bonus": 320,
+        "time_bonus_scale": 1.18,
+        "accent": "RED",
         "grant_infinite": True,
         "infinite_level": 3,
         "stability_bonus": 0.2,
@@ -221,6 +261,37 @@ WAKE_TIMER_UPGRADES = [
         "desc": "Calibrate the lock to eventually seal the window. Extra calibrations boost Spark yields.",
     },
 ]
+
+ESCAPE_MACHINE = {
+    "unlock": {"stability_resets": 1, "rpg_max_floor": 6},
+    "components": [
+        {
+            "id": "stability_core",
+            "name": "Stability Core",
+            "requirement": {"type": "spark_bank", "value": 15000},
+            "desc": "Bank 15,000 Sparks from collapses to forge a core that powers the Diverter.",
+        },
+        {
+            "id": "corridor_lattice",
+            "name": "Corridor Lattice",
+            "requirement": {"type": "inspiration_resets", "value": 2},
+            "desc": "Complete two Inspiration resets after the schematic downloads to weave the lattice.",
+        },
+        {
+            "id": "echo_frame",
+            "name": "Echo Frame",
+            "requirement": {"type": "concept_resets", "value": 1},
+            "desc": "Complete a Concept reset to fabricate an Echo frame that holds the Diverter in place.",
+        },
+        {
+            "id": "flux_engine",
+            "name": "Flux Engine",
+            "requirement": {"type": "rpg_floor", "value": 6},
+            "desc": "Beat Floor 6 in the RPG to recover a Flux Engine capable of steering reality drift.",
+        },
+    ],
+    "reset_multiplier": 2.0,
+}
 
 LAYER_FLOW = [
     {
@@ -311,7 +382,7 @@ CHALLENGES = [
     {
         "id": "stability_drill",
         "group": "Stability",
-        "name": "Spark Uprising",
+        "name": "S-Chal-1",
         "desc": "Generate 2,000 Stability Sparks after starting the trial to overload the stabilizer.",
         "goal_type": "stability_currency",
         "goal_value": 2000,
@@ -324,7 +395,7 @@ CHALLENGES = [
     {
         "id": "stability_reserve",
         "group": "Stability",
-        "name": "Phase Lock Rush",
+        "name": "S-Chal-2",
         "desc": "Calibrate Phase Lock to completion before the escape window collapses.",
         "goal_type": "phase_lock_completion",
         "goal_value": 1,
@@ -341,7 +412,7 @@ CHALLENGES = [
     {
         "id": "corridor_prodigy",
         "group": "Corridor",
-        "name": "Hallway Cadence",
+        "name": "H-Chal-1",
         "desc": "Perform 2 Inspiration resets within the trial to master the corridor rhythm.",
         "goal_type": "inspiration_resets",
         "goal_value": 2,
@@ -356,7 +427,7 @@ CHALLENGES = [
     {
         "id": "corridor_velocity",
         "group": "Corridor",
-        "name": "Slipstream Route",
+        "name": "H-Chal-2",
         "desc": "Generate 500,000 money after beginning the trial to chart a faster escape route.",
         "goal_type": "money_since_reset",
         "goal_value": 500_000,
@@ -372,7 +443,7 @@ CHALLENGES = [
     {
         "id": "archive_wayfarer",
         "group": "Archive",
-        "name": "Echo Recon",
+        "name": "E-Chal-1",
         "desc": "Complete 1 Concept reset during the trial to recon the deep archive.",
         "goal_type": "concept_resets",
         "goal_value": 1,
@@ -388,7 +459,7 @@ CHALLENGES = [
     {
         "id": "archive_persistence",
         "group": "Archive",
-        "name": "Echo Anchor",
+        "name": "E-Chal-2",
         "desc": "Perform 2 additional Concept resets while the trial runs to anchor your signal.",
         "goal_type": "concept_resets",
         "goal_value": 2,

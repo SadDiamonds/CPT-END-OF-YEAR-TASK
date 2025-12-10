@@ -136,6 +136,7 @@ from config import (
     BROWSER_UPGRADES,
     ESCAPE_MODE,
     ESCAPE_REPLACEMENTS,
+    ESCAPE_MACHINE,
 )
 
 import blackjack
@@ -170,6 +171,16 @@ ROOM_COLOR_MAP = {
     "exit": Fore.GREEN,
     "stairs": Fore.GREEN,
 }
+
+
+def default_escape_machine_state():
+    return {
+        "unlocked": False,
+        "components": [],
+        "ready": False,
+        "applied": False,
+        "spark_bank": 0,
+    }
 
 
 def compute_browser_effects(unlocks):
@@ -838,6 +849,10 @@ def default_game_state():
         "challenges_completed": [],
         "guide_cursor": 0,
         "guide_unlocked": False,
+        "guide_seen_topics": [],
+        "guide_unread_topics": [],
+        "guide_has_new": False,
+        "rpg_tutorial_shown": False,
         "challenge_instability_installed": False,
         "automation_page": 0,
         "automation_delay_mult": 1.0,
@@ -847,6 +862,10 @@ def default_game_state():
         "challenge_run_active": False,
         "challenge_run_id": None,
         "quick_travel_target": "work",
+        "escape_machine_unlocked": False,
+        "escape_machine_ready": False,
+        "escape_machine": default_escape_machine_state(),
+        "escape_multiplier": 1.0,
     }
 
 
@@ -877,6 +896,7 @@ def ensure_field_guide_unlock():
         game["guide_unlocked"] = True
         set_settings_notice("Guide synced. Press G anywhere.", duration=3.0)
         save_game()
+        refresh_guide_topics()
         return True
     return False
 
@@ -920,6 +940,31 @@ def available_guide_topics():
     if not guide_available():
         return []
     return [topic for topic in GUIDE_TOPICS if guide_topic_unlocked(topic)]
+
+
+def refresh_guide_topics():
+    if not guide_available():
+        return False
+    seen = set(game.get("guide_seen_topics", []) or [])
+    unread = set(game.get("guide_unread_topics", []) or [])
+    new_titles = []
+    for topic in GUIDE_TOPICS:
+        tid = topic.get("id")
+        if not tid or tid in seen:
+            continue
+        if guide_topic_unlocked(topic):
+            seen.add(tid)
+            unread.add(tid)
+            new_titles.append(topic.get("title", tid))
+    if not new_titles:
+        return False
+    game["guide_seen_topics"] = list(seen)
+    game["guide_unread_topics"] = [tid for tid in unread if tid in seen]
+    game["guide_has_new"] = True
+    latest = new_titles[-1]
+    set_settings_notice(f"Guide updated: {latest}. Press G to read.", duration=3.5)
+    save_game()
+    return True
 
 
 def guide_render_context():
@@ -1040,6 +1085,370 @@ def mark_known(tag):
         return False
     known[tag] = True
     return True
+
+
+def escape_machine_config():
+    return ESCAPE_MACHINE or {}
+
+
+def escape_machine_state():
+    machine = game.setdefault("escape_machine", default_escape_machine_state())
+    defaults = default_escape_machine_state()
+    for key, value in defaults.items():
+        machine.setdefault(key, copy.deepcopy(value) if isinstance(value, (dict, list)) else value)
+    return machine
+
+
+def escape_multiplier():
+    try:
+        return max(1.0, float(game.get("escape_multiplier", 1.0)))
+    except Exception:
+        return 1.0
+
+
+def sparks_visible():
+    if not game.get("wake_timer_infinite", False):
+        return True
+    machine = escape_machine_state()
+    if machine.get("unlocked") and "stability_core" not in machine.get("components", []):
+        return True
+    return False
+
+
+def machine_component_lookup(component_id):
+    cfg = escape_machine_config()
+    for component in cfg.get("components", []):
+        if component.get("id") == component_id:
+            return component
+    return None
+
+
+def machine_requirement_met(component):
+    if not component:
+        return False
+    requirement = component.get("requirement") or {}
+    req_type = requirement.get("type")
+    value = requirement.get("value", 0)
+    if req_type == "spark_bank":
+        return escape_machine_state().get("spark_bank", 0) >= value
+    if req_type == "inspiration_resets":
+        return game.get("inspiration_resets", 0) >= value
+    if req_type == "concept_resets":
+        return game.get("concept_resets", 0) >= value
+    if req_type == "rpg_floor":
+        rpg = game.get("rpg_data") or {}
+        return max(rpg.get("max_floor", 0), rpg.get("floor", 0)) >= value
+    return False
+
+
+def describe_machine_requirement(component):
+    requirement = component.get("requirement") or {}
+    value = requirement.get("value", 0)
+    req_type = requirement.get("type")
+    if req_type == "spark_bank":
+        progress = escape_machine_state().get("spark_bank", 0)
+        return f"Bank Sparks: {format_number(progress)}/{format_number(value)}"
+    if req_type == "inspiration_resets":
+        current = game.get("inspiration_resets", 0)
+        return f"Inspiration resets: {current}/{value}"
+    if req_type == "concept_resets":
+        current = game.get("concept_resets", 0)
+        return f"Concept resets: {current}/{value}"
+    if req_type == "rpg_floor":
+        rpg = game.get("rpg_data") or {}
+        current = max(rpg.get("max_floor", 0), rpg.get("floor", 0))
+        return f"RPG floor cleared: {current}/{value}"
+    return "Requirement pending"
+
+
+MACHINE_SPINNER_FRAMES = ["-", "\\", "|", "/"]
+MACHINE_BEAM_FRAMES = ["--==", "==--", "<><>", "~==~"]
+MACHINE_TRAIL_PATTERN = ["-", "=", "~", "+"]
+
+
+def machine_requirement_ratio(component):
+    if not component:
+        return 0.0
+    requirement = component.get("requirement") or {}
+    req_type = requirement.get("type")
+    value = requirement.get("value")
+    if not value:
+        return 1.0 if machine_requirement_met(component) else 0.0
+    if req_type == "spark_bank":
+        current = escape_machine_state().get("spark_bank", 0)
+    elif req_type == "inspiration_resets":
+        current = game.get("inspiration_resets", 0)
+    elif req_type == "concept_resets":
+        current = game.get("concept_resets", 0)
+    elif req_type == "rpg_floor":
+        rpg = game.get("rpg_data") or {}
+        current = max(rpg.get("max_floor", 0), rpg.get("floor", 0))
+    else:
+        current = 0
+    try:
+        return max(0.0, min(1.0, float(current) / float(value)))
+    except Exception:
+        return 0.0
+
+
+def machine_component_icon(installed, phase, offset=0):
+    if installed:
+        return f"{Fore.GREEN}[#]{Style.RESET_ALL}"
+    frame = MACHINE_SPINNER_FRAMES[(phase + offset) % len(MACHINE_SPINNER_FRAMES)]
+    return f"{Fore.CYAN}[{frame}]{Style.RESET_ALL}"
+
+
+def machine_component_bar(component, installed, phase, width=18):
+    width = max(6, int(width))
+    if installed:
+        return f"{Fore.GREEN}{'#' * width}{Style.RESET_ALL}"
+    ratio = machine_requirement_ratio(component)
+    filled = int(round(width * ratio))
+    if ratio > 0 and filled <= 0:
+        filled = 1
+    filled = min(width, filled)
+    chars = []
+    for idx in range(width):
+        if idx < filled:
+            chars.append("=")
+        else:
+            chars.append(
+                MACHINE_TRAIL_PATTERN[(phase + idx) % len(MACHINE_TRAIL_PATTERN)]
+            )
+    color = Fore.YELLOW if filled else Fore.MAGENTA
+    return f"{color}{''.join(chars)}{Style.RESET_ALL}"
+
+
+def build_machine_energy_line(components, installed_set, phase):
+    if not components:
+        return ""
+    segments = []
+    for idx, component in enumerate(components):
+        cid = component.get("id")
+        done = cid in installed_set
+        name = component.get("name", "Node")
+        abbr = "".join(part[:1] for part in name.split() if part) or name[:3]
+        abbr = abbr[:3].upper()
+        color = Fore.GREEN if done else Fore.CYAN
+        segments.append(f"{color}[{abbr:<3}]{Style.RESET_ALL}")
+        if idx < len(components) - 1:
+            next_id = components[idx + 1].get("id")
+            next_done = next_id in installed_set
+            if done and next_done:
+                connector = f"{Fore.GREEN}===={Style.RESET_ALL}"
+            else:
+                frame = MACHINE_BEAM_FRAMES[(phase + idx) % len(MACHINE_BEAM_FRAMES)]
+                connector = f"{Fore.MAGENTA}{frame}{Style.RESET_ALL}"
+            segments.append(connector)
+    return " ".join(segments)
+
+
+def build_machine_pulse_bar(components, installed_set, phase, width=28):
+    if not components:
+        return ""
+    width = max(12, int(width))
+    total = len(components)
+    installed_count = sum(1 for comp in components if comp.get("id") in installed_set)
+    ratio = installed_count / total if total else 0.0
+    filled = min(width, int(round(width * ratio)))
+    tail_len = max(0, width - filled)
+    parts = []
+    if filled:
+        parts.append(f"{Fore.GREEN}{'#' * filled}{Style.RESET_ALL}")
+    if tail_len:
+        tail = []
+        for idx in range(tail_len):
+            tail.append(
+                MACHINE_TRAIL_PATTERN[(phase + idx) % len(MACHINE_TRAIL_PATTERN)]
+            )
+        parts.append(f"{Fore.MAGENTA}{''.join(tail)}{Style.RESET_ALL}")
+    return "".join(parts)
+
+
+def build_machine_visual_block(machine, cfg, phase):
+    components = cfg.get("components", [])
+    if not components:
+        return []
+    installed_set = set(machine.get("components", []))
+    lines = []
+    energy_line = build_machine_energy_line(components, installed_set, phase)
+    if energy_line:
+        lines.append(f"{Fore.LIGHTMAGENTA_EX}Conduit{Style.RESET_ALL}: {energy_line}")
+    pulse_line = build_machine_pulse_bar(components, installed_set, phase)
+    if pulse_line:
+        lines.append(f"{Fore.LIGHTMAGENTA_EX}Pulse Track{Style.RESET_ALL}: |{pulse_line}|")
+    return lines
+
+
+def build_machine_component_block(component, installed_set, phase, idx):
+    lines = []
+    cid = component.get("id")
+    installed = cid in installed_set
+    icon = machine_component_icon(installed, phase, idx)
+    name = component.get("name", "Component")
+    emphasis = Style.BRIGHT if not installed else ""
+    reset = Style.RESET_ALL if emphasis else ""
+    lines.append(f"{icon} {emphasis}{name}{reset}")
+    bar = machine_component_bar(component, installed, phase)
+    ratio = 1.0 if installed else machine_requirement_ratio(component)
+    status = "Installed" if installed else f"{int(ratio * 100):02d}% forged"
+    lines.append(f"    |{bar}| {status}")
+    desc = component.get("desc")
+    if desc:
+        lines.append(f"    {desc}")
+    if not installed:
+        lines.append(
+            f"    {Style.DIM}{describe_machine_requirement(component)}{Style.RESET_ALL}"
+        )
+    lines.append("")
+    return lines
+
+
+def maybe_unlock_escape_machine():
+    cfg = escape_machine_config()
+    if not cfg:
+        return False
+    machine = escape_machine_state()
+    if machine.get("unlocked"):
+        return False
+    unlock = cfg.get("unlock") or {}
+    if game.get("stability_resets", 0) < unlock.get("stability_resets", 0):
+        return False
+    rpg = game.get("rpg_data") or {}
+    rpg_requirement = unlock.get("rpg_max_floor", 0)
+    if max(rpg.get("max_floor", 0), rpg.get("floor", 0)) < rpg_requirement:
+        return False
+    machine["unlocked"] = True
+    game["escape_machine_unlocked"] = True
+    mark_known("escape_machine")
+    set_settings_notice("Reality Diverter schematics downloaded. Press M at the desk.", duration=4.0)
+    save_game()
+    return True
+
+
+def check_escape_machine_progress():
+    machine = escape_machine_state()
+    if not machine.get("unlocked"):
+        return maybe_unlock_escape_machine()
+    cfg = escape_machine_config()
+    updated = False
+    components = machine.setdefault("components", [])
+    for component in cfg.get("components", []):
+        cid = component.get("id")
+        if not cid or cid in components:
+            continue
+        if machine_requirement_met(component):
+            components.append(cid)
+            updated = True
+            message = f"{component.get('name', 'Component')} installed."
+            set_settings_notice(message, duration=3.0)
+    if updated:
+        save_game()
+    if not machine.get("ready") and cfg.get("components") and len(components) == len(cfg.get("components", [])):
+        machine["ready"] = True
+        game["escape_machine_ready"] = True
+        set_settings_notice("Reality Diverter assembled. Press M to ignite.", duration=4.0)
+        save_game()
+        return True
+    return updated
+
+
+def handle_machine_progress_event(source=None):
+    changed = maybe_unlock_escape_machine()
+    changed |= check_escape_machine_progress()
+    return changed
+
+
+def perform_machine_escape_reset():
+    cfg = escape_machine_config()
+    machine = escape_machine_state()
+    if not machine.get("ready") or machine.get("applied"):
+        return False
+    multiplier = max(escape_multiplier(), cfg.get("reset_multiplier", 2.0))
+    machine["ready"] = False
+    machine["applied"] = True
+    machine_snapshot = copy.deepcopy(machine)
+    knowledge_snapshot = copy.deepcopy(knowledge_store())
+    guide_seen = list(game.get("guide_seen_topics", []))
+    guide_unlocked = game.get("guide_unlocked", False)
+    new_state = default_game_state()
+    game.clear()
+    game.update(new_state)
+    game["knowledge"] = knowledge_snapshot
+    game["guide_unlocked"] = guide_unlocked
+    game["guide_seen_topics"] = guide_seen
+    game["guide_unread_topics"] = []
+    game["guide_has_new"] = False
+    game["escape_machine"] = machine_snapshot
+    game["escape_machine_unlocked"] = True
+    game["escape_machine_ready"] = False
+    game["escape_multiplier"] = multiplier
+    set_settings_notice("Reality Diverter fired. The loop restarts at ×2 speed.", duration=4.0)
+    save_game()
+    return True
+
+
+def open_escape_machine_panel():
+    global KEY_PRESSED
+    cfg = escape_machine_config()
+    if not cfg or not cfg.get("components"):
+        set_settings_notice("Reality Diverter schematics unavailable.")
+        return
+    machine = escape_machine_state()
+    if not machine.get("unlocked"):
+        set_settings_notice("Reality Diverter not unlocked yet.")
+        return
+    last_box = None
+    last_size = get_term_size()
+    while True:
+        work_tick()
+        phase = int(time.time() * 6)
+        machine = escape_machine_state()
+        lines = [
+            "Reality Diverter Assembly",
+            "",
+            f"Spark Bank: {format_number(machine.get('spark_bank', 0))}",
+            "",
+        ]
+        visual_lines = build_machine_visual_block(machine, cfg, phase)
+        if visual_lines:
+            lines.extend(visual_lines)
+            lines.append("")
+        lines.append("Assembly Log")
+        lines.append("")
+        installed_set = set(machine.get("components", []))
+        for idx, component in enumerate(cfg.get("components", [])):
+            lines.extend(
+                build_machine_component_block(component, installed_set, phase, idx)
+            )
+        if machine.get("ready") and not machine.get("applied"):
+            mult = cfg.get("reset_multiplier", 2.0)
+            lines.append(f"Press Enter to ignite the Diverter and restart with ×{mult:.0f} base rewards.")
+        else:
+            lines.append("Components install automatically once their requirements are met.")
+        lines.append("Press B to return.")
+        box = boxed_lines(lines, title=" Diverter Console ", pad_top=1, pad_bottom=1)
+        cur_size = get_term_size()
+        frame = "\n".join(box)
+        if frame != last_box or cur_size != last_size:
+            render_frame(box)
+            last_box = frame
+            last_size = cur_size
+        time.sleep(0.05)
+        if not KEY_PRESSED:
+            continue
+        key = KEY_PRESSED
+        KEY_PRESSED = None
+        try:
+            k = key.lower() if isinstance(key, str) else key
+        except Exception:
+            k = key
+        if k in {"b", "q"}:
+            return
+        if k in {"\r", "\n", "enter"}:
+            if machine.get("ready") and not machine.get("applied"):
+                if perform_machine_escape_reset():
+                    return
 
 
 def motivation_capacity():
@@ -1444,6 +1853,9 @@ def load_game():
     state.setdefault("challenge_instability_installed", False)
     state.setdefault("guide_cursor", 0)
     state.setdefault("guide_unlocked", False)
+    state.setdefault("guide_seen_topics", [])
+    state.setdefault("guide_has_new", False)
+    state.setdefault("rpg_tutorial_shown", False)
     state.setdefault("automation_upgrades", [])
     state.setdefault("automation_page", 0)
     state.setdefault("automation_delay_mult", 1.0)
@@ -1452,6 +1864,17 @@ def load_game():
     state.setdefault("_challenge_backup", None)
     state.setdefault("challenge_run_active", False)
     state.setdefault("challenge_run_id", None)
+    state.setdefault("escape_multiplier", 1.0)
+    machine_state = state.get("escape_machine")
+    if not isinstance(machine_state, dict):
+        machine_state = default_escape_machine_state()
+    else:
+        defaults = default_escape_machine_state()
+        for key, value in defaults.items():
+            machine_state.setdefault(key, value)
+    state["escape_machine"] = machine_state
+    state.setdefault("escape_machine_unlocked", machine_state.get("unlocked", False))
+    state.setdefault("escape_machine_ready", machine_state.get("ready", False))
     challenge_state = state.get("challenge_state")
     if not isinstance(challenge_state, dict):
         state["challenge_state"] = default_challenge_state()
@@ -3080,6 +3503,9 @@ def open_guide_book():
     if not guide_available():
         set_settings_notice("Field Guide offline. Earn more to sync it up.", duration=2.5)
         return
+    game["guide_has_new"] = False
+    unread_topics = set(game.get("guide_unread_topics", []) or [])
+    guide_unread_changed = False
     last_frame = None
     last_size = get_term_size()
     while True:
@@ -3096,9 +3522,18 @@ def open_guide_book():
         if topics:
             for idx, topic in enumerate(topics):
                 marker = f"{Fore.CYAN}›{Style.RESET_ALL}" if idx == cursor else " "
-                lines.append(f"{marker} {topic['title']}")
+                tid = topic.get("id")
+                title = topic["title"]
+                if tid and tid in unread_topics:
+                    title = f"{Style.BRIGHT}{title}{Style.RESET_ALL}"
+                lines.append(f"{marker} {title}")
             lines.append("")
             selected = topics[cursor]
+            selected_id = selected.get("id")
+            if selected_id and selected_id in unread_topics:
+                unread_topics.remove(selected_id)
+                game["guide_unread_topics"] = list(unread_topics)
+                guide_unread_changed = True
             lines.append(f"{Fore.LIGHTYELLOW_EX}{selected['title']}{Style.RESET_ALL}")
             lines.append("")
             for raw in selected.get("lines", []):
@@ -3106,6 +3541,9 @@ def open_guide_book():
                 wrapped = wrap_ui_text(text, width=70, reserved=3)
                 for seg in wrapped:
                     lines.append(f"   {seg}")
+            if guide_unread_changed:
+                save_game()
+                guide_unread_changed = False
         else:
             lines.append("No guide pages unlocked yet. Advance further to reveal more mechanics.")
         lines.append("")
@@ -3252,6 +3690,7 @@ def compute_gain_and_delay(auto=False):
     eff_gain *= BASE_MONEY_MULT
     eff_gain *= max(0.0, game.get("money_mult", 1.0))
     eff_gain *= signal_mult
+    eff_gain *= escape_multiplier()
     eff_delay = max(base_delay * delay_mult, 0.01)
     return eff_gain, eff_delay
 
@@ -3513,6 +3952,7 @@ def calculate_stability_reward(money_pool):
     pool = max(0.0, float(money_pool)) + 1.0
     reward = (pool**STABILITY_REWARD_EXP) * STABILITY_REWARD_MULT
     reward *= stability_reward_multiplier()
+    reward *= escape_multiplier()
     return max(1, int(round(reward)))
 
 
@@ -3543,6 +3983,9 @@ def perform_stability_collapse(manual=False):
     money_pool = max(game.get("money", 0.0), game.get("money_since_reset", 0.0))
     reward = calculate_stability_reward(money_pool)
     game["stability_currency"] = game.get("stability_currency", 0.0) + reward
+    machine = escape_machine_state()
+    machine["spark_bank"] = machine.get("spark_bank", 0) + reward
+    handle_machine_progress_event("stability")
     game["stability_resets"] = game.get("stability_resets", 0) + 1
     if manual:
         game["stability_manual_resets"] = game.get("stability_manual_resets", 0) + 1
@@ -3587,6 +4030,7 @@ def work_tick():
     game["play_time"] = game.get("play_time", 0.0) + delta
     ensure_challenge_feature()
     ensure_field_guide_unlock()
+    refresh_guide_topics()
     advance_time_flow(delta)
     if not game.get("wake_timer_infinite", False):
         current_timer = game.get("wake_timer", WAKE_TIMER_START)
@@ -3844,9 +4288,12 @@ def build_timeflow_focus_lines():
             lines.append(
                 f"Calibrate Phase Lock ({remaining} install(s) to seal){bonus_label}."
             )
-            lines.append(
-                f"Next install costs {cost} {STABILITY_CURRENCY_NAME}. Stored Sparks: {sparks}."
-            )
+            if sparks_visible():
+                lines.append(
+                    f"Next install costs {cost} {STABILITY_CURRENCY_NAME}. Stored Sparks: {sparks}."
+                )
+            else:
+                lines.append("Sparks hidden until the Diverter calls for them again.")
             lines.append("Press [T] at the desk to stabilize.")
     else:
         lines.append("Stabilize the loop to unlock Timeflow.")
@@ -3858,10 +4305,9 @@ def build_timeflow_focus_lines():
 def guide_hotkey_hint():
     topics = available_guide_topics()
     if topics:
-        return (
-            f"{Fore.YELLOW}[G] Guide{Style.RESET_ALL} — press G for help on {len(topics)} topic(s)"
-            "."
-        )
+        badge = " (!)" if game.get("guide_has_new") else ""
+        label = f"{Fore.YELLOW}[G] Guide{badge}{Style.RESET_ALL}"
+        return f"{label} — press G for help on {len(topics)} topic(s)."
     if guide_available():
         return ""
     total_money = max(
@@ -4166,6 +4612,7 @@ def calculate_inspiration(money_since_reset):
     gain_mod = get_challenge_modifier("inspiration_gain_mult")
     if isinstance(gain_mod, (int, float)) and gain_mod > 0:
         total = int(max(0, round(total * gain_mod)))
+    total = int(max(0, round(total * escape_multiplier())))
     return total
 
 
@@ -4205,6 +4652,7 @@ def calculate_concepts(money_since_reset):
     gain_mod = get_challenge_modifier("concept_gain_mult")
     if isinstance(gain_mod, (int, float)) and gain_mod > 0:
         total = int(max(0, round(total * gain_mod)))
+    total = int(max(0, round(total * escape_multiplier())))
     return total
 
 
@@ -4298,6 +4746,7 @@ def reset_for_inspiration():
     previous_resets = game.get("inspiration_resets", 0)
     wipe_to_inspiration_baseline(game)
     game["inspiration_resets"] = previous_resets + 1
+    handle_machine_progress_event("inspiration")
     game["last_inspiration_reset_time"] = now
     attempt_reveal("layer_corridor")
     attempt_reveal("currency_corridor")
@@ -4395,6 +4844,7 @@ def reset_for_concepts():
     game["automation_page"] = 0
     apply_automation_effects()
     game["concept_resets"] = game.get("concept_resets", 0) + 1
+    handle_machine_progress_event("concept")
     ensure_challenge_feature()
     attempt_reveal("layer_archive")
     attempt_reveal("currency_archive")
@@ -4426,9 +4876,12 @@ def open_wake_timer_menu(auto_invoked=False):
             "--- STABILIZER ---" if not game.get("wake_timer_infinite", False) else "--- TIMER SEALED ---",
             f"Remaining: {remaining}",
             f"Capacity: {format_clock(game.get('wake_timer_cap', WAKE_TIMER_START))}",
-            f"{STABILITY_CURRENCY_NAME}: {format_number(game.get('stability_currency', 0))}",
-            "",
         ]
+        if sparks_visible():
+            lines.append(f"{STABILITY_CURRENCY_NAME}: {format_number(game.get('stability_currency', 0))}")
+        else:
+            lines.append("Sparks dormant until the Diverter calls for them.")
+        lines.append("")
         if auto_invoked and not game.get("wake_timer_infinite", False):
             lines.append("Collapse complete. Spend sparks to anchor the loop.")
             lines.append("")
@@ -4442,7 +4895,12 @@ def open_wake_timer_menu(auto_invoked=False):
             else:
                 status = f"Cost {format_number(wake_upgrade_cost(upg, current_level))} {STABILITY_CURRENCY_NAME}"
             display_name = upg.get("name", upg.get("id", f"Upgrade {i}"))
-            lines.append(f"{i}. {display_name} (Lvl {current_level}) - {status}")
+            accent_name = upg.get("accent")
+            accent = getattr(Fore, accent_name, Fore.CYAN)
+            title_line = f"{accent}{i}. {display_name}{Style.RESET_ALL}"
+            level_line = f"   Lv {current_level} — {status}"
+            lines.append(title_line)
+            lines.append(level_line)
             desc = upg.get("desc")
             if desc:
                 lines.append(f"   {desc}")
@@ -4480,7 +4938,8 @@ def open_wake_timer_menu(auto_invoked=False):
                 effect_lines.append("Unlocks the challenge board.")
             for info in effect_lines:
                 lines.append(f"   {info}")
-        lines += ["", "Press number to install, B to back."]
+            lines.append("")
+        lines += ["Press number to install, B to back."]
         box = boxed_lines(lines, title=" Stabilize ", pad_top=1, pad_bottom=1)
         cur_size = get_term_size()
         box_str = "\n".join(box)
@@ -5083,7 +5542,7 @@ def render_ui(screen="work"):
                 )
             else:
                 top_left_lines.append(
-                    f"{Fore.LIGHTBLACK_EX}Complete Spark Uprising to unlock {corridor_name}.{Style.RESET_ALL}"
+                    f"{Fore.LIGHTBLACK_EX}Complete S-Chal-1 to unlock {corridor_name}.{Style.RESET_ALL}"
                 )
 
         if game.get("motivation_unlocked", False):
@@ -5197,6 +5656,16 @@ def render_ui(screen="work"):
         guide_hint_line = guide_hotkey_hint()
         if guide_hint_line:
             middle_lines.append(guide_hint_line)
+        if game.get("escape_machine_unlocked", False):
+            machine = escape_machine_state()
+            if machine.get("ready") and not machine.get("applied"):
+                middle_lines.append(
+                    f"{Fore.LIGHTGREEN_EX}Reality Diverter ready — press [M].{Style.RESET_ALL}"
+                )
+            else:
+                middle_lines.append(
+                    f"{Fore.CYAN}Reality Diverter schematics tracked — press [M].{Style.RESET_ALL}"
+                )
         if middle_lines:
             middle_lines.append("")
         if status_line:
@@ -5210,10 +5679,11 @@ def render_ui(screen="work"):
             middle_lines.append("")
         middle_lines.append(build_wake_timer_line())
         if not game.get("wake_timer_infinite", False):
-            sparks_amount = format_number(game.get("stability_currency", 0))
-            middle_lines.append(
-                f"{STABILITY_CURRENCY_NAME}: {Fore.MAGENTA}{sparks_amount}{Style.RESET_ALL}"
-            )
+            if sparks_visible():
+                sparks_amount = format_number(game.get("stability_currency", 0))
+                middle_lines.append(
+                    f"{STABILITY_CURRENCY_NAME}: {Fore.MAGENTA}{sparks_amount}{Style.RESET_ALL}"
+                )
             middle_lines.append("[T] Stabilize window")
             if manual_collapse_available():
                 middle_lines.append("[L] Collapse now (trial-only reset)")
@@ -5285,7 +5755,10 @@ def render_ui(screen="work"):
                 f"{Fore.YELLOW}Use , and . to switch views ({labels}).{Style.RESET_ALL}"
             )
         if wake_timer_blocked():
-            middle_lines.append("(Unconscious) Spend Sparks in Stabilize menu (T).")
+            if sparks_visible():
+                middle_lines.append("(Unconscious) Spend Sparks in Stabilize menu (T).")
+            else:
+                middle_lines.append("(Unconscious) Stabilizer offline until Diverter prep resumes.")
         elif not game.get("upgrades_unlocked", False):
             middle_lines.append("??? offline.")
 
@@ -7130,6 +7603,7 @@ def advance_rpg_floor(rpg):
     rpg["floor_modifier_floor"] = 0
     if not visit_rpg_shop(rpg):
         begin_maze_reassembly(rpg)
+    handle_machine_progress_event("rpg")
 
 
 def rpg_handle_command(k):
@@ -8047,6 +8521,9 @@ def render_rpg_screen():
     max_lines = max(14, term_h - 16)
     view = game.get("rpg_view", "desktop")
     _ensure_desktop_hint_state()
+    if view == "desktop" and game.get("rpg_unlocked", False) and not game.get("rpg_tutorial_shown", False):
+        set_rpg_desktop_hint("Use arrows to pick GAME.EXE or NET.EXE, Enter to launch, B to return.", duration=4.0)
+        game["rpg_tutorial_shown"] = True
     if view == "desktop":
         inner_lines = build_rpg_desktop_view(glass_width, max_lines)
     elif view == "browser":
@@ -8292,6 +8769,11 @@ def main_loop():
                         current_screen = "work"
                         clear_screen()
                         open_wake_timer_menu()
+                        render_ui(screen=current_screen)
+                    elif k == "m" and current_screen == "work":
+                        current_screen = "work"
+                        clear_screen()
+                        open_escape_machine_panel()
                         render_ui(screen=current_screen)
                     elif k == "i":
                         reset_for_inspiration()
