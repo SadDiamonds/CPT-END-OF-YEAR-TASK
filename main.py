@@ -1108,7 +1108,8 @@ def build_status_ribbon(calc_insp, calc_conc, mot_pct=None, mot_mult=None):
 
 
 def reveal_text(tag, text, placeholder="???"):
-    return text if is_known(tag) else placeholder
+    # Knowledge gates disabled — always reveal full text.
+    return text
 
 
 def layer_name(key, placeholder="???"):
@@ -1350,33 +1351,11 @@ def build_wake_timer_line():
 
 
 def veil_text(text, min_visible=1, placeholder="?"):
-    if not text:
-        return placeholder * 3
-    result = []
-    visible_in_word = 0
-    for ch in text:
-        if ch.isalnum():
-            if visible_in_word < min_visible:
-                result.append(ch)
-                visible_in_word += 1
-            else:
-                result.append(placeholder)
-        else:
-            result.append(ch)
-            visible_in_word = 0
-    return "".join(result)
+    return text or ""
 
 
 def veil_numeric_string(text, reveal_ratio=0.35, placeholder="?"):
-    if not text:
-        return placeholder * 3
-    chars = list(text)
-    signal_indices = [i for i, ch in enumerate(chars) if ch.isalnum()]
-    reveal_count = max(1, int(len(signal_indices) * reveal_ratio))
-    for offset, idx in enumerate(signal_indices):
-        if offset >= reveal_count:
-            chars[idx] = placeholder
-    return "".join(chars)
+    return text or ""
 
 
 def format_currency(amount):
