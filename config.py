@@ -7,6 +7,161 @@ BASE_MONEY_GAIN = 1.0
 BASE_WORK_DELAY = 6.7
 BASE_MONEY_MULT = 1.0
 
+GUIDE_TOPICS = [
+    {
+        "id": "wake_basics",
+        "title": "Desk Operations",
+        "lines": [
+            "Tap W to keep the diagnostic window alive and gather {currency_symbol} inside {wake}.",
+            "Energy routed into the Stabilizer (T) will later stretch the window when sparks arrive.",
+            "Temporary desk upgrades decay after forced shutdowns, so spread investments between loops.",
+            "Press [G] anywhere on the desk whenever this guide feels synced enough to help.",
+        ],
+    },
+    {
+        "id": "stability",
+        "title": "Stability Collapses",
+        "requires": {"stability_resets": 1},
+        "requires_known": ["escape_route"],
+        "lines": [
+            "Triggering a collapse converts your highest {wake} earnings into {sparks}.",
+            "Collapses wipe desk upgrades and charge, but permanent unlocks (like concepts) persist.",
+            "Upgrading the Stabilizer extends or locks the wake window, enabling Timeflow later on.",
+            "During instability trials, press [L] to trigger a manual collapse instead of waiting for the timer to expire.",
+        ],
+    },
+    {
+        "id": "inspiration",
+        "title": "Inspiration Resets",
+        "requires": {"inspiration_resets": 1},
+        "requires_known": ["layer_corridor"],
+        "lines": [
+            "Spending a run in {corridor} converts desk profits into Inspiration, unlocking new skill trees.",
+            "An Inspiration reset wipes money gear but keeps sparks, automation unlocks, and previous Inspiration purchases.",
+            "Aim to chain collapses and autos together before banking Inspiration for larger upgrades.",
+        ],
+    },
+    {
+        "id": "concepts",
+        "title": "Concept Depth",
+        "requires": {"concept_resets": 1},
+        "requires_known": ["layer_archive"],
+        "lines": [
+            "{archive} is gated behind completing all listed challenges once, then reaching its money goal.",
+            "Concept resets grant Echoes used for powerful global modifiers but wipe Inspiration progress and motivation.",
+            "Expect to rebuild automation from scratch when diving this deep—plan long runs before committing.",
+        ],
+    },
+    {
+        "id": "automation",
+        "title": "Automation Systems",
+        "requires": {"auto_work_unlocked": True},
+        "requires_known": ["escape_route"],
+        "lines": [
+            "Auto-work repeats the basic cycle, while auto-buyers spend money using the Automation Lab.",
+            "Delay and gain modifiers stack from upgrades, Inspiration, Concepts, and active challenges.",
+            "Automation synergy scales with total resets, so keep prestiging even after unlocking the lab.",
+        ],
+    },
+    {
+        "id": "timeflow",
+        "title": "Timeflow",
+        "unlock_if": "timeflow_display_unlocked",
+        "requires_known": ["escape_signal"],
+        "lines": [
+            "Once the wake window is sealed, Timeflow tracks how fast loops run and grants a separate reward multiplier.",
+            "Time velocity rises with layers, upgrades, and some challenges; higher tiers boost both reward and money gain.",
+            "Install Phase Lock in the Stabilizer (T) using Sparks to ignite Timeflow and move the story forward.",
+            "Check the top banner or this guide to see how velocity and reward convert into raw income.",
+        ],
+    },
+    {
+        "id": "challenges",
+        "title": "Challenge Runs",
+        "unlock_if": "challenge_feature_ready",
+        "requires_known": ["escape_route"],
+        "lines": [
+            "Each challenge belongs to a layer. Starting one applies that layer's reset, then adds the listed debuffs.",
+            "Goals track progress made after activation. Finish a run to bank the permanent reward on your main timeline.",
+            "Use Z/X on the board to switch reset layers and review what each debuff targets before committing.",
+        ],
+    },
+]
+
+FIELD_GUIDE_UNLOCK_TOTAL = 120.0
+
+CHALLENGE_GROUP_RESET = {
+    "stability": "stability",
+    "corridor": "inspiration",
+    "archive": "concept",
+}
+
+CHALLENGE_LAYER_TARGET = {
+    "stability": 0,
+    "inspiration": 1,
+    "concept": 2,
+}
+
+CHALLENGE_RESET_LAYER_KEY = {
+    "stability": "wake",
+    "inspiration": "corridor",
+    "concept": "archive",
+}
+
+AUTO_ONLY_UPGRADE_TYPES = {"work_mult", "reduce_delay", "reduce_cd"}
+MANUAL_TAP_THRESHOLD = 12
+MANUAL_TAP_GAP = 0.35
+
+BROWSER_CURRENCY_NAME = "Cache Shards"
+BROWSER_NOTICE_DURATION = 3.0
+SHOPKEEPER_NAME = "Mysterious Merchant"
+BROWSER_UPGRADES = [
+    {
+        "id": "hp_matrix",
+        "name": "Archive Plating",
+        "cost": 3,
+        "desc": "+60 Max HP after each reset",
+        "effect": {"max_hp": 60},
+    },
+    {
+        "id": "atk_array",
+        "name": "Signal Bracer",
+        "cost": 4,
+        "desc": "+5 ATK baseline",
+        "effect": {"atk": 5},
+    },
+    {
+        "id": "def_shell",
+        "name": "Mirror Shell",
+        "cost": 4,
+        "desc": "+3 DEF baseline",
+        "effect": {"def": 3},
+    },
+    {
+        "id": "gold_boot",
+        "name": "Cache Primer",
+        "cost": 5,
+        "desc": "Begin each loop with +150 gold",
+        "effect": {"gold": 150},
+    },
+]
+
+ESCAPE_MODE = True
+ESCAPE_REPLACEMENTS = [
+    (r"campfire", "rest node"),
+    (r"annex", "side zone"),
+    (r"sentinel", "defense unit"),
+    (r"vault", "resource room"),
+    (r"maze", "grid"),
+    (r"seam", "doorway"),
+    (r"secret", "hidden"),
+    (r"boss", "warden"),
+    (r"flame", "node"),
+    (r"merchant", "merchant"),
+    (r"relic", "upgrade core"),
+    (r"loop", "escape cycle"),
+]
+
 CURRENCY_SYMBOL = "¤"
 STABILITY_CURRENCY_NAME = "Stability Sparks"
 STABILITY_REWARD_MULT = 0.5
@@ -34,6 +189,13 @@ WAKE_TIMER_UPGRADES = [
         "cost": 40,
         "time_bonus": 180,
         "desc": "Adds 180 seconds to the escape window.",
+    },
+    {
+        "id": "wake_trials",
+        "name": "Instability Array",
+        "cost": 65,
+        "desc": "Channels collapse energy into an optional trial grid. Unlocks challenges.",
+        "unlock_challenges": True,
     },
     {
         "id": "wake_lock",

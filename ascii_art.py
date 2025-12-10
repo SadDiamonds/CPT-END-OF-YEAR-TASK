@@ -1,5 +1,15 @@
 # ascii_art.py — Unique terminal descent inspired art
 
+try:
+    from colorama import Fore
+except ImportError:
+    class _ColorCodes:
+        BLACK = RED = GREEN = YELLOW = BLUE = MAGENTA = CYAN = WHITE = ""
+        LIGHTBLACK_EX = LIGHTRED_EX = LIGHTGREEN_EX = LIGHTYELLOW_EX = ""
+        LIGHTBLUE_EX = LIGHTMAGENTA_EX = LIGHTCYAN_EX = ""
+
+    Fore = _ColorCodes()
+
 # -----------------------------
 # Layer 0 — Workstation / Desk
 # -----------------------------
@@ -45,6 +55,34 @@ UPGRADE_ART = {
         "   │ ▓▓ ▓▓ ▓▓ ▓▓ ▓▓ │  ",
         "   └────────────────┘  ",
     ],
+}
+
+EVENT_ANIMATIONS = {
+    "campfire": {
+        "frames": [
+            ["   (   )   ", "    ) (    ", "   (___)   "],
+            ["    ) (    ", "   (   )   ", "    ) (    "],
+        ],
+        "color": Fore.LIGHTYELLOW_EX,
+        "delay": 0.4,
+    },
+    "relic": {
+        "frames": [
+            ["  ◇     ◇  ", "    ◇◇    ", "  ◇     ◇  "],
+            ["    ◇◇    ", "  ◇    ◇  ", "    ◇◇    "],
+        ],
+        "color": Fore.CYAN,
+        "delay": 0.45,
+    },
+    "secret": {
+        "frames": [
+            ["┌──────┐", "│ ░░░░ │", "│ ░◇░░ │", "│ ░░░░ │", "└──────┘"],
+            ["┌──────┐", "│ ░░░░ │", "│ ░░◇░ │", "│ ░░░░ │", "└──────┘"],
+            ["┌──────┐", "│ ░░░░ │", "│ ░░░◇ │", "│ ░░░░ │", "└──────┘"],
+        ],
+        "color": Fore.BLUE,
+        "delay": 0.25,
+    },
 }
 
 RPG_DEFAULT_ICON_ART = [

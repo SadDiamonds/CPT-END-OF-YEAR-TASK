@@ -39,6 +39,7 @@ from ascii_art import (
     BREACH_DOOR_CLOSED_ART,
     BREACH_DOOR_OPEN_ART,
     BREACH_DOOR_UNLOCK_FRAMES,
+    EVENT_ANIMATIONS,
 )
 import config
 from config import (
@@ -121,6 +122,20 @@ from config import (
     format_number,
     UPGRADE_REPLACEMENT,
     CHALLENGES,
+    GUIDE_TOPICS,
+    FIELD_GUIDE_UNLOCK_TOTAL,
+    CHALLENGE_GROUP_RESET,
+    CHALLENGE_LAYER_TARGET,
+    CHALLENGE_RESET_LAYER_KEY,
+    AUTO_ONLY_UPGRADE_TYPES,
+    MANUAL_TAP_THRESHOLD,
+    MANUAL_TAP_GAP,
+    BROWSER_CURRENCY_NAME,
+    BROWSER_NOTICE_DURATION,
+    SHOPKEEPER_NAME,
+    BROWSER_UPGRADES,
+    ESCAPE_MODE,
+    ESCAPE_REPLACEMENTS,
 )
 
 import blackjack
@@ -133,132 +148,6 @@ for entry in CHALLENGES:
         CHALLENGE_GROUPS.append(group)
 if not CHALLENGE_GROUPS:
     CHALLENGE_GROUPS = ["Trials"]
-
-CHALLENGE_GROUP_RESET = {
-    "stability": "stability",
-    "corridor": "inspiration",
-    "archive": "concept",
-}
-
-CHALLENGE_LAYER_TARGET = {
-    "stability": 0,
-    "inspiration": 1,
-    "concept": 2,
-}
-
-CHALLENGE_RESET_LAYER_KEY = {
-    "stability": "wake",
-    "inspiration": "corridor",
-    "concept": "archive",
-}
-
-GUIDE_TOPICS = [
-    {
-        "id": "wake_basics",
-        "title": "Desk Operations",
-        "lines": [
-            "{wake} is your baseline loop. Press W (or let automation) to earn money {currency_symbol}.",
-            "Stability Sparks keep the wake timer open; spend them in the Stabilizer menu (T).",
-            "Most upgrades only persist until the next layer reset, so invest steadily between collapses.",
-            "Open this Field Guide anywhere on the desk with the [G] key when you need a refresher.",
-        ],
-    },
-    {
-        "id": "stability",
-        "title": "Stability Collapses",
-        "requires": {"stability_resets": 1},
-        "lines": [
-            "Triggering a collapse converts your highest {wake} earnings into {sparks}.",
-            "Collapses wipe desk upgrades and charge, but permanent unlocks (like concepts) persist.",
-            "Upgrading the Stabilizer extends or locks the wake window, enabling Timeflow later on.",
-            "During instability trials, press [L] to trigger a manual collapse instead of waiting for the timer to expire.",
-        ],
-    },
-    {
-        "id": "inspiration",
-        "title": "Inspiration Resets",
-        "requires": {"inspiration_resets": 1},
-        "lines": [
-            "Spending a run in {corridor} converts desk profits into Inspiration, unlocking new skill trees.",
-            "An Inspiration reset wipes money gear but keeps sparks, automation unlocks, and previous Inspiration purchases.",
-            "Aim to chain collapses and autos together before banking Inspiration for larger upgrades.",
-        ],
-    },
-    {
-        "id": "concepts",
-        "title": "Concept Depth",
-        "requires": {"concept_resets": 1},
-        "lines": [
-            "{archive} is gated behind completing all listed challenges once, then reaching its money goal.",
-            "Concept resets grant Echoes used for powerful global modifiers but wipe Inspiration progress and motivation.",
-            "Expect to rebuild automation from scratch when diving this deep—plan long runs before committing.",
-        ],
-    },
-    {
-        "id": "automation",
-        "title": "Automation Systems",
-        "requires": {"auto_work_unlocked": True},
-        "lines": [
-            "Auto-work repeats the basic cycle, while auto-buyers spend money using the Automation Lab.",
-            "Delay and gain modifiers stack from upgrades, Inspiration, Concepts, and active challenges.",
-            "Automation synergy scales with total resets, so keep prestiging even after unlocking the lab.",
-        ],
-    },
-    {
-        "id": "timeflow",
-        "title": "Timeflow",
-        "unlock_if": "timeflow_display_unlocked",
-        "lines": [
-            "Once the wake window is sealed, Timeflow tracks how fast loops run and grants a separate reward multiplier.",
-            "Time velocity rises with layers, upgrades, and some challenges; higher tiers boost both reward and money gain.",
-            "Install Phase Lock in the Stabilizer (T) using Sparks to ignite Timeflow and move the story forward.",
-            "Check the top banner or this guide to see how velocity and reward convert into raw income.",
-        ],
-    },
-    {
-        "id": "challenges",
-        "title": "Challenge Runs",
-        "unlock_if": "challenge_feature_ready",
-        "lines": [
-            "Each challenge belongs to a layer. Starting one applies that layer's reset, then adds the listed debuffs.",
-            "Goals track progress made after activation. Finish a run to bank the permanent reward on your main timeline.",
-            "Use Z/X on the board to switch reset layers and review what each debuff targets before committing.",
-        ],
-    },
-]
-
-FIELD_GUIDE_UNLOCK_TOTAL = 120.0
-
-EVENT_ANIMATIONS = {
-    "campfire": {
-        "frames": [
-            ["   (   )   ", "    ) (    ", "   (___)   "],
-            ["    ) (    ", "   (   )   ", "    ) (    "],
-        ],
-        "color": Fore.LIGHTYELLOW_EX,
-        "delay": 0.4,
-    },
-    "relic": {
-        "frames": [
-            ["  ◇     ◇  ", "    ◇◇    ", "  ◇     ◇  "],
-            ["    ◇◇    ", "  ◇    ◇  ", "    ◇◇    "],
-        ],
-        "color": Fore.CYAN,
-        "delay": 0.45,
-    },
-    "secret": {
-        "frames": [
-            ["┌──────┐", "│ ░░░░ │", "│ ░◇░░ │", "│ ░░░░ │", "└──────┘"],
-            ["┌──────┐", "│ ░░░░ │", "│ ░░◇░ │", "│ ░░░░ │", "└──────┘"],
-            ["┌──────┐", "│ ░░░░ │", "│ ░░░◇ │", "│ ░░░░ │", "└──────┘"],
-        ],
-        "color": Fore.BLUE,
-        "delay": 0.25,
-    },
-}
-AUTO_ONLY_UPGRADE_TYPES = {"work_mult", "reduce_delay", "reduce_cd"}
-MANUAL_TAP_THRESHOLD = 12
-MANUAL_TAP_GAP = 0.35
 
 ROOM_COLOR_MAP = {
     "start": Fore.WHITE,
@@ -278,40 +167,6 @@ ROOM_COLOR_MAP = {
     "stairs": Fore.GREEN,
 }
 
-BROWSER_CURRENCY_NAME = "Cache Shards"
-BROWSER_NOTICE_DURATION = 3.0
-SHOPKEEPER_NAME = "Mysterious Merchant"
-BROWSER_UPGRADES = [
-    {
-        "id": "hp_matrix",
-        "name": "Archive Plating",
-        "cost": 3,
-        "desc": "+60 Max HP after each reset",
-        "effect": {"max_hp": 60},
-    },
-    {
-        "id": "atk_array",
-        "name": "Signal Bracer",
-        "cost": 4,
-        "desc": "+5 ATK baseline",
-        "effect": {"atk": 5},
-    },
-    {
-        "id": "def_shell",
-        "name": "Mirror Shell",
-        "cost": 4,
-        "desc": "+3 DEF baseline",
-        "effect": {"def": 3},
-    },
-    {
-        "id": "gold_boot",
-        "name": "Cache Primer",
-        "cost": 5,
-        "desc": "Begin each loop with +150 gold",
-        "effect": {"gold": 150},
-    },
-]
-
 
 def compute_browser_effects(unlocks):
     totals = {"max_hp": 0, "atk": 0, "def": 0, "gold": 0}
@@ -330,23 +185,6 @@ ACTIVE_SLOT_INDEX = 2
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 RESET_SEQ = getattr(Style, "RESET_ALL", "\x1b[0m")
-
-ESCAPE_MODE = True
-ESCAPE_REPLACEMENTS = [
-    (r"campfire", "rest node"),
-    (r"annex", "side zone"),
-    (r"sentinel", "defense unit"),
-    (r"vault", "resource room"),
-    (r"maze", "grid"),
-    (r"seam", "doorway"),
-    (r"secret", "hidden"),
-    (r"boss", "warden"),
-    (r"flame", "node"),
-    (r"merchant", "merchant"),
-    (r"relic", "upgrade core"),
-    (r"loop", "escape cycle"),
-]
-
 
 def escape_text(text):
     if not ESCAPE_MODE or not isinstance(text, str):
@@ -697,11 +535,9 @@ def summarize_challenge_modifiers(entry):
 
 
 def challenge_feature_ready():
-    return bool(
-        game.get("stability_resets", 0) >= 1
-        or game.get("concept_resets", 0) >= 1
-        or game.get("concepts_unlocked", False)
-    )
+    if game.get("challenges_feature_unlocked", False):
+        return True
+    return bool(game.get("challenge_instability_installed", False))
 
 
 def ensure_challenge_feature():
@@ -864,6 +700,7 @@ def default_game_state():
         "challenges_completed": [],
         "guide_cursor": 0,
         "guide_unlocked": False,
+        "challenge_instability_installed": False,
         "automation_page": 0,
         "automation_delay_mult": 1.0,
         "automation_gain_mult": 1.0,
@@ -927,6 +764,10 @@ def guide_topic_unlocked(topic):
         else:
             if not current:
                 return False
+    knowledge_requirements = topic.get("requires_known") or []
+    for tag in knowledge_requirements:
+        if not is_known(tag):
+            return False
     unlock_cond = topic.get("unlock_if")
     if unlock_cond:
         fn = unlock_cond
@@ -1180,6 +1021,9 @@ KNOWLEDGE_REQUIREMENTS = {
     "currency_corridor": {"inspiration_resets": 3},
     "layer_archive": {"concept_resets": 2},
     "currency_archive": {"concept_resets": 3},
+    "escape_window": {"mystery_revealed": 1},
+    "escape_route": {"stability_resets": 1},
+    "escape_signal": {"concept_resets": 1},
 }
 
 
@@ -1390,6 +1234,7 @@ def load_game():
     state.setdefault("challenge_intro_seen", False)
     state.setdefault("challenge_cursor", 0)
     state.setdefault("challenge_page", 0)
+    state.setdefault("challenge_instability_installed", False)
     state.setdefault("guide_cursor", 0)
     state.setdefault("guide_unlocked", False)
     state.setdefault("automation_upgrades", [])
@@ -2205,8 +2050,13 @@ def refresh_knowledge_flags():
         updated |= attempt_reveal("currency_wake")
         updated |= attempt_reveal("ui_currency_clear")
         updated |= attempt_reveal("ui_upgrade_catalogue")
+        updated |= attempt_reveal("escape_window")
     if game.get("auto_work_unlocked"):
         updated |= attempt_reveal("ui_auto_prompt")
+    if game.get("stability_resets", 0) >= 1:
+        updated |= attempt_reveal("escape_route")
+    if game.get("concept_resets", 0) >= 1:
+        updated |= attempt_reveal("escape_signal")
     return updated
 
 
@@ -2761,11 +2611,11 @@ def challenge_ready_to_claim(entry):
 def build_challenge_summary_line():
     if not challenge_feature_ready():
         return (
-            f"{Fore.LIGHTBLACK_EX}Trigger a Stability collapse to unlock challenge runs.{Style.RESET_ALL}"
+            f"{Fore.LIGHTBLACK_EX}...{Style.RESET_ALL}"
         )
     if not challenge_feature_active():
         return (
-            f"{Fore.LIGHTBLACK_EX}Challenge board syncing — collapse once more if it stays offline.{Style.RESET_ALL}"
+            f"{Fore.LIGHTBLACK_EX}Challenge board syncing — give the Instability Array a moment to calibrate.{Style.RESET_ALL}"
         )
     entry = active_challenge_entry()
     if entry:
@@ -2798,7 +2648,10 @@ def build_challenge_board_lines():
     total_pages = 1
     if not challenge_feature_active():
         lines.append("Challenge board offline.")
-        lines.append("Trigger a Stability collapse to enable optional trials.")
+        if challenge_feature_ready():
+            lines.append("Instability Array calibrating — please wait a moment.")
+        else:
+            lines.append("Install the Instability Array in the Stabilizer (T) to enable optional trials.")
         lines.append("")
         lines.append("Press B to return.")
         return lines, entries, page_label, page_idx, total_pages
@@ -2885,7 +2738,7 @@ def open_challenge_board():
     global KEY_PRESSED
     if not challenge_feature_ready():
         tmp = boxed_lines(
-            ["Challenge board offline.", "Trigger a Stability collapse to enable trials."],
+            ["Challenge board offline.", "Install the Instability Array in the Stabilizer (T) to enable trials."],
             title=" Challenge Board ",
             pad_top=1,
             pad_bottom=1,
@@ -2896,7 +2749,7 @@ def open_challenge_board():
     ensure_challenge_feature()
     if not challenge_feature_active():
         tmp = boxed_lines(
-            ["Challenge board syncing. Collapse again if it stays offline."],
+            ["Challenge board syncing. Give the Instability Array a moment to stabilize."],
             title=" Challenge Board ",
             pad_top=1,
             pad_bottom=1,
@@ -3624,9 +3477,7 @@ def get_time_status():
 
 
 def timeflow_display_unlocked():
-    if game.get("wake_timer_infinite", False):
-        return True
-    return game.get("stability_resets", 0) >= 1
+    return bool(game.get("wake_timer_infinite", False))
 
 
 def timeflow_active():
@@ -3782,11 +3633,10 @@ def compute_escape_vector_state():
         signal_ratio = 0.0
         signal_text = "Signal offline"
 
-    route_text = (
-        f"Route floor {rpg_floor}"
-        if rpg_floor
-        else f"Route layer {current_layer}/{total_layers}"
-    )
+    if rpg_floor:
+        route_text = f"Route floor {rpg_floor}"
+    else:
+        route_text = f"Route: {current_layer_label()}"
     score = layer_ratio * 0.35 + window_ratio * 0.35 + signal_ratio * 0.30
     phase = "Dormant" if score < 0.35 else ("Aligning" if score < 0.7 else "Surging")
     return {
@@ -3814,16 +3664,32 @@ def build_escape_banner_lines(width):
     state = compute_escape_vector_state()
     if not state:
         return []
+    window_known = is_known("escape_window")
+    route_known = is_known("escape_route")
+    signal_known = is_known("escape_signal")
     header = f"{Fore.CYAN}GAME{Style.RESET_ALL} · {state['phase']}"
-    details = "   ".join(
-        entry for entry in [state["window_text"], state["route_text"], state["signal_text"]] if entry
-    )
-    meter = build_escape_meter(state["score"], width)
-    return [
+    directive = state["window_text"] if window_known else "Hold the window open"
+    details = [directive]
+    if route_known and state.get("route_text"):
+        details.append(state["route_text"])
+    if signal_known and state.get("signal_text"):
+        details.append(state["signal_text"])
+    summary = "   ".join(details)
+    lines = [
         pad_visible_line(ansi_center(header, width), width),
-        pad_visible_line(ansi_center(details, width), width),
-        pad_visible_line(ansi_center(meter, width), width),
+        pad_visible_line(ansi_center(summary, width), width),
     ]
+    if window_known:
+        meter = build_escape_meter(state["score"], width)
+        lines.append(pad_visible_line(ansi_center(meter, width), width))
+    else:
+        lines.append(
+            pad_visible_line(
+                ansi_center("Diagnostics calibrating...", width),
+                width,
+            )
+        )
+    return lines
 
 
 def check_charge_thresholds():
@@ -4128,7 +3994,7 @@ def reset_for_inspiration():
         tmp = boxed_lines(
             [
                 f"{corridor_name} is sealed.",
-                "Complete the Lockbreak Drill challenge (press H) to gain access.",
+                "Complete ???.",
             ],
             title=f" {corridor_name} Locked ",
             pad_top=1,
@@ -4255,6 +4121,8 @@ def reset_for_concepts():
     ensure_challenge_feature()
     attempt_reveal("layer_archive")
     attempt_reveal("currency_archive")
+    attempt_reveal("escape_signal")
+    refresh_knowledge_flags()
     apply_concept_effects()
     apply_inspiration_effects()
     check_challenges("concept")
@@ -4308,6 +4176,8 @@ def open_wake_timer_menu(auto_invoked=False):
                 effect_lines.append(f"Adds {upg['time_bonus']}s to the window.")
             if upg.get("unlock_upgrades"):
                 effect_lines.append("Unlocks the upgrade bay.")
+            if upg.get("unlock_challenges"):
+                effect_lines.append("Unlocks the challenge board.")
             for info in effect_lines:
                 lines.append(f"   {info}")
         lines += ["", "Press number to install, B to back."]
@@ -4353,6 +4223,10 @@ def buy_wake_timer_upgrade(upg):
     if upg.get("unlock_upgrades") and not game.get("upgrades_unlocked", False):
         game["upgrades_unlocked"] = True
         extras.append("Upgrade bay rebooted.")
+    if upg.get("unlock_challenges") and not game.get("challenge_instability_installed", False):
+        game["challenge_instability_installed"] = True
+        extras.append("Challenge board online.")
+        ensure_challenge_feature()
     recalc_wake_timer_state()
     game["wake_timer"] = game.get("wake_timer_cap", WAKE_TIMER_START)
     game["wake_timer_locked"] = False
@@ -4902,7 +4776,7 @@ def render_ui(screen="work"):
                 )
             else:
                 top_left_lines.append(
-                    f"{Fore.LIGHTBLACK_EX}Complete the Lockbreak Drill challenge (press [H]) to unlock {corridor_name}.{Style.RESET_ALL}"
+                    f"{Fore.LIGHTBLACK_EX}Complete ??? to unlock ???.{Style.RESET_ALL}"
                 )
 
         if game.get("motivation_unlocked", False):
@@ -5085,12 +4959,6 @@ def render_ui(screen="work"):
         option_payload += "[J] Blackjack  "
         if automation_lab_available():
             option_payload += "[3] Automation  "
-        if challenge_feature_ready():
-            option_payload += "[H] Challenges  "
-        if guide_available():
-            option_payload += "[G] Guide  "
-        else:
-            option_payload += "[G] Offline  "
         if manual_collapse_available():
             option_payload += "[L] Collapse  "
         option_payload += "[Q] Quit"
@@ -5119,19 +4987,7 @@ def render_ui(screen="work"):
     raw_banner_line = build_time_banner_line(term_width)
     max_banner_lines = len(raw_escape_banner) + (1 if raw_banner_line else 0)
     content_height = min(term_height, max(4, term_height - max_banner_lines))
-    available_banner_slots = max(0, term_height - content_height)
-    banner_line = raw_banner_line if raw_banner_line and available_banner_slots > 0 else None
-    if banner_line:
-        available_banner_slots -= 1
-    escape_banner = raw_escape_banner[:available_banner_slots]
     inner_target = max(0, content_height - 4)
-
-    while len(top_left_lines) < inner_target:
-        top_left_lines.append("")
-    while len(bottom_left_lines) < inner_target:
-        bottom_left_lines.append("")
-    while len(middle_lines) < inner_target:
-        middle_lines.insert(0, "")
 
     left_w = max(18, int(term_width * 0.25))
     mid_w = max(24, int(term_width * 0.35))
@@ -5161,8 +5017,54 @@ def render_ui(screen="work"):
 
     left_content_w = max(0, left_w - left_pad)
     right_content_w = max(0, right_w - left_pad)
+
+    def wrap_panel_lines(lines, width, exempt_titles):
+        if width <= 0:
+            return list(lines)
+        wrapped = []
+        for entry in lines:
+            if not entry:
+                wrapped.append("")
+                continue
+            if entry in exempt_titles:
+                wrapped.append(entry)
+                continue
+            segments = wrap_visible_text(entry, width)
+            if not segments:
+                wrapped.append("")
+            else:
+                wrapped.extend(segments)
+        return wrapped
+
+    title_set = {t for t in (insp_title, insp_tree_title, conc_title, conc_tree_title) if t}
+    top_left_lines = wrap_panel_lines(top_left_lines, left_content_w, title_set)
+    bottom_left_lines = wrap_panel_lines(bottom_left_lines, right_content_w, title_set)
+
+    while len(top_left_lines) < inner_target:
+        top_left_lines.append("")
+    while len(bottom_left_lines) < inner_target:
+        bottom_left_lines.append("")
+    while len(middle_lines) < inner_target:
+        middle_lines.insert(0, "")
+
+    column_height = max(inner_target, len(top_left_lines), len(middle_lines), len(bottom_left_lines))
+
+    def pad_column(lines, target, pad_front=False):
+        while len(lines) < target:
+            if pad_front:
+                lines.insert(0, "")
+            else:
+                lines.append("")
+
+    pad_column(top_left_lines, column_height)
+    pad_column(bottom_left_lines, column_height)
+    pad_column(middle_lines, column_height, pad_front=True)
+
     combined_lines = []
-    for l, m, r in zip(top_left_lines, middle_lines, bottom_left_lines):
+    for idx in range(column_height):
+        l = top_left_lines[idx]
+        m = middle_lines[idx]
+        r = bottom_left_lines[idx]
         if l in (insp_title, insp_tree_title, conc_title, conc_tree_title):
             left_part = " " * left_pad + ansi_center(l, left_content_w)
         else:
@@ -5188,6 +5090,7 @@ def render_ui(screen="work"):
     box = boxed_lines(
         window_lines, title=layer_title, pad_top=1, pad_bottom=1
     )
+    box_height = len(box)
 
     if resized:
         print("\033[2J\033[H", end="")
@@ -5195,12 +5098,14 @@ def render_ui(screen="work"):
         last_render = ""
         view_offset_x = 0
         view_offset_y = 0
-    visible_lines = box[:content_height]
-    while len(visible_lines) < content_height:
-        visible_lines.append(" " * term_width)
+    banner_space = max(0, term_height - box_height)
+    banner_line = raw_banner_line if raw_banner_line and banner_space > 0 else None
+    if banner_line:
+        banner_space -= 1
+    escape_banner = raw_escape_banner[:banner_space]
     visible_lines = [
         pad_visible_line(ansi_visible_slice(line, view_offset_x, term_width), term_width)
-        for line in visible_lines
+        for line in box
     ]
     if escape_banner:
         visible_lines = escape_banner + visible_lines
@@ -7909,6 +7814,8 @@ def main_loop():
                 if not game.get("mystery_revealed", False) and game.get("money_since_reset", 0) >= 100:
                     game["mystery_revealed"] = True
                     set_settings_notice("Deeper escape diagnostics unlocked.", duration=3.0)
+                    attempt_reveal("escape_window")
+                    refresh_knowledge_flags()
                     save_game()
                     last_render = ""
 
@@ -8051,7 +7958,7 @@ def main_loop():
                             tmp = boxed_lines(
                                 [
                                     "Challenge board offline.",
-                                    "Trigger a Stability collapse to enable trials.",
+                                    "Install the Instability Array in the Stabilizer (T) to enable trials.",
                                 ],
                                 title=" Challenge Board ",
                                 pad_top=1,
