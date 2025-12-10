@@ -149,6 +149,10 @@ for entry in CHALLENGES:
 if not CHALLENGE_GROUPS:
     CHALLENGE_GROUPS = ["Trials"]
 
+# Event-driven challenge goals handle bespoke triggers that aren't tracked via
+# baseline deltas. Add new IDs here when a challenge progresses via events.
+EVENT_GOAL_TYPES = {"phase_lock_completion"}
+
 ROOM_COLOR_MAP = {
     "start": Fore.WHITE,
     "enemy": Fore.RED,
@@ -260,6 +264,7 @@ def default_challenge_state():
         "active_id": None,
         "baseline": {},
         "started_at": 0.0,
+        "event_progress": {},
     }
 
 
@@ -269,6 +274,10 @@ def challenge_state_data():
     if not isinstance(baseline, dict):
         baseline = {}
         state["baseline"] = baseline
+    events = state.get("event_progress")
+    if not isinstance(events, dict):
+        events = {}
+        state["event_progress"] = events
     return state
 
 
@@ -276,6 +285,30 @@ def current_challenge_id():
     state = challenge_state_data()
     cid = state.get("active_id")
     return cid if isinstance(cid, str) else None
+
+
+def challenge_event_progress(metric):
+    if not metric:
+        return 0
+    events = challenge_state_data().get("event_progress") or {}
+    return events.get(metric, 0)
+
+
+def increment_challenge_event(metric, amount=1):
+    if not metric or amount <= 0:
+        return 0
+    if not challenge_run_active_flag():
+        return 0
+    state = challenge_state_data()
+    events = state.setdefault("event_progress", {})
+    current = events.get(metric, 0)
+    events[metric] = current + amount
+    return events[metric]
+
+
+def register_phase_lock_completion():
+    if increment_challenge_event("phase_lock_completion", 1):
+        check_challenges("phase_lock")
 
 
 def active_challenge_entry():
@@ -521,6 +554,12 @@ def describe_challenge_modifiers(entry):
     add_percent("Motivation cap", mods.get("motivation_cap_mult"))
     add_percent("Time velocity", mods.get("time_velocity_mult"))
 
+    cap_mod = mods.get("wake_timer_cap_mult")
+    if isinstance(cap_mod, (int, float)) and cap_mod > 0 and abs(cap_mod - 1.0) > 0.01:
+        delta = int(round(abs(1.0 - cap_mod) * 100))
+        direction = "-" if cap_mod < 1.0 else "+"
+        clauses.append(f"Escape window {direction}{delta}%")
+
     if mods.get("disable_automation") or mods.get("disable_auto_work"):
         clauses.append("Automation disabled")
     if mods.get("disable_auto_buyer"):
@@ -576,9 +615,21 @@ def activate_challenge(entry):
     metric = entry.get("goal_type")
     state = challenge_state_data()
     state["active_id"] = entry["id"]
-    state["baseline"] = {metric: challenge_metric(metric)} if metric else {}
+    if metric and metric not in EVENT_GOAL_TYPES:
+        state["baseline"] = {metric: challenge_metric(metric)}
+    else:
+        state["baseline"] = {}
     state["started_at"] = time.time()
+    state["event_progress"] = {}
+    if metric == "phase_lock_completion":
+        phase_lock = next((u for u in WAKE_TIMER_UPGRADES if u.get("grant_infinite")), None)
+        if phase_lock:
+            level = wake_upgrade_level(phase_lock.get("id"))
+            required = max(1, int(phase_lock.get("infinite_level", 1)))
+            if level >= required:
+                state["event_progress"][metric] = 1
     set_settings_notice(f"Challenge activated: {entry.get('name', 'Unknown')}.")
+    check_challenges("challenge_start")
     return True
 
 
@@ -587,6 +638,7 @@ def clear_active_challenge(notice=None, duration=2.5):
     state["active_id"] = None
     state["baseline"] = {}
     state["started_at"] = 0.0
+    state["event_progress"] = {}
     restore_pre_challenge_state()
     save_game()
     if notice:
@@ -657,11 +709,11 @@ def default_game_state():
         "stability_currency": 0.0,
         "stability_resets": 0,
         "stability_manual_resets": 0,
-        "wake_timer": WAKE_TIMER_START,
+            "wake_timer": WAKE_TIMER_START,
         "wake_timer_cap": WAKE_TIMER_START,
         "wake_timer_infinite": False,
         "wake_timer_locked": False,
-        "wake_timer_upgrades": [],
+        "wake_timer_upgrades": {},
         "wake_timer_notified": False,
         "needs_stability_reset": False,
         "play_time": 0.0,
@@ -737,7 +789,7 @@ def ensure_field_guide_unlock():
     )
     if total_money >= FIELD_GUIDE_UNLOCK_TOTAL or game.get("stability_resets", 0) >= 1:
         game["guide_unlocked"] = True
-        set_settings_notice("Field Guide synced. Press G anywhere.", duration=3.0)
+        set_settings_notice("Guide synced. Press G anywhere.", duration=3.0)
         save_game()
         return True
     return False
@@ -1053,16 +1105,106 @@ def attempt_reveal(tag):
     return mark_known(tag)
 
 
+def get_wake_upgrade_levels():
+    raw = game.get("wake_timer_upgrades", {})
+    if isinstance(raw, dict):
+        cleaned = {}
+        for key, value in raw.items():
+            try:
+                level = int(value)
+            except (TypeError, ValueError):
+                continue
+            if level > 0:
+                cleaned[key] = level
+        if cleaned != raw:
+            game["wake_timer_upgrades"] = cleaned
+        return game["wake_timer_upgrades"]
+    levels = {}
+    if isinstance(raw, list):
+        for entry in raw:
+            if isinstance(entry, dict):
+                uid = entry.get("id")
+                level = entry.get("level", 1)
+            else:
+                uid = entry
+                level = 1
+            if not uid:
+                continue
+            try:
+                level = int(level)
+            except (TypeError, ValueError):
+                level = 0
+            if level <= 0:
+                continue
+            levels[uid] = max(levels.get(uid, 0), level)
+    game["wake_timer_upgrades"] = levels
+    return game["wake_timer_upgrades"]
+
+
+def wake_upgrade_level(upg_id):
+    if not upg_id:
+        return 0
+    return get_wake_upgrade_levels().get(upg_id, 0)
+
+
+def _scaled_series_total(base, scale, level):
+    if level <= 0 or base == 0:
+        return 0.0
+    if abs(scale - 1.0) < 1e-9:
+        return float(base) * level
+    return float(base) * ((scale**level - 1.0) / (scale - 1.0))
+
+
+def _scaled_step_value(base, scale, index):
+    if base == 0:
+        return 0.0
+    return float(base) * (scale**index)
+
+
+def wake_upgrade_total_bonus(upg, level, field, scale_field):
+    base = float(upg.get(field, 0) or 0)
+    if base == 0 or level <= 0:
+        return 0.0
+    scale = float(upg.get(scale_field, upg.get("value_mult", 1.0)) or 1.0)
+    return _scaled_series_total(base, max(0.0, scale), level)
+
+
+def wake_upgrade_next_bonus(upg, level, field, scale_field):
+    base = float(upg.get(field, 0) or 0)
+    if base == 0:
+        return 0.0
+    scale = float(upg.get(scale_field, upg.get("value_mult", 1.0)) or 1.0)
+    return _scaled_step_value(base, max(0.0, scale), level)
+
+
+def wake_upgrade_cost(upg, current_level=None):
+    if current_level is None:
+        current_level = wake_upgrade_level(upg.get("id"))
+    base_cost = float(upg.get("cost", 0) or 0)
+    scale = float(upg.get("cost_scale", upg.get("cost_mult", 1.0)) or 1.0)
+    return int(round(base_cost * (scale**current_level)))
+
+
 def recalc_wake_timer_state():
-    purchased = set(game.get("wake_timer_upgrades", []))
+    purchased = get_wake_upgrade_levels()
     cap = WAKE_TIMER_START
     infinite = game.get("wake_timer_infinite", False)
     challenge_lock = bool(game.get("_challenge_disable_wake_lock", False))
     for upg in WAKE_TIMER_UPGRADES:
-        if upg["id"] in purchased:
-            cap += upg.get("time_bonus", 0)
-            if upg.get("grant_infinite"):
+        level = purchased.get(upg["id"], 0)
+        if level <= 0:
+            continue
+        time_bonus = wake_upgrade_total_bonus(upg, level, "time_bonus", "time_bonus_scale")
+        if time_bonus:
+            cap += int(round(time_bonus))
+        if upg.get("grant_infinite"):
+            required = max(1, int(upg.get("infinite_level", 1)))
+            if level >= required:
                 infinite = True
+    mods = active_challenge_modifiers()
+    cap_mult = mods.get("wake_timer_cap_mult", 1.0)
+    if isinstance(cap_mult, (int, float)) and cap_mult > 0:
+        cap = max(30.0, cap * cap_mult)
     if challenge_lock:
         infinite = False
     game["wake_timer_cap"] = cap
@@ -1254,9 +1396,44 @@ def load_game():
         if not isinstance(baseline, dict):
             challenge_state["baseline"] = {}
         challenge_state.setdefault("started_at", 0.0)
+        events = challenge_state.get("event_progress")
+        if not isinstance(events, dict):
+            challenge_state["event_progress"] = {}
     state.setdefault("challenges_completed", [])
     state.setdefault("auto_buyer_unlocked", False)
     state.setdefault("stability_manual_resets", 0)
+    raw_wake_upgrades = state.get("wake_timer_upgrades")
+    if isinstance(raw_wake_upgrades, dict):
+        cleaned = {}
+        for key, value in raw_wake_upgrades.items():
+            try:
+                lvl = int(value)
+            except (TypeError, ValueError):
+                continue
+            if lvl > 0:
+                cleaned[key] = lvl
+        state["wake_timer_upgrades"] = cleaned
+    elif isinstance(raw_wake_upgrades, list):
+        cleaned = {}
+        for entry in raw_wake_upgrades:
+            if isinstance(entry, dict):
+                uid = entry.get("id")
+                lvl = entry.get("level", 1)
+            else:
+                uid = entry
+                lvl = 1
+            if not uid:
+                continue
+            try:
+                lvl = int(lvl)
+            except (TypeError, ValueError):
+                lvl = 0
+            if lvl <= 0:
+                continue
+            cleaned[uid] = max(cleaned.get(uid, 0), lvl)
+        state["wake_timer_upgrades"] = cleaned
+    else:
+        state["wake_timer_upgrades"] = {}
     if not state.get("guide_unlocked"):
         total_money = max(
             float(state.get("money_since_reset", 0.0)),
@@ -1271,6 +1448,7 @@ def load_game():
     apply_inspiration_effects()
     apply_concept_effects()
     apply_automation_effects()
+    recalc_wake_timer_state()
     ensure_challenge_feature()
     if game.get("motivation_unlocked", False):
         clamp_motivation()
@@ -2503,6 +2681,9 @@ def challenge_progress(info):
     if completed:
         return goal, goal
     metric = info.get("goal_type")
+    if metric in EVENT_GOAL_TYPES:
+        progress = challenge_event_progress(metric)
+        return progress, goal
     total = challenge_metric(metric)
     state = challenge_state_data()
     if state.get("active_id") == cid:
@@ -2846,7 +3027,7 @@ def open_guide_book():
             cursor = 0
         game["guide_cursor"] = cursor
         context = guide_render_context()
-        lines = ["Mechanics Field Guide", ""]
+        lines = ["Mechanics Guide", ""]
         if topics:
             for idx, topic in enumerate(topics):
                 marker = f"{Fore.CYAN}›{Style.RESET_ALL}" if idx == cursor else " "
@@ -3247,10 +3428,27 @@ def perform_work(gain, eff_delay, manual=False):
 
 
 
+def stability_reward_multiplier():
+    levels = get_wake_upgrade_levels()
+    bonus = 1.0
+    for upg in WAKE_TIMER_UPGRADES:
+        level = levels.get(upg["id"], 0)
+        total = wake_upgrade_total_bonus(
+            upg,
+            level,
+            "stability_bonus",
+            "stability_bonus_scale",
+        )
+        if total > 0:
+            bonus += total
+    return max(1.0, bonus)
+
+
 def calculate_stability_reward(money_pool):
     pool = max(0.0, float(money_pool)) + 1.0
-    reward = int((pool**STABILITY_REWARD_EXP) * STABILITY_REWARD_MULT)
-    return max(1, reward)
+    reward = (pool**STABILITY_REWARD_EXP) * STABILITY_REWARD_MULT
+    reward *= stability_reward_multiplier()
+    return max(1, int(round(reward)))
 
 
 def wipe_to_stability_baseline(state):
@@ -3557,24 +3755,38 @@ def build_timeflow_focus_lines():
     if not timeflow_display_unlocked():
         return []
     lines = [f"{Fore.BLUE}Timeflow Directive{Style.RESET_ALL}"]
-    purchased = set(game.get("wake_timer_upgrades", []))
     phase_lock = next((u for u in WAKE_TIMER_UPGRADES if u.get("grant_infinite")), None)
     if game.get("wake_timer_infinite", False):
         lines.append("Phase Lock sealed — keep loops running to build velocity.")
     elif phase_lock:
-        cost = format_number(phase_lock.get("cost", 0))
+        levels = get_wake_upgrade_levels()
+        phase_lock_id = phase_lock.get("id")
+        current_level = levels.get(phase_lock_id, 0)
+        required = max(1, int(phase_lock.get("infinite_level", 1)))
+        cost = format_number(wake_upgrade_cost(phase_lock, current_level))
         sparks = format_number(game.get("stability_currency", 0))
-        if phase_lock.get("id") in purchased:
-            lines.append("Phase Lock installing… finish the cycle to ignite Timeflow.")
+        if current_level >= required:
+            lines.append("Phase Lock stabilized — finish a collapse to ignite Timeflow.")
         else:
-            lines.append(
-                f"Install Phase Lock ({cost} {STABILITY_CURRENCY_NAME}) to ignite Timeflow."
+            remaining = required - current_level
+            bonus = wake_upgrade_next_bonus(
+                phase_lock,
+                current_level,
+                "time_bonus",
+                "time_bonus_scale",
             )
-            lines.append(f"Stored Sparks: {sparks}. Press [T] to stabilize.")
+            bonus_label = f" (+{int(round(bonus))}s window)" if bonus > 0 else ""
+            lines.append(
+                f"Calibrate Phase Lock ({remaining} install(s) to seal){bonus_label}."
+            )
+            lines.append(
+                f"Next install costs {cost} {STABILITY_CURRENCY_NAME}. Stored Sparks: {sparks}."
+            )
+            lines.append("Press [T] at the desk to stabilize.")
     else:
         lines.append("Stabilize the loop to unlock Timeflow.")
     if not challenge_completed("stability_drill"):
-        lines.append("Complete the Lockbreak Drill challenge to proceed.")
+        lines.append("Complete Spark Uprising to proceed.")
     return lines
 
 
@@ -3582,8 +3794,8 @@ def guide_hotkey_hint():
     topics = available_guide_topics()
     if topics:
         return (
-            f"{Fore.YELLOW}[G] Guide{Style.RESET_ALL} — press G anywhere when things"
-            " stop making sense."
+            f"{Fore.YELLOW}[G] Guide{Style.RESET_ALL} — press G for help on {len(topics)} topic(s)"
+            "."
         )
     if guide_available():
         return ""
@@ -3595,8 +3807,8 @@ def guide_hotkey_hint():
         return ""
     target = format_currency(FIELD_GUIDE_UNLOCK_TOTAL)
     return (
-        f"{Fore.LIGHTBLACK_EX}Field Guide offline — earn {target} total or trigger"
-        f" your first collapse to sync.{Style.RESET_ALL}"
+        f"{Fore.LIGHTBLACK_EX}Guide offline — earn {target} total"
+        f".{Style.RESET_ALL}"
     )
 
 
@@ -3994,7 +4206,7 @@ def reset_for_inspiration():
         tmp = boxed_lines(
             [
                 f"{corridor_name} is sealed.",
-                "Complete ???.",
+                "Complete Spark Uprising.",
             ],
             title=f" {corridor_name} Locked ",
             pad_top=1,
@@ -4155,25 +4367,48 @@ def open_wake_timer_menu(auto_invoked=False):
         if auto_invoked and not game.get("wake_timer_infinite", False):
             lines.append("Collapse complete. Spend sparks to anchor the loop.")
             lines.append("")
-        purchased = set(game.get("wake_timer_upgrades", []))
+        levels = get_wake_upgrade_levels()
         for i, upg in enumerate(WAKE_TIMER_UPGRADES, start=1):
-            owned = upg["id"] in purchased
-            cost_label = format_number(upg.get("cost", 0))
-            status = (
-                "INSTALLED"
-                if owned
-                else f"Cost {cost_label} {STABILITY_CURRENCY_NAME}"
-            )
+            uid = upg.get("id")
+            current_level = levels.get(uid, 0)
+            max_level = upg.get("max_level")
+            if max_level and current_level >= max_level:
+                status = "MAX"
+            else:
+                status = f"Cost {format_number(wake_upgrade_cost(upg, current_level))} {STABILITY_CURRENCY_NAME}"
             display_name = upg.get("name", upg.get("id", f"Upgrade {i}"))
-            lines.append(f"{i}. {display_name} - {status}")
+            lines.append(f"{i}. {display_name} (Lvl {current_level}) - {status}")
             desc = upg.get("desc")
             if desc:
                 lines.append(f"   {desc}")
             effect_lines = []
+            next_time = wake_upgrade_next_bonus(upg, current_level, "time_bonus", "time_bonus_scale")
+            total_time = wake_upgrade_total_bonus(upg, current_level, "time_bonus", "time_bonus_scale")
+            if next_time > 0 and (not max_level or current_level < max_level):
+                effect_lines.append(
+                    f"Next install adds +{int(round(next_time))}s (total +{int(round(total_time))}s)."
+                )
+            elif total_time > 0:
+                effect_lines.append(f"Total bonus +{int(round(total_time))}s.")
+            reward_step = wake_upgrade_next_bonus(upg, current_level, "stability_bonus", "stability_bonus_scale")
+            reward_total = wake_upgrade_total_bonus(upg, current_level, "stability_bonus", "stability_bonus_scale")
+            if reward_step > 0:
+                effect_lines.append(
+                    f"Next install boosts Spark yield +{reward_step * 100:.1f}%."
+                )
+            if reward_total > 0:
+                effect_lines.append(
+                    f"Cumulative Spark bonus +{reward_total * 100:.1f}%."
+                )
             if upg.get("grant_infinite"):
-                effect_lines.append("Seals the window permanently.")
-            elif upg.get("time_bonus"):
-                effect_lines.append(f"Adds {upg['time_bonus']}s to the window.")
+                required = max(1, int(upg.get("infinite_level", 1)))
+                if current_level < required:
+                    remaining_installs = required - current_level
+                    effect_lines.append(
+                        f"Seal the window after {remaining_installs} more install(s)."
+                    )
+                else:
+                    effect_lines.append("Window sealed; extra installs amplify Sparks.")
             if upg.get("unlock_upgrades"):
                 effect_lines.append("Unlocks the upgrade bay.")
             if upg.get("unlock_challenges"):
@@ -4209,33 +4444,40 @@ def open_wake_timer_menu(auto_invoked=False):
 
 
 def buy_wake_timer_upgrade(upg):
-    purchased = game.setdefault("wake_timer_upgrades", [])
-    if upg["id"] in purchased:
-        return f"{upg['name']} already installed."
-    cost = upg.get("cost", 0)
+    uid = upg.get("id")
+    levels = get_wake_upgrade_levels()
+    current_level = levels.get(uid, 0)
+    max_level = upg.get("max_level")
+    if max_level and current_level >= max_level:
+        return f"{upg['name']} fully calibrated."
+    cost = wake_upgrade_cost(upg, current_level)
     if game.get("stability_currency", 0) < cost:
         return f"Need {format_number(cost)} {STABILITY_CURRENCY_NAME} to install {upg['name']}"
     game["stability_currency"] -= cost
-    purchased.append(upg["id"])
-    if upg.get("grant_infinite"):
-        game["wake_timer_infinite"] = True
+    new_level = current_level + 1
+    levels[uid] = new_level
+    game["wake_timer_upgrades"] = dict(levels)
     extras = []
-    if upg.get("unlock_upgrades") and not game.get("upgrades_unlocked", False):
+    if upg.get("unlock_upgrades") and current_level == 0 and not game.get("upgrades_unlocked", False):
         game["upgrades_unlocked"] = True
         extras.append("Upgrade bay rebooted.")
-    if upg.get("unlock_challenges") and not game.get("challenge_instability_installed", False):
+    if upg.get("unlock_challenges") and current_level == 0 and not game.get("challenge_instability_installed", False):
         game["challenge_instability_installed"] = True
         extras.append("Challenge board online.")
         ensure_challenge_feature()
+    if upg.get("grant_infinite"):
+        required = max(1, int(upg.get("infinite_level", 1)))
+        if current_level < required <= new_level:
+            register_phase_lock_completion()
     recalc_wake_timer_state()
     game["wake_timer"] = game.get("wake_timer_cap", WAKE_TIMER_START)
     game["wake_timer_locked"] = False
     game["wake_timer_notified"] = False
     save_game()
     if game.get("wake_timer_infinite", False):
-        base_msg = f"{upg['name']} sealed the loop. Time is yours now."
+        base_msg = f"{upg['name']} Lvl {new_level} sealed the loop. Time is yours now."
     else:
-        base_msg = f"{upg['name']} installed. Stability restored."
+        base_msg = f"{upg['name']} calibrated to Lvl {new_level}. Stability restored."
     if extras:
         base_msg += " " + " ".join(extras)
     return base_msg
@@ -4776,7 +5018,7 @@ def render_ui(screen="work"):
                 )
             else:
                 top_left_lines.append(
-                    f"{Fore.LIGHTBLACK_EX}Complete ??? to unlock ???.{Style.RESET_ALL}"
+                    f"{Fore.LIGHTBLACK_EX}Complete Spark Uprising to unlock {corridor_name}.{Style.RESET_ALL}"
                 )
 
         if game.get("motivation_unlocked", False):
