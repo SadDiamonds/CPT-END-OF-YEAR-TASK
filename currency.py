@@ -1,5 +1,3 @@
-"""Utility helpers for awarding shared currencies across systems."""
-
 from __future__ import annotations
 
 from typing import Any, MutableMapping
@@ -10,7 +8,6 @@ GameState = MutableMapping[str, Any]
 
 
 def _normalize_amount(value: Any) -> int:
-    """Convert arbitrary numeric input into a non-negative integer."""
     try:
         return max(0, int(round(float(value))))
     except Exception:
@@ -18,7 +15,6 @@ def _normalize_amount(value: Any) -> int:
 
 
 def grant_stability_currency(game_state: GameState, amount: Any) -> int:
-    """Deposit collapse rewards into the shared stability pool."""
     delta = _normalize_amount(amount)
     if delta <= 0:
         return 0
@@ -32,7 +28,6 @@ def grant_automation_currency(
     collapse_reward: Any,
     ratio: float = AUTOMATION_REWARD_RATIO,
 ) -> int:
-    """Convert a collapse reward into automation fuel according to the configured ratio."""
     base = _normalize_amount(collapse_reward)
     if base <= 0 or ratio <= 0:
         return 0

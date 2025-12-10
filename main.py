@@ -212,6 +212,10 @@ ACTIVE_SLOT_INDEX = 2
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 RESET_SEQ = getattr(Style, "RESET_ALL", "\x1b[0m")
 
+TERMINAL_TARGET_COLS = 200
+TERMINAL_TARGET_ROWS = 55
+_TERMINAL_SCALE_CONFIRMED = False
+
 _FULLSCREEN_REQUESTED = False
 
 
@@ -3106,6 +3110,36 @@ def clear_screen():
     else:
         sys.stdout.write("\033[H\033[J")
         sys.stdout.flush()
+
+
+def run_terminal_scale_calculator():
+    global _TERMINAL_SCALE_CONFIRMED
+    if _TERMINAL_SCALE_CONFIRMED:
+        return
+    step_scale = 1.08
+    while True:
+        cols, rows = get_term_size()
+        needed_cols = max(0, TERMINAL_TARGET_COLS - cols)
+        needed_rows = max(0, TERMINAL_TARGET_ROWS - rows)
+        ratio_cols = TERMINAL_TARGET_COLS / max(cols, 1)
+        ratio_rows = TERMINAL_TARGET_ROWS / max(rows, 1)
+        ratio_needed = max(ratio_cols, ratio_rows)
+        est_steps = 0
+        if ratio_needed > 1:
+            est_steps = max(1, int(math.ceil(math.log(ratio_needed, step_scale))))
+        clear_screen()
+        if est_steps > 0:
+            print(
+                f"Zoom out ~{est_steps} time(s) with Cmd+- (macOS) or Ctrl+- (Windows/Linux)."
+            )
+            print("Press Enter to re-check or type READY when finished.")
+        else:
+            print("Looks good already—type READY to continue or Enter to re-check.")
+        response = input("> ").strip().lower()
+        if response == "ready":
+            _TERMINAL_SCALE_CONFIRMED = True
+            clear_screen()
+            break
 
 def render_frame(lines):
     global last_render
@@ -9097,6 +9131,7 @@ def main_loop():
 
 if __name__ == "__main__":
     try:
+        run_terminal_scale_calculator()
         main_loop()
     except Exception:
         traceback.print_exc()
