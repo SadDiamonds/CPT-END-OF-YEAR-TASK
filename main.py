@@ -234,15 +234,37 @@ def request_fullscreen():
         elif os.name == "nt":
             try:
                 import ctypes
+                from ctypes import wintypes
 
-                kernel32 = ctypes.windll.kernel32
-                user32 = ctypes.windll.user32
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                user32 = ctypes.WinDLL("user32", use_last_error=True)
                 hwnd = kernel32.GetConsoleWindow()
                 if hwnd:
                     SW_MAXIMIZE = 3
                     user32.ShowWindow(hwnd, SW_MAXIMIZE)
                     user32.SetForegroundWindow(hwnd)
+                    STD_OUTPUT_HANDLE = -11
+                    hconsole = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+                    if hconsole:
+                        class COORD(ctypes.Structure):
+                            _fields_ = [("X", wintypes.SHORT), ("Y", wintypes.SHORT)]
+
+                        set_mode = getattr(kernel32, "SetConsoleDisplayMode", None)
+                        if set_mode:
+                            set_mode.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(COORD)]
+                            set_mode.restype = wintypes.BOOL
+                            coord = COORD(0, 0)
+                            set_mode(hconsole, 1, ctypes.byref(coord))
                     return True
+                # If the window handle isn't exposed (Windows Terminal), simulate Alt+Enter.
+                KEYEVENTF_KEYUP = 0x0002
+                VK_MENU = 0x12
+                VK_RETURN = 0x0D
+                user32.keybd_event(VK_MENU, 0, 0, 0)
+                user32.keybd_event(VK_RETURN, 0, 0, 0)
+                user32.keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0)
+                user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+                return True
             except Exception:
                 pass
         # Fallback: request a very large terminal size via ANSI sequence.
@@ -8402,4 +8424,3 @@ if __name__ == "__main__":
     except Exception:
         traceback.print_exc()
         input("Press Enter to exit...")
-
