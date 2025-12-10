@@ -386,7 +386,7 @@ CHALLENGES = [
     {
         "id": "stability_drill",
         "group": "Stability",
-        "name": "Spark Uprising",
+        "name": "S-CHAL-1",
         "desc": "Generate 3,200 Stability Sparks after starting the trial to overload the stabilizer.",
         "goal_type": "stability_currency",
         "goal_value": 3200,
@@ -400,7 +400,7 @@ CHALLENGES = [
     {
         "id": "stability_reserve",
         "group": "Stability",
-        "name": "Phase Reserve",
+        "name": "S-CHAL-2",
         "desc": "Calibrate Phase Lock to completion before the escape window collapses.",
         "goal_type": "phase_lock_completion",
         "goal_value": 1,
@@ -417,7 +417,7 @@ CHALLENGES = [
     {
         "id": "stability_overclock",
         "group": "Stability",
-        "name": "Overclock Collapse",
+        "name": "S-CHAL-3",
         "desc": "Earn 10,000 Stability Sparks after activating the trial while surviving the shrinking window.",
         "goal_type": "stability_currency",
         "goal_value": 10_000,
@@ -435,7 +435,7 @@ CHALLENGES = [
     {
         "id": "corridor_prodigy",
         "group": "Corridor",
-        "name": "Hall Prodigy",
+        "name": "H-CHAL-1",
         "desc": "Perform 2 Hall resets within the trial to prove you can sprint through the corridor.",
         "goal_type": "inspiration_resets",
         "goal_value": 2,
@@ -451,7 +451,7 @@ CHALLENGES = [
     {
         "id": "corridor_velocity",
         "group": "Corridor",
-        "name": "Velocity Sketch",
+        "name": "H-CHAL-2",
         "desc": "Generate 1,800,000 money after beginning the trial to chart a faster escape route.",
         "goal_type": "money_since_reset",
         "goal_value": 1_800_000,
@@ -467,7 +467,7 @@ CHALLENGES = [
     {
         "id": "corridor_feedback",
         "group": "Corridor",
-        "name": "Feedback Bloom",
+        "name": "H-CHAL-3",
         "desc": "Generate 4,500,000 money after the trial begins while Inspiration drains exponentially.",
         "goal_type": "money_since_reset",
         "goal_value": 4_500_000,
@@ -484,7 +484,7 @@ CHALLENGES = [
     {
         "id": "archive_wayfarer",
         "group": "Archive",
-        "name": "Echo Wayfarer",
+        "name": "E-CHAL-1",
         "desc": "Complete 1 Concept reset during the trial to recon the deep archive.",
         "goal_type": "concept_resets",
         "goal_value": 1,
@@ -500,7 +500,7 @@ CHALLENGES = [
     {
         "id": "archive_persistence",
         "group": "Archive",
-        "name": "Signal Persistence",
+        "name": "E-CHAL-2",
         "desc": "Perform 3 additional Concept resets while the trial runs to anchor your signal.",
         "goal_type": "concept_resets",
         "goal_value": 3,
@@ -517,7 +517,7 @@ CHALLENGES = [
     {
         "id": "archive_fractal",
         "group": "Archive",
-        "name": "Fractal Dive",
+        "name": "E-CHAL-3",
         "desc": "Complete 4 Concept resets while the trial is active to map the recursive vaults.",
         "goal_type": "concept_resets",
         "goal_value": 4,
@@ -534,7 +534,7 @@ CHALLENGES = [
     {
         "id": "archive_oblivion",
         "group": "Archive",
-        "name": "Oblivion Sketch",
+        "name": "E-CHAL-4",
         "desc": "Generate 25,000,000 money after beginning the trial while the archive devours your throughput.",
         "goal_type": "money_since_reset",
         "goal_value": 25_000_000,
