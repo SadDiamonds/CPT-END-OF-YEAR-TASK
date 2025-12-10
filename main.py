@@ -9131,6 +9131,7 @@ def main_loop():
 
 if __name__ == "__main__":
     try:
+        request_fullscreen()
         run_terminal_scale_calculator()
         main_loop()
     except Exception:
