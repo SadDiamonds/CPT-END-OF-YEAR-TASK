@@ -3130,7 +3130,7 @@ def run_terminal_scale_calculator():
         clear_screen()
         if est_steps > 0:
             print(
-                f"Zoom out ~{est_steps} time(s) with Cmd+- (macOS) or Ctrl+- (Windows/Linux)."
+                f"Zoom out ~{est_steps} time(s) with Cmd+- (macOS) or Ctrl+- (Windows/Linux). Remember to FULLSCREEN!!"
             )
             print("Press Enter to re-check or type READY when finished.")
         else:
