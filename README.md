@@ -4,3 +4,8 @@ LAUNCH RUN_GAME.PY ON **WINDOWS** OR IF ON **MAC**, GO INTO TERMINAL AND `cd` TO
 
 ## Download:
 https://github.com/SadDiamonds/CPT-END-OF-YEAR-TASK/releases/latest
+
+## Credits
+- Lead Developer: SadDiamonds
+- Tester: Isaac
+- Tester & Balancer: David

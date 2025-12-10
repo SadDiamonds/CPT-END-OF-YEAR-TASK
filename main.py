@@ -62,8 +62,6 @@ from config import (
     SAVE_SLOT_COUNT,
     MAIN_LOOP_MIN_DT,
     ENEMY_ANIM_DELAY,
-    CHARGE_THRESHOLDS,
-    BATTERY_TIERS,
     BORDERS,
     UPGRADES,
     LAYER_FLOW,
@@ -73,6 +71,8 @@ from config import (
     WAKE_TIMER_START,
     WAKE_TIMER_UPGRADES,
     STABILITY_CURRENCY_NAME,
+    AUTOMATION_CURRENCY_NAME,
+    AUTOMATION_CURRENCY_SUFFIX,
     STABILITY_REWARD_MULT,
     STABILITY_REWARD_EXP,
     SCIENTIFIC_THRESHOLD_DEFAULT,
@@ -138,6 +138,7 @@ from config import (
     ESCAPE_REPLACEMENTS,
     ESCAPE_MACHINE,
 )
+from currency import grant_automation_currency, grant_stability_currency
 
 import blackjack
 
@@ -150,8 +151,8 @@ for entry in CHALLENGES:
 if not CHALLENGE_GROUPS:
     CHALLENGE_GROUPS = ["Trials"]
 
-# Event-driven challenge goals handle bespoke triggers that aren't tracked via
-# baseline deltas. Add new IDs here when a challenge progresses via events.
+                                                                              
+                                                                           
 EVENT_GOAL_TYPES = {"phase_lock_completion"}
 
 ROOM_COLOR_MAP = {
@@ -172,6 +173,15 @@ ROOM_COLOR_MAP = {
     "stairs": Fore.GREEN,
 }
 
+EASTER_EGG_DEFAULT_COOLDOWN = 240.0
+MANUAL_WORK_SPAM_THRESHOLD = 5
+MANUAL_WORK_SPAM_WINDOW = 10.0
+LONG_SESSION_EGG_SECONDS = 5400
+
+SESSION_HINT_FLAGS = set()
+GUIDE_REFRESH_INTERVAL = 0.5
+_LAST_GUIDE_REFRESH = 0.0
+
 
 def default_escape_machine_state():
     return {
@@ -191,6 +201,7 @@ def compute_browser_effects(unlocks):
         for key, value in (entry.get("effect") or {}).items():
             totals[key] = totals.get(key, 0) + value
     return totals
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -267,7 +278,7 @@ def request_fullscreen():
                             coord = COORD(0, 0)
                             set_mode(hconsole, 1, ctypes.byref(coord))
                     return True
-                # If the window handle isn't exposed (Windows Terminal), simulate Alt+Enter.
+                                                                                            
                 KEYEVENTF_KEYUP = 0x0002
                 VK_MENU = 0x12
                 VK_RETURN = 0x0D
@@ -278,7 +289,7 @@ def request_fullscreen():
                 return True
             except Exception:
                 pass
-        # Fallback: request a very large terminal size via ANSI sequence.
+                                                                         
         cols = max(200, shutil.get_terminal_size((120, 40)).columns)
         rows = max(60, shutil.get_terminal_size((120, 40)).lines)
         sys.stdout.write(f"\033[8;{rows};{cols}t")
@@ -535,8 +546,19 @@ def restore_pre_challenge_state():
     return True
 
 
+def challenge_group_unlocked(group):
+    key = (group or "").lower()
+    reset_key = CHALLENGE_GROUP_RESET.get(key, key)
+    if reset_key == "inspiration":
+        return bool(game.get("inspiration_unlocked", False) or game.get("inspiration_resets", 0) > 0)
+    if reset_key == "concept":
+        return concept_layer_gate_met()
+    return True
+
+
 def challenge_board_pages():
-    return CHALLENGE_GROUPS or ["Trials"]
+    pages = [g for g in CHALLENGE_GROUPS if challenge_group_unlocked(g)]
+    return pages or ["Trials"]
 
 
 def current_challenge_page_entries():
@@ -788,11 +810,6 @@ def default_game_state():
         "last_manual_press_ts": 0.0,
         "hold_tip_shown": False,
         "scientific_threshold_exp": SCIENTIFIC_THRESHOLD_DEFAULT,
-        "charge": 0.0,
-        "best_charge": 0.0,
-        "charge_threshold": [],
-        "charge_unlocked": False,
-        "battery_tier": 1,
         "insp_page": 0,
         "concept_page": 0,
         "pulses": 0,
@@ -804,6 +821,7 @@ def default_game_state():
         "intro_played": False,
         "concept_resets": 0,
         "stability_currency": 0.0,
+        "automation_currency": 0.0,
         "stability_resets": 0,
         "stability_manual_resets": 0,
             "wake_timer": WAKE_TIMER_START,
@@ -993,7 +1011,7 @@ def sync_browser_bonuses(rpg):
             continue
         if key == "max_hp":
             rpg["max_hp"] = max(1, rpg.get("max_hp", 1) + diff)
-            # Shift current HP proportionally but clamp to new max
+                                                                  
             rpg["hp"] = max(1, min(rpg["max_hp"], rpg.get("hp", rpg["max_hp"]) + diff))
         elif key == "atk":
             rpg["atk"] = max(1, rpg.get("atk", 1) + diff)
@@ -1164,6 +1182,52 @@ def describe_machine_requirement(component):
 MACHINE_SPINNER_FRAMES = ["-", "\\", "|", "/"]
 MACHINE_BEAM_FRAMES = ["--==", "==--", "<><>", "~==~"]
 MACHINE_TRAIL_PATTERN = ["-", "=", "~", "+"]
+MACHINE_CORE_FRAMES = ["<>", "><", "::", "**", "==", "//", "\\\\", "||", "--"]
+MACHINE_DEPTH_SHADES = ["..", "--", "==", "##", "@@"]
+MACHINE_SWIRL_CHARS = list("@#%&*+=-:.")
+MACHINE_SHADE_CHARS = list("@%#*+=-:. ")
+PORTAL_PHASE_LABELS = [
+    "Phase 0 · Dormant Antechamber",
+    "Phase 1 · Resonance Collar",
+    "Phase 2 · Corridor Lattice",
+    "Phase 3 · Echo Frame",
+    "Phase 4 · Flux Engine",
+]
+CREDITS_ROLES = [
+    ("Lead Developer", "SadDiamonds"),
+    ("Tester", "Isaac"),
+    ("Tester & Balancer", "David"),
+]
+
+
+def portal_stage_params(stage, total_components, completion_ratio):
+    total_components = max(1, total_components)
+    stage = max(0, min(stage, total_components))
+    normalized = stage / total_components
+    width = 65 + stage * 4
+    height = 23 + stage * 2
+    tilt = 1.35 - normalized * 0.25
+    ring_radius = 6.5 + completion_ratio * 1.25 + stage * 0.2
+    ring_thickness = 1.4 + completion_ratio * 0.4 + normalized * 0.25
+    halo_gain = 1.8 + normalized * 0.7
+    accent_count = stage
+    beam_pairs = max(0, stage - 1)
+    swirl_speed = 0.15 + normalized * 0.08
+    ripple_strength = 0.08 + stage * 0.015
+    overlay_chars = ["<>", "[]", "{}", "##", "//"]
+    return {
+        "width": width,
+        "height": height,
+        "tilt": tilt,
+        "ring_radius": ring_radius,
+        "ring_thickness": ring_thickness,
+        "halo_gain": halo_gain,
+        "accent_count": accent_count,
+        "beam_pairs": beam_pairs,
+        "swirl_speed": swirl_speed,
+        "ripple_strength": ripple_strength,
+        "overlay_chars": overlay_chars,
+    }
 
 
 def machine_requirement_ratio(component):
@@ -1219,65 +1283,113 @@ def machine_component_bar(component, installed, phase, width=18):
     return f"{color}{''.join(chars)}{Style.RESET_ALL}"
 
 
-def build_machine_energy_line(components, installed_set, phase):
+def build_machine_portal_art(
+    machine,
+    components,
+    installed_set,
+    phase,
+    stage_override=None,
+    completion_override=None,
+    flare=0.0,
+):
     if not components:
-        return ""
-    segments = []
-    for idx, component in enumerate(components):
-        cid = component.get("id")
-        done = cid in installed_set
-        name = component.get("name", "Node")
-        abbr = "".join(part[:1] for part in name.split() if part) or name[:3]
-        abbr = abbr[:3].upper()
-        color = Fore.GREEN if done else Fore.CYAN
-        segments.append(f"{color}[{abbr:<3}]{Style.RESET_ALL}")
-        if idx < len(components) - 1:
-            next_id = components[idx + 1].get("id")
-            next_done = next_id in installed_set
-            if done and next_done:
-                connector = f"{Fore.GREEN}===={Style.RESET_ALL}"
-            else:
-                frame = MACHINE_BEAM_FRAMES[(phase + idx) % len(MACHINE_BEAM_FRAMES)]
-                connector = f"{Fore.MAGENTA}{frame}{Style.RESET_ALL}"
-            segments.append(connector)
-    return " ".join(segments)
-
-
-def build_machine_pulse_bar(components, installed_set, phase, width=28):
-    if not components:
-        return ""
-    width = max(12, int(width))
+        return []
     total = len(components)
     installed_count = sum(1 for comp in components if comp.get("id") in installed_set)
-    ratio = installed_count / total if total else 0.0
-    filled = min(width, int(round(width * ratio)))
-    tail_len = max(0, width - filled)
-    parts = []
-    if filled:
-        parts.append(f"{Fore.GREEN}{'#' * filled}{Style.RESET_ALL}")
-    if tail_len:
-        tail = []
-        for idx in range(tail_len):
-            tail.append(
-                MACHINE_TRAIL_PATTERN[(phase + idx) % len(MACHINE_TRAIL_PATTERN)]
-            )
-        parts.append(f"{Fore.MAGENTA}{''.join(tail)}{Style.RESET_ALL}")
-    return "".join(parts)
+    if completion_override is None:
+        completion_ratio = installed_count / total if total else 0.0
+    else:
+        completion_ratio = max(0.0, min(1.0, float(completion_override)))
+    spark_bank = format_number(machine.get("spark_bank", 0))
+    stage = stage_override if stage_override is not None else installed_count
+    stage_for_params = max(0, min(stage, total))
+    params = portal_stage_params(stage_for_params, total, completion_ratio)
+    width = params["width"]
+    height = params["height"]
+    ring_radius = params["ring_radius"]
+    ring_thickness = params["ring_thickness"]
+    inner_portal = ring_radius - ring_thickness * 0.9
+    halo_radius = ring_radius + ring_thickness * params["halo_gain"]
+    phase_angle = phase * params["swirl_speed"]
+    swirl_offset = phase % len(MACHINE_SWIRL_CHARS)
+    shade_count = len(MACHINE_SHADE_CHARS) - 1
+    flare = max(0.0, min(1.0, float(flare)))
+    accent_angles = []
+    if params["accent_count"] > 0:
+        for idx in range(params["accent_count"]):
+            base_angle = (2 * math.pi * idx / params["accent_count"]) + phase * 0.07
+            accent_angles.append(base_angle)
+    beam_pairs = params.get("beam_pairs", 0)
+    overlays = []
+    art_lines = []
+    for y in range(-height // 2, height // 2 + 1):
+        row_chars = []
+        wobble = 1.0 + params["ripple_strength"] * math.sin(phase_angle + y * 0.12)
+        for x in range(-width // 2, width // 2 + 1):
+            ax = x / 3.0
+            ay = y / (params["tilt"] * wobble)
+            radius = math.hypot(ax, ay)
+            angle = math.atan2(ay, ax)
+            char = " "
+            color = Style.DIM
+            near_accent = False
+            for idx, a in enumerate(accent_angles):
+                if abs(math.atan2(math.sin(angle - a), math.cos(angle - a))) <= 0.18:
+                    near_accent = True
+                    accent_char = params["overlay_chars"][idx % len(params["overlay_chars"])]
+                    break
+            if radius <= inner_portal:
+                swirl_idx = int(((angle + math.pi) / (2 * math.pi)) * len(MACHINE_SWIRL_CHARS))
+                swirl_idx = (swirl_idx + swirl_offset) % len(MACHINE_SWIRL_CHARS)
+                char = MACHINE_SWIRL_CHARS[swirl_idx]
+                glow = 0.5 + 0.5 * math.cos(angle * 3 - phase_angle * 2)
+                glow += flare * 0.35
+                color = Fore.MAGENTA if glow < 0.6 else Fore.LIGHTMAGENTA_EX
+            elif abs(radius - ring_radius) <= ring_thickness:
+                depth = abs(radius - ring_radius) / ring_thickness
+                highlight = 0.65 + 0.35 * math.cos(angle - phase_angle) + flare * 0.25
+                intensity = max(0.0, min(1.0, (1.0 - depth) * highlight))
+                idx = min(shade_count, int(round(intensity * shade_count)))
+                char = MACHINE_SHADE_CHARS[idx]
+                if near_accent:
+                    char = accent_char
+                    color = Fore.YELLOW
+                else:
+                    color = Fore.CYAN if intensity < 0.55 else Fore.WHITE
+            elif radius <= halo_radius:
+                haze = (radius - ring_radius) / max(0.001, halo_radius - ring_radius)
+                idx = min(len(MACHINE_TRAIL_PATTERN) - 1, int(haze * len(MACHINE_TRAIL_PATTERN)))
+                char = MACHINE_TRAIL_PATTERN[idx]
+                color = Fore.BLUE
+            elif radius <= halo_radius + 2.5:
+                char = " ."[(x + y + phase) & 1]
+                color = Fore.LIGHTBLACK_EX
+            else:
+                char = " "
+                color = Style.DIM
+            row_chars.append(f"{color}{char}{Style.RESET_ALL}")
+        art_lines.append("".join(row_chars).rstrip())
+    if beam_pairs > 0:
+        overlays.append(
+            f"      {Fore.LIGHTWHITE_EX}{'=' * (12 + 2 * beam_pairs)}{Style.RESET_ALL}"
+        )
+    art_lines.append("")
+    art_lines.append(
+        f"      Flux Horizon: {Fore.GREEN}{completion_ratio * 100:05.1f}%{Style.RESET_ALL}   Components: {installed_count}/{total}"
+    )
+    art_lines.append(f"      Spark Feed: {Fore.YELLOW}{spark_bank}{Style.RESET_ALL}")
+    phase_label_idx = min(len(PORTAL_PHASE_LABELS) - 1, max(0, stage))
+    art_lines.append(
+        f"      {Fore.LIGHTCYAN_EX}{PORTAL_PHASE_LABELS[phase_label_idx]}{Style.RESET_ALL}"
+    )
+    art_lines.extend(overlays)
+    return art_lines
 
 
 def build_machine_visual_block(machine, cfg, phase):
     components = cfg.get("components", [])
-    if not components:
-        return []
     installed_set = set(machine.get("components", []))
-    lines = []
-    energy_line = build_machine_energy_line(components, installed_set, phase)
-    if energy_line:
-        lines.append(f"{Fore.LIGHTMAGENTA_EX}Conduit{Style.RESET_ALL}: {energy_line}")
-    pulse_line = build_machine_pulse_bar(components, installed_set, phase)
-    if pulse_line:
-        lines.append(f"{Fore.LIGHTMAGENTA_EX}Pulse Track{Style.RESET_ALL}: |{pulse_line}|")
-    return lines
+    return build_machine_portal_art(machine, components, installed_set, phase)
 
 
 def build_machine_component_block(component, installed_set, phase, idx):
@@ -1302,6 +1414,40 @@ def build_machine_component_block(component, installed_set, phase, idx):
         )
     lines.append("")
     return lines
+
+
+def play_escape_reset_animation(machine):
+    cfg = escape_machine_config()
+    if not cfg:
+        return
+    components = cfg.get("components", [])
+    if not components:
+        return
+    installed_set = set(machine.get("components", []))
+    frames = 36
+    for idx in range(frames):
+        work_tick()
+        progress = idx / max(1, frames - 1)
+        flare = min(1.0, progress * 1.2)
+        lines = build_machine_portal_art(
+            machine,
+            components,
+            installed_set,
+            phase=idx * 2,
+            stage_override=len(components),
+            completion_override=max(progress, 0.15),
+            flare=flare,
+        )
+        dots = "." * (1 + (idx % 3))
+        lines.append("")
+        lines.append(
+            f"      {Fore.LIGHTYELLOW_EX}Reality Diverter recalibrating{dots}{Style.RESET_ALL}"
+        )
+        box = boxed_lines(lines, title=" Diverter Ignition ", pad_top=1, pad_bottom=1)
+        render_frame(box)
+        time.sleep(0.05 + progress * 0.04)
+    time.sleep(0.25)
+    clear_screen()
 
 
 def maybe_unlock_escape_machine():
@@ -1365,6 +1511,11 @@ def perform_machine_escape_reset():
     if not machine.get("ready") or machine.get("applied"):
         return False
     multiplier = max(escape_multiplier(), cfg.get("reset_multiplier", 2.0))
+    machine_state_for_anim = copy.deepcopy(machine)
+    try:
+        play_escape_reset_animation(machine_state_for_anim)
+    except Exception:
+        pass
     machine["ready"] = False
     machine["applied"] = True
     machine_snapshot = copy.deepcopy(machine)
@@ -1451,6 +1602,47 @@ def open_escape_machine_panel():
                     return
 
 
+def open_credits_panel():
+    global KEY_PRESSED
+    last_box = None
+    last_size = get_term_size()
+    while True:
+        work_tick()
+        lines = [
+            "Production Credits",
+            "",
+            f"{Fore.LIGHTWHITE_EX}ESCAPE MACHINE PROJECT{Style.RESET_ALL}",
+            "",
+        ]
+        for role, name in CREDITS_ROLES:
+            color = Fore.CYAN if "Lead" in role else Fore.LIGHTMAGENTA_EX
+            if "Balancer" in role:
+                color = Fore.YELLOW
+            lines.append(f"{color}{role}{Style.RESET_ALL}")
+            lines.append(f"   {name}")
+            lines.append("")
+        lines.append(f"{Fore.LIGHTBLACK_EX}Thank you for supporting the loop.{Style.RESET_ALL}")
+        lines.append("Press B to return.")
+        box = boxed_lines(lines, title=" Credits ", pad_top=1, pad_bottom=1)
+        cur_size = get_term_size()
+        frame = "\n".join(box)
+        if frame != last_box or cur_size != last_size:
+            render_frame(box)
+            last_box = frame
+            last_size = cur_size
+        time.sleep(0.05)
+        if not KEY_PRESSED:
+            continue
+        key = KEY_PRESSED
+        KEY_PRESSED = None
+        try:
+            k = key.lower() if isinstance(key, str) else key
+        except Exception:
+            k = key
+        if k in {"b", "q", "enter"}:
+            return
+
+
 def motivation_capacity():
     bonus = max(0, int(game.get("motivation_cap_bonus", 0)))
     capacity = max(1, MOTIVATION_MAX + bonus)
@@ -1517,7 +1709,7 @@ def build_status_ribbon(calc_insp, calc_conc, mot_pct=None, mot_mult=None):
 
 
 def reveal_text(tag, text, placeholder="???"):
-    # Knowledge gates disabled — always reveal full text.
+                                                         
     return text
 
 
@@ -1841,6 +2033,7 @@ def load_game():
     state.setdefault("manual_tap_counter", 0)
     state.setdefault("last_manual_press_ts", 0.0)
     state.setdefault("hold_tip_shown", False)
+    state.setdefault("automation_currency", 0.0)
     state.setdefault("scientific_threshold_exp", SCIENTIFIC_THRESHOLD_DEFAULT)
     state.setdefault("quick_travel_target", "work")
     state.setdefault("motivation_unlocked", False)
@@ -2034,6 +2227,71 @@ def perform_breach_unlock_sequence():
 def set_settings_notice(message, duration=2.5):
     game["settings_notice"] = escape_text(message)
     game["settings_notice_until"] = time.time() + duration
+
+
+def _easter_egg_flags():
+    return game.setdefault("easter_egg_flags", {})
+
+
+def trigger_easter_egg(key, message, duration=3.0, cooldown=EASTER_EGG_DEFAULT_COOLDOWN):
+    if not key or not message:
+        return False
+    flags = _easter_egg_flags()
+    now = time.time()
+    last = float(flags.get(key, 0.0) or 0.0)
+    if last and now - last < cooldown:
+        return False
+    flags[key] = now
+    set_settings_notice(message, duration=duration)
+    return True
+
+
+def track_manual_work_spam(manual):
+    if not manual:
+        return
+    now = time.time()
+    last = float(game.get("manual_work_last_time", 0.0) or 0.0)
+    counter = int(game.get("manual_work_burst", 0))
+    if last and now - last <= MANUAL_WORK_SPAM_WINDOW:
+        counter += 1
+    else:
+        counter = max(0, counter - 1)
+    game["manual_work_last_time"] = now
+    game["manual_work_burst"] = counter
+    if counter >= MANUAL_WORK_SPAM_THRESHOLD and "hold_w_hint" not in SESSION_HINT_FLAGS:
+        SESSION_HINT_FLAGS.add("hold_w_hint")
+        set_settings_notice("u can hold w yk that?", duration=4.0)
+        game["manual_work_burst"] = 0
+
+
+def check_session_easter_eggs():
+    play_time = float(game.get("play_time", 0.0) or 0.0)
+    if play_time >= LONG_SESSION_EGG_SECONDS:
+        trigger_easter_egg(
+            "long_session",
+            "Console whispers: take a stretch break.",
+            duration=4.0,
+            cooldown=999999.0,
+        )
+    hour = time.localtime().tm_hour
+    if 2 <= hour <= 4:
+        trigger_easter_egg(
+            "graveyard_shift",
+            "Graveyard shift acknowledged. Diverter glows pale blue.",
+            duration=4.0,
+            cooldown=3600.0,
+        )
+
+
+def check_collapse_easter_eggs():
+    resets = int(game.get("stability_resets", 0) or 0)
+    if resets >= 3:
+        trigger_easter_egg(
+            "stability_hat_trick",
+            "Stabilizer logs: triple collapse achieved.",
+            duration=3.5,
+            cooldown=999999.0,
+        )
 
 
 def enable_auto_work(show_notice=True):
@@ -2471,9 +2729,9 @@ def render_slot_menu(summaries, highlight_idx=None, phase=0):
             grid.append("   ".join(parts))
         grid.append("")
     
-    # Use ANSI codes to reset cursor and overwrite instead of clearing screen to prevent flicker
+                                                                                                
     buffer = []
-    buffer.append("\033[H")  # Move cursor to top-left
+    buffer.append("\033[H")                           
     
     title = "Select Save File"
     buffer.append("\033[2K\n")
@@ -2483,7 +2741,7 @@ def render_slot_menu(summaries, highlight_idx=None, phase=0):
         buffer.append("\033[2K" + line.center(term_w) + "\n")
     buffer.append("\033[2K\n")
     buffer.append("\033[2K" + "Use arrows/WASD to move, Enter to load, Shift+D to delete, Q to quit.".center(term_w) + "\n")
-    buffer.append("\033[J")  # Clear remaining screen content
+    buffer.append("\033[J")                                  
     
     sys.stdout.write("".join(buffer))
     sys.stdout.flush()
@@ -2674,7 +2932,7 @@ def choose_save_slot():
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     except Exception:
-        # fallback to simple input if arrow handling fails
+                                                          
         while True:
             summaries = collect_slot_summaries()
             render_slot_menu(summaries, highlight_idx=selected)
@@ -2778,7 +3036,6 @@ def ansi_visible_slice(s: str, start: int, width: int) -> str:
 
 
 def wrap_visible_text(text: str, width: int) -> list[str]:
-    """Split ANSI-aware strings so each segment fits the visible width."""
     if width <= 0:
         return [text or ""]
     if text is None:
@@ -2862,30 +3119,6 @@ def render_frame(lines):
     last_render = ""
 
 
-def render_battery(charge, tier=None):
-    if tier is None:
-        tier = game.get("battery_tier", 1)
-    tier_info = BATTERY_TIERS.get(tier, BATTERY_TIERS[1])
-    cap = tier_info["cap"]
-    total_rows = tier_info["rows"]
-    inner_w = 13
-    filled_rows = int((charge / cap) * total_rows)
-    val_str = (str(format_number(int(charge))) + " Ω").center(inner_w)
-    rows = []
-    for i in range(total_rows):
-        if i < filled_rows:
-            rows.append("│" + "█" * inner_w + "│")
-        else:
-            rows.append("│" + " " * inner_w + "│")
-    return [
-        "┌" + "─" * inner_w + "┐",
-        f"│{val_str}│",
-        "├" + "─" * inner_w + "┤",
-        *rows,
-        "└" + "─" * inner_w + "┘",
-    ]
-
-
 def get_inspire_info(upg_id):
     for u in game.get("inspiration_upgrades", []):
         if isinstance(u, dict) and u.get("id") == upg_id:
@@ -2937,12 +3170,11 @@ def tree_catalogue_meta(upgrades):
             "applied_key": "inspiration_upgrades",
         }
     if upgrades is AUTOMATION_UPGRADES:
-        archive_key = "archive"
         return {
-            "pool_name": "Automation Lab",
-            "pool_currency": layer_currency_name(archive_key),
-            "currency_suffix": layer_currency_suffix(archive_key),
-            "holdings_key": "concepts",
+            "pool_name": "Stabilizer Lab",
+            "pool_currency": AUTOMATION_CURRENCY_NAME,
+            "currency_suffix": AUTOMATION_CURRENCY_SUFFIX,
+            "holdings_key": "automation_currency",
             "applied_key": "automation_upgrades",
         }
     layer_key = "archive"
@@ -2963,7 +3195,7 @@ def build_tree_lines(upgrades, get_info_fn, page_key):
     suffix = f" {suffix_raw}" if suffix_raw else ""
     pool_currency = meta.get("pool_currency", "")
     holdings_key = meta.get("holdings_key", "concepts")
-    # Left column in the main UI is ~25% of the terminal width; reserve padding for indent
+                                                                                          
     desc_width = max(int(term_w * 0.25) - 6, 18)
     pages, current, used = [], [], 0
     for i, u in enumerate(upgrades, start=1):
@@ -3320,7 +3552,7 @@ def build_challenge_board_lines():
         if challenge_feature_ready():
             lines.append("Instability Array calibrating — please wait a moment.")
         else:
-            lines.append("Install the Instability Array in the Stabilizer (T) to enable optional trials.")
+            lines.append("Install the Instability Array in the Stabilizer (T) to enable trials.")
         lines.append("")
         lines.append("Press B to return.")
         return lines, entries, page_label, page_idx, total_pages
@@ -3570,11 +3802,6 @@ def open_guide_book():
         if k in {"w", "s"} and topics:
             delta = -1 if k == "w" else 1
             game["guide_cursor"] = (cursor + delta) % len(topics)
-def get_charge_bonus():
-    charge = game.get("charge", 0)
-    return 1.5 ** (math.log10(charge + 0.1))
-
-
 def compute_gain_and_delay(auto=False):
     base_gain = BASE_MONEY_GAIN
     base_delay = BASE_WORK_DELAY
@@ -3642,10 +3869,8 @@ def compute_gain_and_delay(auto=False):
         elif t in ("work_mult", "reduce_delay", "reduce_cd"):
             delay_mult *= val
         elif t == "unlock_focus" and lvl > 0:
-            # Focus system retired; keep flag for old saves
+                                                           
             pass
-        elif t == "unlock_charge" and lvl > 0:
-            game["charge_unlocked"] = True
         elif t == "unlock_rpg" and lvl > 0:
             game["breach_key_obtained"] = True
 
@@ -3656,14 +3881,6 @@ def compute_gain_and_delay(auto=False):
         ratio = motivation / max(1, cap)
         motivation_mult = 1 + ratio * (peak - 1)
         gain_mult *= motivation_mult
-    buff_mult = get_charge_bonus()
-    for t in CHARGE_THRESHOLDS:
-        if t["amount"] in game.get("charge_threshold", []):
-            rtype, rval = t["reward_type"], t["reward_value"]
-            if rtype in ("x¤", "xmult"):
-                gain_mult *= rval * buff_mult
-            elif rtype == "-cd":
-                delay_mult *= rval**buff_mult
     time_reward = get_time_reward_multiplier()
     game["time_reward_multiplier"] = time_reward
     gain_mult *= get_time_money_multiplier(time_reward)
@@ -3806,7 +4023,7 @@ def render_desk_table():
             continue
         seen.add(target_id)
         owned_ids.append(target_id)
-    # keep the order from config.UPGRADES (don't sort) so placement is predictable
+                                                                                  
     owned_arts = [uid for uid in owned_ids if uid in UPGRADE_ART]
 
     empty_indices = [
@@ -3918,6 +4135,7 @@ def perform_work(gain, eff_delay, manual=False):
         return False
     game["money"] += gain
     game["money_since_reset"] += gain
+    track_manual_work_spam(manual)
     if manual:
         mark_known("ui_work_prompt")
     if game.get("motivation_unlocked", False):
@@ -3962,9 +4180,6 @@ def wipe_to_stability_baseline(state):
             "money": 0.0,
             "money_since_reset": 0.0,
             "fatigue": 0,
-            "charge": 0.0,
-            "best_charge": 0.0,
-            "charge_threshold": [],
             "motivation": 0,
             "owned": [],
             "upgrade_levels": {},
@@ -3982,11 +4197,13 @@ def perform_stability_collapse(manual=False):
         return
     money_pool = max(game.get("money", 0.0), game.get("money_since_reset", 0.0))
     reward = calculate_stability_reward(money_pool)
-    game["stability_currency"] = game.get("stability_currency", 0.0) + reward
+    grant_stability_currency(game, reward)
     machine = escape_machine_state()
     machine["spark_bank"] = machine.get("spark_bank", 0) + reward
+    catalysts = grant_automation_currency(game, reward)
     handle_machine_progress_event("stability")
     game["stability_resets"] = game.get("stability_resets", 0) + 1
+    check_collapse_easter_eggs()
     if manual:
         game["stability_manual_resets"] = game.get("stability_manual_resets", 0) + 1
     lines = [
@@ -3994,6 +4211,10 @@ def perform_stability_collapse(manual=False):
         f"Recovered {format_number(reward)} {STABILITY_CURRENCY_NAME}.",
         "Spend sparks in the stabilizer menu (T).",
     ]
+    if catalysts:
+        lines.append(
+            f"Refined {format_number(catalysts)} {AUTOMATION_CURRENCY_NAME} for the Automation Lab."
+        )
     tmp = boxed_lines(lines, title=" Collapse ", pad_top=1, pad_bottom=1)
     render_frame(tmp)
     time.sleep(1.2)
@@ -4018,19 +4239,25 @@ def manual_stability_collapse():
         set_settings_notice("Escape window sealed; disable the lock before collapsing.")
         return False
     perform_stability_collapse(manual=True)
-    set_settings_notice("Manual collapse triggered. Sparks stored.", duration=3.5)
+    set_settings_notice(
+        "Manual collapse triggered. Sparks stored; catalysts refined.",
+        duration=3.5,
+    )
     return True
 
 
 def work_tick():
-    global last_tick_time, work_timer
+    global last_tick_time, work_timer, _LAST_GUIDE_REFRESH
     now = time.time()
     delta = now - last_tick_time
     last_tick_time = now
     game["play_time"] = game.get("play_time", 0.0) + delta
+    check_session_easter_eggs()
     ensure_challenge_feature()
     ensure_field_guide_unlock()
-    refresh_guide_topics()
+    if now - _LAST_GUIDE_REFRESH >= GUIDE_REFRESH_INTERVAL:
+        refresh_guide_topics()
+        _LAST_GUIDE_REFRESH = now
     advance_time_flow(delta)
     if not game.get("wake_timer_infinite", False):
         current_timer = game.get("wake_timer", WAKE_TIMER_START)
@@ -4059,10 +4286,6 @@ def work_tick():
         work_timer += delta
         if work_timer >= eff_delay:
             perform_work(gain, eff_delay, manual=False)
-    if game.get("charge_unlocked", False):
-        game["charge"] += delta
-        game["best_charge"] = max(game["best_charge"], game["charge"])
-        check_charge_thresholds()
     if refresh_knowledge_flags():
         save_game()
 
@@ -4213,7 +4436,7 @@ def get_time_velocity_bonus_multiplier():
     if velocity <= 1.0:
         return 1.0
     bonus = max(0.0, math.sqrt(velocity) - 1.0)
-    # Diminishing returns keep the bonus steady even with extreme velocity.
+                                                                           
     return 1.0 + min(2.5, bonus * 0.35)
 
 
@@ -4248,15 +4471,15 @@ def build_time_hint_line():
         return ""
     if not timeflow_active():
         return (
-            f"{Fore.BLUE}Timeflow offline{Style.RESET_ALL} — lock the wake window open"
-            " to start building its reward multiplier."
+            f"{Fore.BLUE}Timeflow offline{Style.RESET_ALL} — seal the wake window in"
+            " the Stabilizer (T)."
         )
     reward = get_time_reward_multiplier()
     velocity = max(1.0, game.get("time_velocity", 1.0))
     money_mult = get_time_money_multiplier(reward)
     return (
-        f"{Fore.BLUE}Timeflow{Style.RESET_ALL}: velocity ×{velocity:.2f} builds"
-        f" reward ×{reward:.2f}, boosting income ×{money_mult:.2f}."
+        f"{Fore.BLUE}Timeflow{Style.RESET_ALL} vel×{velocity:.2f} |"
+        f" reward×{reward:.2f} | income×{money_mult:.2f}"
     )
 
 
@@ -4264,9 +4487,10 @@ def build_timeflow_focus_lines():
     if not timeflow_display_unlocked():
         return []
     lines = [f"{Fore.BLUE}Timeflow Directive{Style.RESET_ALL}"]
+    bullet = lambda text: lines.append(f"• {text}")
     phase_lock = next((u for u in WAKE_TIMER_UPGRADES if u.get("grant_infinite")), None)
     if game.get("wake_timer_infinite", False):
-        lines.append("Phase Lock sealed — keep loops running to build velocity.")
+        bullet("Window sealed — stay active to build velocity.")
     elif phase_lock:
         levels = get_wake_upgrade_levels()
         phase_lock_id = phase_lock.get("id")
@@ -4275,7 +4499,7 @@ def build_timeflow_focus_lines():
         cost = format_number(wake_upgrade_cost(phase_lock, current_level))
         sparks = format_number(game.get("stability_currency", 0))
         if current_level >= required:
-            lines.append("Phase Lock stabilized — finish a collapse to ignite Timeflow.")
+            bullet("Phase Lock ready — finish a collapse to ignite Timeflow.")
         else:
             remaining = required - current_level
             bonus = wake_upgrade_next_bonus(
@@ -4284,21 +4508,19 @@ def build_timeflow_focus_lines():
                 "time_bonus",
                 "time_bonus_scale",
             )
-            bonus_label = f" (+{int(round(bonus))}s window)" if bonus > 0 else ""
-            lines.append(
-                f"Calibrate Phase Lock ({remaining} install(s) to seal){bonus_label}."
+            bonus_label = f"+{int(round(bonus))}s" if bonus > 0 else "time"
+            bullet(
+                f"Phase Lock {current_level}/{required} — {bonus_label} per install."
             )
             if sparks_visible():
-                lines.append(
-                    f"Next install costs {cost} {STABILITY_CURRENCY_NAME}. Stored Sparks: {sparks}."
-                )
+                bullet(f"Next install {cost} Sparks (bank {sparks}).")
             else:
-                lines.append("Sparks hidden until the Diverter calls for them again.")
-            lines.append("Press [T] at the desk to stabilize.")
+                bullet("Sparks dormant until the Diverter calls again.")
+            bullet("Press [T] to install.")
     else:
-        lines.append("Stabilize the loop to unlock Timeflow.")
+        bullet("Spend Sparks in Stabilizer (T) to unlock Phase Lock.")
     if not challenge_completed("stability_drill"):
-        lines.append("Complete Spark Uprising to proceed.")
+        bullet("Clear Spark Uprising before attempting.")
     return lines
 
 
@@ -4415,13 +4637,6 @@ def build_escape_banner_lines(width):
     return lines
 
 
-def check_charge_thresholds():
-    earned = game.setdefault("charge_threshold", [])
-    total = game.get("best_charge", 0)
-    for t in CHARGE_THRESHOLDS:
-        req = t["amount"]
-        if req not in earned and total >= req:
-            earned.append(req)
 def get_tree_selection(upgrades, page_key, digit):
     term_w, term_h = get_term_size()
     max_lines = term_h // 2 - 6
@@ -4643,7 +4858,7 @@ def calculate_concepts(money_since_reset):
         elif u["type"] == "concept_mult":
             final_mult *= val
             
-    # Apply Resonance Efficiency to Echo gain as a bonus
+                                                        
     if game.get("layer", 0) >= 2:
         signal_bonus = max(0.0, get_resonance_efficiency())
         final_mult *= 1.0 + signal_bonus
@@ -4700,10 +4915,6 @@ def wipe_to_inspiration_baseline(state):
             "upgrade_levels": {},
             "inspiration_unlocked": True,
             "layer": max(state.get("layer", 0), 1),
-            "charge": 0.0,
-            "best_charge": 0.0,
-            "charge_threshold": [],
-            "charge_unlocked": False,
             "motivation": config.MOTIVATION_MAX,
         }
     )
@@ -4790,10 +5001,6 @@ def wipe_to_concept_baseline(state):
             "motivation_unlocked": False,
             "motivation_cap_bonus": 0,
             "motivation_strength_mult": 1.0,
-            "charge": 0.0,
-            "best_charge": 0.0,
-            "charge_threshold": [],
-            "charge_unlocked": False,
         }
     )
 
@@ -4904,40 +5111,43 @@ def open_wake_timer_menu(auto_invoked=False):
             desc = upg.get("desc")
             if desc:
                 lines.append(f"   {desc}")
-            effect_lines = []
+            bonus_bits = []
             next_time = wake_upgrade_next_bonus(upg, current_level, "time_bonus", "time_bonus_scale")
             total_time = wake_upgrade_total_bonus(upg, current_level, "time_bonus", "time_bonus_scale")
             if next_time > 0 and (not max_level or current_level < max_level):
-                effect_lines.append(
-                    f"Next install adds +{int(round(next_time))}s (total +{int(round(total_time))}s)."
+                bonus_bits.append(
+                    f"+{int(round(next_time))}s (Σ {int(round(total_time))}s)"
                 )
             elif total_time > 0:
-                effect_lines.append(f"Total bonus +{int(round(total_time))}s.")
+                bonus_bits.append(f"Σ +{int(round(total_time))}s")
             reward_step = wake_upgrade_next_bonus(upg, current_level, "stability_bonus", "stability_bonus_scale")
             reward_total = wake_upgrade_total_bonus(upg, current_level, "stability_bonus", "stability_bonus_scale")
             if reward_step > 0:
-                effect_lines.append(
-                    f"Next install boosts Spark yield +{reward_step * 100:.1f}%."
+                bonus_bits.append(
+                    f"Sparks +{reward_step * 100:.1f}% (Σ {reward_total * 100:.1f}%)"
                 )
-            if reward_total > 0:
-                effect_lines.append(
-                    f"Cumulative Spark bonus +{reward_total * 100:.1f}%."
-                )
+            elif reward_total > 0:
+                bonus_bits.append(f"Sparks Σ +{reward_total * 100:.1f}%")
+            extras = []
             if upg.get("grant_infinite"):
                 required = max(1, int(upg.get("infinite_level", 1)))
                 if current_level < required:
                     remaining_installs = required - current_level
-                    effect_lines.append(
-                        f"Seal the window after {remaining_installs} more install(s)."
-                    )
+                    extras.append(f"Seal in {remaining_installs} install(s)")
                 else:
-                    effect_lines.append("Window sealed; extra installs amplify Sparks.")
+                    extras.append("Window sealed; extra installs boost Sparks")
             if upg.get("unlock_upgrades"):
-                effect_lines.append("Unlocks the upgrade bay.")
+                extras.append("Unlocks upgrade bay")
             if upg.get("unlock_challenges"):
-                effect_lines.append("Unlocks the challenge board.")
-            for info in effect_lines:
-                lines.append(f"   {info}")
+                extras.append("Unlocks challenges")
+            if bonus_bits:
+                lines.append(
+                    f"   {Style.DIM}{' | '.join(bonus_bits)}{Style.RESET_ALL}"
+                )
+            if extras:
+                lines.append(
+                    f"   {Style.DIM}{' | '.join(extras)}{Style.RESET_ALL}"
+                )
             lines.append("")
         lines += ["Press number to install, B to back."]
         box = boxed_lines(lines, title=" Stabilize ", pad_top=1, pad_bottom=1)
@@ -5208,9 +5418,7 @@ def buy_idx_upgrade(upg):
         if not game.get("upgrades_unlocked", False):
             game["upgrades_unlocked"] = True
         mark_known(f"upgrade_{uid}")
-        if upg.get("type") == "unlock_charge" and current_level > 0:
-            game["charge_unlocked"] = True
-        elif upg.get("type") == "unlock_rpg" and current_level > 0:
+        if upg.get("type") == "unlock_rpg" and current_level > 0:
             game["rpg_unlocked"] = True
         msg = f"Purchased {upg['name']} (Lv {current_level}/{max_level})."
     tmp = boxed_lines([msg], title=" UPGRADE BAY ", pad_top=1, pad_bottom=1)
@@ -5542,7 +5750,7 @@ def render_ui(screen="work"):
                 )
             else:
                 top_left_lines.append(
-                    f"{Fore.LIGHTBLACK_EX}Complete S-Chal-1 to unlock {corridor_name}.{Style.RESET_ALL}"
+                    f"{Fore.LIGHTBLACK_EX}Complete Spark Uprising to unlock {corridor_name}.{Style.RESET_ALL}"
                 )
 
         if game.get("motivation_unlocked", False):
@@ -5613,7 +5821,7 @@ def render_ui(screen="work"):
                 ]
         elif inspiration_panel_visible:
             bottom_left_lines.append(
-                f"{Fore.LIGHTBLACK_EX}Optional: Clear every challenge to unlock {archive_name}.{Style.RESET_ALL}"
+                f"{Fore.LIGHTBLACK_EX}Clear every challenge to unlock {archive_name}.{Style.RESET_ALL}"
             )
 
         if automation_lab_available():
@@ -5629,6 +5837,7 @@ def render_ui(screen="work"):
                 "",
                 auto_title,
                 f"Ranks invested: {invested}  Nodes unlocked: {owned_nodes}/{total_nodes}",
+                f"Fuel: {Fore.LIGHTMAGENTA_EX}{format_number(game.get('automation_currency', 0))}{Style.RESET_ALL} {AUTOMATION_CURRENCY_NAME}",
             ]
             if screen == "automation":
                 auto_lines, auto_footer, _ = build_tree_lines(
@@ -5687,6 +5896,11 @@ def render_ui(screen="work"):
             middle_lines.append("[T] Stabilize window")
             if manual_collapse_available():
                 middle_lines.append("[L] Collapse now (trial-only reset)")
+        if automation_lab_available():
+            catalyst_amount = format_number(game.get("automation_currency", 0))
+            middle_lines.append(
+                f"{AUTOMATION_CURRENCY_NAME}: {Fore.LIGHTMAGENTA_EX}{catalyst_amount}{Style.RESET_ALL}"
+            )
         middle_lines.append("")
         middle_lines += render_desk_table()
         total_money = total_earnings
@@ -5721,7 +5935,7 @@ def render_ui(screen="work"):
         else:
             middle_lines.append("")
 
-        work_prompt = reveal_text("ui_work_prompt", "Press W to work", "Press W...")
+        work_prompt = reveal_text("ui_work_prompt", "Hold W to work", "Hold W...")
         auto_prompt = reveal_text("ui_auto_prompt", "Automation: ONLINE", "Automation: ???")
         if game.get("auto_work_unlocked", False):
             middle_lines.append(auto_prompt)
@@ -5738,7 +5952,7 @@ def render_ui(screen="work"):
             option_payload += "[3] Automation  "
         if manual_collapse_available():
             option_payload += "[L] Collapse  "
-        option_payload += "[Q] Quit"
+        option_payload += "[Q] Quit  [V] Credits"
         options_known = is_known("ui_options_full")
         if mystery_phase and not options_known:
             option_line = reveal_text(
@@ -5914,7 +6128,6 @@ def typewriter_message(lines, title, speed=0.03):
     display_lines = [""] * len(lines)
 
     def _consume_skip_request():
-        """Return True if Z was pressed (consuming the key)."""
         global KEY_PRESSED
         if not KEY_PRESSED:
             return False
@@ -5923,7 +6136,6 @@ def typewriter_message(lines, title, speed=0.03):
         return isinstance(raw, str) and raw.lower() == "z"
 
     def _wait_for_z(prompt_text):
-        """Pause until the player presses Z, unless listener is disabled."""
         if not listener_enabled:
             return
         prompt_lines = display_lines.copy()
@@ -5971,7 +6183,7 @@ def update_resonance(delta):
     if not resonance_system_active():
         return
 
-    # Initialize if missing
+                           
     if "resonance_val" not in game:
         game["resonance_val"] = RESONANCE_START
         game["resonance_target"] = 50.0
@@ -5982,7 +6194,7 @@ def update_resonance(delta):
     cooldown = max(0.0, game.get("resonance_repick_cooldown", 0.0) - delta)
     game["resonance_repick_cooldown"] = cooldown
 
-    # Target wanders more when unstable
+                                       
     target = game["resonance_target"]
     target += (random.random() - 0.5) * delta * 10.0 * instability
     target = max(10, min(90, target))
@@ -5992,10 +6204,10 @@ def update_resonance(delta):
     drift_speed = RESONANCE_DRIFT_RATE * (0.75 + instability)
     val += game["resonance_drift_dir"] * drift_speed * delta
 
-    # Add jitter proportional to instability
+                                            
     val += (random.random() - 0.5) * instability * 4.0
 
-    # Gentle spring force to pull back toward the sweet spot
+                                                            
     window = RESONANCE_TARGET_WIDTH
     diff = target - val
     if abs(diff) > window:
@@ -6007,11 +6219,11 @@ def update_resonance(delta):
                 game.get("resonance_repick_cooldown", 0.0), 0.2
             )
 
-    # Erratic jumps during high instability
+                                           
     if random.random() < RESONANCE_JUMP_CHANCE * instability * delta:
         val += (random.random() - 0.5) * RESONANCE_JUMP_POWER * max(1.0, instability)
 
-    # Decide whether to re-choose drift direction (rate now governed by cooldown)
+                                                                                 
     if cooldown <= 0:
         toward_target = 1 if target > val else -1
         bias = min(0.25, stabilizer_level * 0.05)
@@ -6024,7 +6236,7 @@ def update_resonance(delta):
         max_cd = 0.6 + stabilizer_level * 0.12
         game["resonance_repick_cooldown"] = random.uniform(min_cd, max_cd)
 
-    # Bounce off edges
+                      
     if val <= 0 or val >= RESONANCE_MAX:
         game["resonance_drift_dir"] *= -1
     game["resonance_val"] = max(0, min(RESONANCE_MAX, val))
@@ -6046,7 +6258,6 @@ def get_resonance_instability():
 
 
 def get_resonance_efficiency():
-    """Returns the current signal bonus (0.0 == +0%)."""
     if not resonance_system_active():
         return 0.0
 
@@ -6057,7 +6268,7 @@ def get_resonance_efficiency():
     dist = abs(val - target)
     if dist <= width:
         needle_ratio = min(1.0, dist / width)
-        bonus = 1.5 - 0.7 * needle_ratio  # 150% bonus in the center, 80% on the edge
+        bonus = 1.5 - 0.7 * needle_ratio                                             
         return max(0.0, bonus)
 
     overflow = dist - width
@@ -6065,7 +6276,7 @@ def get_resonance_efficiency():
     normalized = min(1.0, overflow / span)
     penalty = (normalized ** 0.7) * 1.25
     raw = max(0.0, 1.0 - penalty)
-    return 0.8 * raw  # aligns the falloff with the inner edge bonus
+    return 0.8 * raw                                                
     
 
 _RESONANCE_GRADIENT = [
@@ -6111,7 +6322,7 @@ def build_resonance_bar():
             chars[i] = "="
             colors[i] = gradient_color(ratio)
         
-    # Draw needle
+                 
     val_pct = val / RESONANCE_MAX
     val_idx = int(val_pct * (bar_len - 1))
     val_idx = max(0, min(bar_len - 1, val_idx))
@@ -7083,7 +7294,7 @@ def tick_rpg_state(rpg):
         step = max(0.02, rpg.get("transition_step_time", 0.05))
         last_step = rpg.get("transition_last_step", time.time())
         now = time.time()
-        # Catch-up loop in case the main loop slowed down
+                                                         
         safety = 0
         while reveal < total and now - last_step >= step and safety < total:
             reveal += 1
@@ -8774,6 +8985,11 @@ def main_loop():
                         current_screen = "work"
                         clear_screen()
                         open_escape_machine_panel()
+                        render_ui(screen=current_screen)
+                    elif k == "v" and current_screen == "work":
+                        current_screen = "work"
+                        clear_screen()
+                        open_credits_panel()
                         render_ui(screen=current_screen)
                     elif k == "i":
                         reset_for_inspiration()
