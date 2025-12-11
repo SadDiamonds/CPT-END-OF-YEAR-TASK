@@ -4,9 +4,12 @@
 
 ## Instructions:
 
-Unzip folder then launch RUN_GAME.PY ON **WINDOWS** OR IF ON **MAC**, GO INTO TERMINAL AND `cd` TOWARDS THE FOLDER, THEN RUN `python3 main.py`, alternatively, you can double click `run_game_mac` in the folder.
+1. Unzip the download.
+2. Open the new `launchers/` folder.
+3. Double-click `run_game_win.bat` on **Windows** or `run_game_mac.command` on **macOS**.
+4. Prefer Linux / custom setups? Run `python main.py` (or `python3 main.py`) from the project root.
 
-**Fullscreen the game please for the best possible experience**
+Fullscreen is optional—toggle `AUTO_FULLSCREEN` inside `config.py` if you want the old forced-behaviour back.
 
 ## Download:
 https://github.com/SadDiamonds/CPT-END-OF-YEAR-TASK/releases/latest

@@ -9,6 +9,9 @@ BASE_MONEY_GAIN = 1.0
 BASE_WORK_DELAY = 5.0
 BASE_MONEY_MULT = 1.0
 
+# Window/terminal behaviour
+AUTO_FULLSCREEN = False
+
 GUIDE_TOPICS = [
     {
         "id": "wake_basics",

@@ -241,6 +241,8 @@ LARGEST_PANEL_MIN_ROWS = max(TERMINAL_TARGET_ROWS, MACHINE_PANEL_MIN_ROWS)
 
 def request_fullscreen():
     global _FULLSCREEN_REQUESTED
+    if not getattr(config, "AUTO_FULLSCREEN", True):
+        return False
     if _FULLSCREEN_REQUESTED:
         return False
     _FULLSCREEN_REQUESTED = True
