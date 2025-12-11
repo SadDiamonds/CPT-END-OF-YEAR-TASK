@@ -9303,7 +9303,10 @@ def main_loop():
                     elif k == "r" and current_screen == "work":
                         challenge_layer_reset()
                     elif k == "l" and current_screen == "work":
-                        if manual_collapse_available():
+                        if manual_collapse_available() and config.WAKE_TIMER_UPGRADES.get("manual_stability_collapse", False):
+                            manual_stability_collapse()
+                            render_ui(screen=current_screen)
+                        elif manual_collapse_available():
                             manual_stability_collapse()
                             render_ui(screen=current_screen)
                         else:
