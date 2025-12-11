@@ -1,3 +1,11 @@
+# --- Animated Upgrade Art Frames (upgrade_id: list of frame keys) ---
+UPGRADE_ANIM_FRAMES = {
+    "lamp": ["lamp_0", "lamp_1"],
+    "plant": ["plant_0", "plant_1"],
+    "keyboard": ["keyboard_soft_0", "keyboard_soft_1"],
+    "mech_keyboard": ["mech_keyboard_soft_0", "mech_keyboard_soft_1"],
+    # Add more upgrades as needed
+}
 import math
 
 GAME_TITLE = "Mirrorwake Protocol"

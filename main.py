@@ -1,3 +1,8 @@
+"""
+main.py — game entry and logic. ASCII animation helpers are placed later
+after the UI helper functions (boxed_lines, render_frame) so they can
+use the rendering utilities without ordering issues.
+"""
 import json, os, time, sys, threading, shutil, math, select, random, textwrap, subprocess, re, traceback, copy
 from collections import deque
 
@@ -31,6 +36,7 @@ except ImportError:
 from ascii_art import (
     LAYER_0_DESK,
     UPGRADE_ART,
+    UPGRADE_ANIM_ART_FRAMES,
     RPG_ICON_ART,
     RPG_DEFAULT_ICON_ART,
     RPG_ICON_HEIGHT,
@@ -3295,6 +3301,36 @@ def render_frame(lines):
     last_render = ""
 
 
+# --- Animated Upgrade Art Helpers ---
+from config import UPGRADE_ANIM_FRAMES
+
+def animate_upgrade_art(upgrade_id, duration=1.0, frame_delay=0.18):
+    """Display animated ASCII art for a given upgrade."""
+    frame_keys = UPGRADE_ANIM_FRAMES.get(upgrade_id)
+    if not frame_keys:
+        return
+    start = time.time()
+    idx = 0
+    while time.time() - start < duration:
+        key = frame_keys[idx % len(frame_keys)]
+        art = UPGRADE_ANIM_ART_FRAMES.get(key)
+        if not art:
+            break
+        box = boxed_lines(art, title=f" {upgrade_id.title()} Upgrade ", pad_top=1, pad_bottom=1)
+        render_frame(box)
+        time.sleep(frame_delay)
+        idx += 1
+
+def maybe_animate_upgrade(upgrade_id):
+    """Trigger an upgrade animation if configured."""
+    try:
+        if upgrade_id in UPGRADE_ANIM_FRAMES:
+            animate_upgrade_art(upgrade_id)
+    except Exception:
+        # Fail silently; animation is cosmetic
+        pass
+
+
 def get_inspire_info(upg_id):
     for u in game.get("inspiration_upgrades", []):
         if isinstance(u, dict) and u.get("id") == upg_id:
@@ -4372,6 +4408,22 @@ def render_desk_table():
                                                                                   
     owned_arts = [uid for uid in owned_ids if uid in UPGRADE_ART]
 
+    # Soft animation overrides: replace static art with timed frames
+    anim_overrides = {}
+    try:
+        now = time.time()
+        # keyboard soft animation (toggle every 0.6s)
+        if "keyboard" in owned_ids:
+            phase = int(now / 0.6) % 2
+            key = "keyboard_soft_0" if phase == 0 else "keyboard_soft_1"
+            anim_overrides["keyboard"] = UPGRADE_ANIM_ART_FRAMES.get(key, UPGRADE_ART.get("keyboard"))
+        if "mech_keyboard" in owned_ids:
+            phase = int(now / 0.6) % 2
+            key = "mech_keyboard_soft_0" if phase == 0 else "mech_keyboard_soft_1"
+            anim_overrides["mech_keyboard"] = UPGRADE_ANIM_ART_FRAMES.get(key, UPGRADE_ART.get("mech_keyboard"))
+    except Exception:
+        anim_overrides = {}
+
     empty_indices = [
         i for i, line in enumerate(table) if line.startswith("║") and line.endswith("║")
     ]
@@ -4406,7 +4458,7 @@ def render_desk_table():
     remaining_slots = [i for i in empty_indices if i not in used_indices]
     empty_idx_iter = iter(reversed(remaining_slots))
     for uid in owned_arts:
-        art = UPGRADE_ART.get(uid)
+        art = anim_overrides.get(uid, UPGRADE_ART.get(uid))
         if not art:
             continue
         art_height = len(art)
@@ -5147,6 +5199,11 @@ def buy_tree_upgrade(upgrades, idx, *, auto=False, save=True):
             pad_bottom=1,
         )
         render_frame(tmp)
+        # Cosmetic animation for this upgrade (if available)
+        try:
+            maybe_animate_upgrade(upg.get("id") if isinstance(upg, dict) else upg)
+        except Exception:
+            pass
         time.sleep(0.5)
     return True
 
@@ -5772,6 +5829,11 @@ def buy_idx_upgrade(upg):
         msg = f"Purchased {upg['name']} (Lv {current_level}/{max_level})."
     tmp = boxed_lines([msg], title=" UPGRADE BAY ", pad_top=1, pad_bottom=1)
     render_frame(tmp)
+    # Try to animate the purchased upgrade (cosmetic)
+    try:
+        maybe_animate_upgrade(uid)
+    except Exception:
+        pass
     time.sleep(0.7)
     save_game()
 
