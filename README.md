@@ -17,7 +17,7 @@ cd /path/to/CPT-END-OF-YEAR-TASK
 python3 main.py
 ```
 
-Note: On macOS you can also run the provided `run_game_mac.command` from Terminal with `sh run_game_mac.command` (no pre-approval required). Fullscreen behaviour is controlled by `AUTO_FULLSCREEN` in `config.py`.
+Note: On macOS you can also run the provided `run_game_mac.command` from Terminal with `sh run_game_mac.command` (no pre-approval required). Fullscreen behaviour is controlled by `AUTO_FULLSCREEN` in `config.py`. However, this feature is still experimental, so it is recommended to fullscreen, then apply calculations for maxmimum experience of the game.
 
 ## Download:
 https://github.com/SadDiamonds/CPT-END-OF-YEAR-TASK/releases/latest

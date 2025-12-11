@@ -71,10 +71,10 @@ GUIDE_TOPICS = [
         "requires": {"auto_work_unlocked": True},
         "requires_known": ["escape_route"],
         "lines": [
-            "Auto-work repeats the basic cycle, while auto-buyers spend money using the Automation Lab.",
-            "Delay and gain modifiers stack from upgrades, Inspiration, Concepts, and active challenges.",
-            "Automation synergy scales with total resets, so keep prestiging even after unlocking the lab.",
-            "Bits refine through the Automation Lab exchange and only fuel its nodes.",
+            "Auto-work repeats the basic cycle; auto-buyers spend money using the Automation Lab.",
+            "Open the Automation Lab with [3] and refine money into Bits using [E] (max) or [R] (custom).",
+            "Automation upgrades modify delay, payout and synergy — their cost scales so they don't max instantly.",
+            "Bits (Signal currency) are produced via the Lab exchange and spent to unlock nodes.",
         ],
     },
     {
@@ -150,11 +150,10 @@ CHALLENGE_LAYER_TARGET = {
     "inspiration": 1,
     "concept": 2,
 }
-
 CHALLENGE_RESET_LAYER_KEY = {
     "stability": "wake",
-    "inspiration": "corridor",
-    "concept": "archive",
+    "corridor": "corridor",
+    "archive": "archive",
 }
 
 AUTO_ONLY_UPGRADE_TYPES = {"work_mult", "reduce_delay", "reduce_cd"}
@@ -162,8 +161,11 @@ MANUAL_TAP_THRESHOLD = 12
 MANUAL_TAP_GAP = 0.35
 
 BROWSER_CURRENCY_NAME = "Cache Shards"
+# Short notification display duration when buying from the browser
 BROWSER_NOTICE_DURATION = 3.0
-SHOPKEEPER_NAME = "Mysterious Merchant"
+# NPC/shopkeeper display name
+SHOPKEEPER_NAME = "Cache Vendor"
+
 BROWSER_UPGRADES = [
     {
         "id": "hp_matrix",
@@ -171,20 +173,17 @@ BROWSER_UPGRADES = [
         "cost": 3,
         "desc": "+60 Max HP after each reset",
         "effect": {"max_hp": 60},
+        "max_level": 6,
+        "cost_mult": 2.05,
     },
     {
-        "id": "atk_array",
-        "name": "Signal Bracer",
+        "id": "atk_implant",
+        "name": "Retinal Amplifier",
         "cost": 4,
         "desc": "+5 ATK baseline",
         "effect": {"atk": 5},
-    },
-    {
-        "id": "def_shell",
-        "name": "Mirror Shell",
-        "cost": 4,
-        "desc": "+3 DEF baseline",
-        "effect": {"def": 3},
+        "max_level": 5,
+        "cost_mult": 2.10,
     },
     {
         "id": "gold_boot",
@@ -192,6 +191,8 @@ BROWSER_UPGRADES = [
         "cost": 5,
         "desc": "Begin each loop with +150 gold",
         "effect": {"gold": 150},
+        "max_level": 6,
+        "cost_mult": 2.20,
     },
 ]
 
