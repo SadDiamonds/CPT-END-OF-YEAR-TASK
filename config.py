@@ -262,6 +262,7 @@ WAKE_TIMER_UPGRADES = [
         "time_bonus_scale": 1.18,
         "accent": "RED",
         "grant_infinite": True,
+        "grant_manual_reset": True,
         "infinite_level": 3,
         "stability_bonus": 0.2,
         "stability_bonus_scale": 1.3,

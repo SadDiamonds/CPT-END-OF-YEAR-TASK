@@ -6221,8 +6221,10 @@ def render_ui(screen="work"):
                     f"{STABILITY_CURRENCY_NAME}: {Fore.MAGENTA}{sparks_amount}{Style.RESET_ALL}"
                 )
             middle_lines.append("[T] Stabilize window")
-            if manual_collapse_available():
-                middle_lines.append("[L] Collapse now (trial-only reset)")
+            if manual_collapse_available() and config.WAKE_TIMER_UPGRADES.get("grant_manual_reset", False):
+                middle_lines.append("[L] Collapse now")
+            elif manual_collapse_available():
+                middle_lines.append("[L] Collapse now")
         if automation_lab_available():
             signal_amount = format_number(game.get("automation_currency", 0))
             middle_lines.append(
