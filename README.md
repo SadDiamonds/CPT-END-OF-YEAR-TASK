@@ -5,11 +5,19 @@
 ## Instructions:
 
 1. Unzip the download.
-2. Open the new `launchers/` folder.
-3. Double-click `run_game_win.bat` on **Windows** or `run_game_mac.command` on **macOS**.
-4. Prefer Linux / custom setups? Run `python main.py` (or `python3 main.py`) from the project root.
+2. Open a Terminal and change into the game folder:
 
-Fullscreen is optional—toggle `AUTO_FULLSCREEN` inside `config.py` if you want the old forced-behaviour back.
+```bash
+cd /path/to/CPT-END-OF-YEAR-TASK
+```
+
+3. Start the game with Python 3 (recommended):
+
+```bash
+python3 main.py
+```
+
+Note: On macOS you can also run the provided `run_game_mac.command` from Terminal with `sh run_game_mac.command` (no pre-approval required). Fullscreen behaviour is controlled by `AUTO_FULLSCREEN` in `config.py`.
 
 ## Download:
 https://github.com/SadDiamonds/CPT-END-OF-YEAR-TASK/releases/latest

@@ -1,8 +1,13 @@
 # Launchers
 
-Pick the launcher that matches your operating system and double-click it:
+We recommend running the game from Terminal. From the project root:
 
-- **run_game_win.bat** – Windows 10/11 (opens `python main.py` from the project root)
-- **run_game_mac.command** – macOS (uses `python3 main.py` from the project root)
+```bash
+cd /path/to/CPT-END-OF-YEAR-TASK
+python3 main.py
+```
 
-Need another OS? run `python main.py` manually from the repository root.
+If you prefer the provided launchers, run them from Terminal instead of double-clicking:
+
+- Windows: `run_game_win.bat` (run with `cmd /c run_game_win.bat`)
+- macOS: `run_game_mac.command` (run with `sh run_game_mac.command`)
