@@ -526,8 +526,39 @@ def instability_challenge_active():
     return reset_key == "stability"
 
 
+def _manual_reset_upgrade_def():
+    for upg in WAKE_TIMER_UPGRADES:
+        if upg.get("grant_manual_reset"):
+            return upg
+    return None
+
+
+def manual_reset_requirement():
+    upg = _manual_reset_upgrade_def()
+    if not upg:
+        return ("Phase Lock", 1)
+    name = upg.get("name") or upg.get("id") or "Phase Lock"
+    required = max(1, int(upg.get("manual_reset_level", 1)))
+    return (name, required)
+
+
+def manual_reset_unlocked():
+    upg = _manual_reset_upgrade_def()
+    if not upg:
+        return False
+    required = max(1, int(upg.get("manual_reset_level", 1)))
+    return wake_upgrade_level(upg.get("id")) >= required
+
+
+def manual_collapse_requirement_text():
+    upgrade_name, _ = manual_reset_requirement()
+    return f"Manual collapse requires an instability trial or the {upgrade_name} upgrade."
+
+
 def manual_collapse_available():
-    return instability_challenge_active()
+    if instability_challenge_active():
+        return True
+    return manual_reset_unlocked()
 
 
 def challenge_persistent_state():
@@ -4035,7 +4066,7 @@ def open_challenge_board():
                 last_frame = None
             else:
                 set_settings_notice(
-                    "Manual collapse only available during instability trials.",
+                    manual_collapse_requirement_text(),
                     duration=2.5,
                 )
             continue
@@ -4543,7 +4574,7 @@ def perform_stability_collapse(manual=False):
 
 def manual_stability_collapse():
     if not manual_collapse_available():
-        set_settings_notice("Manual collapse only available during instability trials.")
+        set_settings_notice(manual_collapse_requirement_text())
         return False
     if game.get("wake_timer_infinite", False):
         set_settings_notice("Escape window sealed; disable the lock before collapsing.")
@@ -6221,10 +6252,12 @@ def render_ui(screen="work"):
                     f"{STABILITY_CURRENCY_NAME}: {Fore.MAGENTA}{sparks_amount}{Style.RESET_ALL}"
                 )
             middle_lines.append("[T] Stabilize window")
-            if manual_collapse_available() and config.WAKE_TIMER_UPGRADES.get("grant_manual_reset", False):
-                middle_lines.append("[L] Collapse now")
-            elif manual_collapse_available():
-                middle_lines.append("[L] Collapse now")
+            if manual_collapse_available():
+                if instability_challenge_active():
+                    middle_lines.append("[L] Collapse now (trial-only)")
+                else:
+                    upgrade_name, _ = manual_reset_requirement()
+                    middle_lines.append(f"[L] Collapse now ({upgrade_name})")
         if automation_lab_available():
             signal_amount = format_number(game.get("automation_currency", 0))
             middle_lines.append(
@@ -6279,8 +6312,6 @@ def render_ui(screen="work"):
         option_payload += "[J] Blackjack  "
         if automation_lab_available():
             option_payload += "[3] Automation  "
-        if manual_collapse_available():
-            option_payload += "[L] Collapse  "
         option_payload += "[Q] Quit  [V] Credits"
         options_known = is_known("ui_options_full")
         if mystery_phase and not options_known:
@@ -9303,15 +9334,12 @@ def main_loop():
                     elif k == "r" and current_screen == "work":
                         challenge_layer_reset()
                     elif k == "l" and current_screen == "work":
-                        if manual_collapse_available() and config.WAKE_TIMER_UPGRADES.get("manual_stability_collapse", False):
-                            manual_stability_collapse()
-                            render_ui(screen=current_screen)
-                        elif manual_collapse_available():
+                        if manual_collapse_available():
                             manual_stability_collapse()
                             render_ui(screen=current_screen)
                         else:
                             set_settings_notice(
-                                "Manual collapse only available during instability trials.",
+                                manual_collapse_requirement_text(),
                                 duration=2.5,
                             )
                     elif k == "t" and not game.get("wake_timer_infinite", False):
