@@ -63,6 +63,7 @@ from config import (
     MAIN_LOOP_MIN_DT,
     ENEMY_ANIM_DELAY,
     BORDERS,
+    GAME_TITLE,
     UPGRADES,
     LAYER_FLOW,
     LAYER_BY_KEY,
@@ -73,6 +74,7 @@ from config import (
     STABILITY_CURRENCY_NAME,
     AUTOMATION_CURRENCY_NAME,
     AUTOMATION_CURRENCY_SUFFIX,
+    AUTOMATION_EXCHANGE_RATE,
     STABILITY_REWARD_MULT,
     STABILITY_REWARD_EXP,
     SCIENTIFIC_THRESHOLD_DEFAULT,
@@ -137,8 +139,9 @@ from config import (
     ESCAPE_MODE,
     ESCAPE_REPLACEMENTS,
     ESCAPE_MACHINE,
+    MIRROR_BORDER_ID,
 )
-from currency import grant_automation_currency, grant_stability_currency
+from currency import grant_stability_currency
 
 import blackjack
 
@@ -150,10 +153,13 @@ for entry in CHALLENGES:
         CHALLENGE_GROUPS.append(group)
 if not CHALLENGE_GROUPS:
     CHALLENGE_GROUPS = ["Trials"]
-
-                                                                              
-                                                                           
 EVENT_GOAL_TYPES = {"phase_lock_completion"}
+AUTOMATION_UPGRADE_INDEX = {u.get("id"): i for i, u in enumerate(AUTOMATION_UPGRADES)}
+AUTO_BUYER_TARGET_ORDER = [
+    u.get("id")
+    for u in AUTOMATION_UPGRADES
+    if u.get("id") and u.get("id") != "automation_buyers"
+]
 
 ROOM_COLOR_MAP = {
     "start": Fore.WHITE,
@@ -217,6 +223,20 @@ TERMINAL_TARGET_ROWS = 55
 _TERMINAL_SCALE_CONFIRMED = False
 
 _FULLSCREEN_REQUESTED = False
+_INTRO_BOOT_SEQUENCE_PLAYED = False
+
+INTRO_BOOT_STEPS = [
+    ("Re-seeding memory anchors", 0.9),
+    ("Stitching mirror lattice", 0.8),
+    ("Priming Diverter capacitors", 0.7),
+    ("Authorizing pilot credentials", 0.6),
+]
+
+MACHINE_PANEL_MIN_COLS = TERMINAL_TARGET_COLS + 10
+MACHINE_PANEL_MIN_ROWS = TERMINAL_TARGET_ROWS + 5
+TYPEWRITER_STEP_DELAY = 0.03
+LARGEST_PANEL_MIN_COLS = max(TERMINAL_TARGET_COLS, MACHINE_PANEL_MIN_COLS)
+LARGEST_PANEL_MIN_ROWS = max(TERMINAL_TARGET_ROWS, MACHINE_PANEL_MIN_ROWS)
 
 
 def request_fullscreen():
@@ -266,34 +286,13 @@ def request_fullscreen():
                 user32 = ctypes.WinDLL("user32", use_last_error=True)
                 hwnd = kernel32.GetConsoleWindow()
                 if hwnd:
+                    # Only maximize the console so Windows users can still resize/minimize.
                     SW_MAXIMIZE = 3
                     user32.ShowWindow(hwnd, SW_MAXIMIZE)
                     user32.SetForegroundWindow(hwnd)
-                    STD_OUTPUT_HANDLE = -11
-                    hconsole = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
-                    if hconsole:
-                        class COORD(ctypes.Structure):
-                            _fields_ = [("X", wintypes.SHORT), ("Y", wintypes.SHORT)]
-
-                        set_mode = getattr(kernel32, "SetConsoleDisplayMode", None)
-                        if set_mode:
-                            set_mode.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(COORD)]
-                            set_mode.restype = wintypes.BOOL
-                            coord = COORD(0, 0)
-                            set_mode(hconsole, 1, ctypes.byref(coord))
                     return True
-                                                                                            
-                KEYEVENTF_KEYUP = 0x0002
-                VK_MENU = 0x12
-                VK_RETURN = 0x0D
-                user32.keybd_event(VK_MENU, 0, 0, 0)
-                user32.keybd_event(VK_RETURN, 0, 0, 0)
-                user32.keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0)
-                user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
-                return True
             except Exception:
                 pass
-                                                                         
         cols = max(200, shutil.get_terminal_size((120, 40)).columns)
         rows = max(60, shutil.get_terminal_size((120, 40)).lines)
         sys.stdout.write(f"\033[8;{rows};{cols}t")
@@ -301,6 +300,34 @@ def request_fullscreen():
         return True
     except Exception:
         return False
+
+
+def run_intro_boot_sequence():
+    global _INTRO_BOOT_SEQUENCE_PLAYED
+    if _INTRO_BOOT_SEQUENCE_PLAYED:
+        return
+    _INTRO_BOOT_SEQUENCE_PLAYED = True
+    total = sum(duration for _, duration in INTRO_BOOT_STEPS) or 1.0
+    elapsed = 0.0
+    for label, duration in INTRO_BOOT_STEPS:
+        step_start = time.time()
+        while True:
+            now = time.time()
+            step_elapsed = min(duration, now - step_start)
+            pct = min(1.0, (elapsed + step_elapsed) / total)
+            bar = build_progress_bar(int(pct * 100), width=28)
+            lines = [
+                f"{Fore.CYAN}{GAME_TITLE}{Style.RESET_ALL}",
+                "Initializing escape stack...",
+                label,
+                bar,
+            ]
+            box = boxed_lines(lines, title=" Mirrorwake Boot Sequence ", pad_top=1, pad_bottom=1)
+            render_frame(box)
+            if step_elapsed >= duration:
+                break
+            time.sleep(0.05)
+        elapsed += duration
 
 def escape_text(text):
     if not ESCAPE_MODE or not isinstance(text, str):
@@ -888,6 +915,7 @@ def default_game_state():
         "escape_machine_ready": False,
         "escape_machine": default_escape_machine_state(),
         "escape_multiplier": 1.0,
+        "mirror_reality_active": False,
     }
 
 
@@ -1454,6 +1482,45 @@ def play_escape_reset_animation(machine):
     clear_screen()
 
 
+def wait_for_any_keypress(timeout=None):
+    global KEY_PRESSED
+    start = time.time()
+    while True:
+        if KEY_PRESSED:
+            KEY_PRESSED = None
+            return True
+        if timeout is not None and (time.time() - start) >= timeout:
+            return False
+        time.sleep(0.05)
+
+
+def play_mirror_reality_epilogue():
+    narrative_lines = [
+        "The Diverter slams shut and the desk dissolves into argent static.",
+        "Your memories fracture, scattering into mirrored shards.",
+        "A new desk flickers online—familiar, but every panel reversed.",
+        "Reality reforms. The machine is silent, its components missing once more.",
+        "Some echo of you persists, chasing the next escape.",
+    ]
+    rendered = []
+    clear_screen()
+    for line in narrative_lines:
+        partial = ""
+        for ch in line:
+            partial += ch
+            preview = rendered + [partial]
+            box = boxed_lines(preview, title=" Mirrorfall Narrative ", pad_top=1, pad_bottom=1)
+            render_frame(box)
+            time.sleep(TYPEWRITER_STEP_DELAY)
+        rendered.append(line)
+        time.sleep(0.35)
+    prompt = f"{Fore.YELLOW}Press any key to reinitialize.{Style.RESET_ALL}"
+    box = boxed_lines(rendered + ["", prompt], title=" Mirrorfall Narrative ", pad_top=1, pad_bottom=1)
+    render_frame(box)
+    wait_for_any_keypress()
+    clear_screen()
+
+
 def maybe_unlock_escape_machine():
     cfg = escape_machine_config()
     if not cfg:
@@ -1518,11 +1585,18 @@ def perform_machine_escape_reset():
     machine_state_for_anim = copy.deepcopy(machine)
     try:
         play_escape_reset_animation(machine_state_for_anim)
+        play_mirror_reality_epilogue()
     except Exception:
         pass
     machine["ready"] = False
     machine["applied"] = True
-    machine_snapshot = copy.deepcopy(machine)
+    fresh_machine = default_escape_machine_state()
+    fresh_machine["unlocked"] = True
+    fresh_machine["components"] = []
+    fresh_machine["ready"] = False
+    fresh_machine["applied"] = False
+    fresh_machine["spark_bank"] = 0
+    machine_snapshot = fresh_machine
     knowledge_snapshot = copy.deepcopy(knowledge_store())
     guide_seen = list(game.get("guide_seen_topics", []))
     guide_unlocked = game.get("guide_unlocked", False)
@@ -1538,7 +1612,11 @@ def perform_machine_escape_reset():
     game["escape_machine_unlocked"] = True
     game["escape_machine_ready"] = False
     game["escape_multiplier"] = multiplier
-    set_settings_notice("Reality Diverter fired. The loop restarts at ×2 speed.", duration=4.0)
+    game["mirror_reality_active"] = True
+    set_settings_notice(
+        f"Mirror reality stabilized. Diverter schematics scrambled; rewards locked at ×{multiplier:.0f}.",
+        duration=4.0,
+    )
     save_game()
     return True
 
@@ -1615,7 +1693,7 @@ def open_credits_panel():
         lines = [
             "Production Credits",
             "",
-            f"{Fore.LIGHTWHITE_EX}ESCAPE MACHINE PROJECT{Style.RESET_ALL}",
+            f"{Fore.LIGHTWHITE_EX}{GAME_TITLE.upper()}{Style.RESET_ALL}",
             "",
         ]
         for role, name in CREDITS_ROLES:
@@ -2058,10 +2136,12 @@ def load_game():
     state.setdefault("automation_delay_mult", 1.0)
     state.setdefault("automation_gain_mult", 1.0)
     state.setdefault("automation_synergy_mult", 1.0)
+    state.setdefault("automation_auto_tiers", 0)
     state.setdefault("_challenge_backup", None)
     state.setdefault("challenge_run_active", False)
     state.setdefault("challenge_run_id", None)
     state.setdefault("escape_multiplier", 1.0)
+    state.setdefault("mirror_reality_active", False)
     machine_state = state.get("escape_machine")
     if not isinstance(machine_state, dict):
         machine_state = default_escape_machine_state()
@@ -2304,6 +2384,16 @@ def enable_auto_work(show_notice=True):
     game["auto_work_unlocked"] = True
     if show_notice:
         set_settings_notice("Automation cycles synchronized.", duration=3.5)
+    attempt_reveal("ui_auto_prompt")
+    return True
+
+
+def enable_auto_buyers(show_notice=True):
+    if game.get("auto_buyer_unlocked", False):
+        return False
+    game["auto_buyer_unlocked"] = True
+    if show_notice:
+        set_settings_notice("Auto-buyers linked to the lab.", duration=3.5)
     attempt_reveal("ui_auto_prompt")
     return True
 
@@ -2638,6 +2728,8 @@ def collect_slot_summaries():
         layer_info = LAYER_BY_ID.get(layer_idx, {})
         layer_label = layer_info.get("name", f"Layer {layer_idx}")
         border_id = layer_info.get("border_id", layer_idx)
+        if data and data.get("mirror_reality_active"):
+            border_id = MIRROR_BORDER_ID
         progress_pct = estimate_progress(data)
         last_ts = data.get("last_save_timestamp") if data else None
         last_seen = (
@@ -3130,7 +3222,7 @@ def run_terminal_scale_calculator():
         clear_screen()
         if est_steps > 0:
             print(
-                f"Zoom out ~{est_steps} time(s) with Cmd+- (macOS) or Ctrl+- (Windows/Linux). Remember to FULLSCREEN!!"
+                f"Zoom out ~{est_steps} time(s) with Cmd+- (macOS) or Ctrl+- (Windows/Linux). If you are not fullscreened, press f11 then recheck!!"
             )
             print("Press Enter to re-check or type READY when finished.")
         else:
@@ -3140,6 +3232,23 @@ def run_terminal_scale_calculator():
             _TERMINAL_SCALE_CONFIRMED = True
             clear_screen()
             break
+
+
+def ensure_terminal_capacity(min_cols=None, min_rows=None, reason=None):
+    min_cols = max(1, int(min_cols or TERMINAL_TARGET_COLS))
+    min_rows = max(1, int(min_rows or TERMINAL_TARGET_ROWS))
+    while True:
+        cols, rows = get_term_size()
+        if cols >= min_cols and rows >= min_rows:
+            return True
+        clear_screen()
+        print(
+            f"This view needs at least {min_cols} columns × {min_rows} rows. Current size is {cols} × {rows}."
+        )
+        if reason:
+            print(f"Reason: {reason}.")
+        print("Zoom out (Cmd+- / Ctrl+-) or resize your terminal, then press Enter to re-check.")
+        input("> ")
 
 def render_frame(lines):
     global last_render
@@ -3298,6 +3407,118 @@ def build_tree_lines(upgrades, get_info_fn, page_key):
     return visible_lines, footer, len(pages)
 
 
+def signal_exchange_rate():
+    try:
+        rate = int(AUTOMATION_EXCHANGE_RATE)
+    except Exception:
+        rate = 0
+    return max(1, rate)
+
+
+def calculate_signal_exchange_capacity():
+    rate = signal_exchange_rate()
+    funds = max(0.0, float(game.get("money", 0.0) or 0.0))
+    max_bits = int(funds // rate)
+    return rate, funds, max_bits
+
+
+def build_signal_exchange_panel():
+    rate, funds, max_bits = calculate_signal_exchange_capacity()
+    potential = format_number(max_bits)
+    panel = [
+        f"{Fore.LIGHTMAGENTA_EX}Signal Exchange{Style.RESET_ALL}",
+        f"Rate: {format_currency(rate)} -> 1 {AUTOMATION_CURRENCY_NAME}",
+        f"Funds: {format_currency(funds)}  Potential: {potential} {AUTOMATION_CURRENCY_SUFFIX}",
+    ]
+    if automation_online():
+        if max_bits > 0:
+            panel.append("[E] Refine max  [R] Custom amount")
+        else:
+            panel.append(
+                f"Need {format_currency(rate)} for 1 {AUTOMATION_CURRENCY_NAME}."
+            )
+    else:
+        panel.append("Automation offline — exchange unavailable.")
+    return panel
+
+
+def automation_upgrade_label(upg_id):
+    idx = AUTOMATION_UPGRADE_INDEX.get(upg_id, -1)
+    if idx < 0:
+        return upg_id
+    return AUTOMATION_UPGRADES[idx].get("name", upg_id)
+
+
+def build_auto_buyer_panel():
+    lines = [f"{Fore.CYAN}Auto-Buyers{Style.RESET_ALL}"]
+    if not game.get("auto_buyer_unlocked", False):
+        lines.append("Complete S-CHAL-1+ to activate auto-buyers.")
+        return lines
+    tiers = int(game.get("automation_auto_tiers", 0))
+    if tiers <= 0:
+        lines.append("Install Acquisition Relays to add tiers.")
+        return lines
+    targets = AUTO_BUYER_TARGET_ORDER
+    for tier_idx in range(tiers):
+        if tier_idx < len(targets):
+            label = automation_upgrade_label(targets[tier_idx])
+        else:
+            label = "Adaptive sweep"
+        lines.append(f"Tier {tier_idx + 1}: {label}")
+    if not auto_buyer_allowed():
+        lines.append("(Disabled by current challenge.)")
+    return lines
+
+
+def prompt_signal_exchange_amount(max_bits):
+    if max_bits <= 0:
+        return 0
+    lines = [
+        "Automation Lab — Signal Exchange",
+        f"Max conversion: {format_number(max_bits)} {AUTOMATION_CURRENCY_NAME}",
+        "Enter Signal Bits to refine (MAX for all, 0 to cancel).",
+    ]
+    tmp = boxed_lines(lines, title=" Signal Exchange ", pad_top=1, pad_bottom=1)
+    render_frame(tmp)
+    response = input("> ").strip().lower()
+    if response in {"", "0", "cancel", "c"}:
+        return 0
+    if response in {"max", "all"}:
+        return max_bits
+    try:
+        return max(0, min(max_bits, int(response)))
+    except ValueError:
+        set_settings_notice("Invalid amount entered.", duration=2.0)
+        return 0
+
+
+def exchange_signal_bits(amount=None, *, prompt=False):
+    if not automation_online():
+        set_settings_notice("Automation offline — exchange unavailable.")
+        return False
+    rate, funds, max_bits = calculate_signal_exchange_capacity()
+    if max_bits <= 0:
+        set_settings_notice(
+            f"Need {format_currency(rate)} for 1 {AUTOMATION_CURRENCY_NAME}.",
+            duration=3.0,
+        )
+        return False
+    target = max_bits if amount is None else max(0, min(max_bits, int(amount)))
+    if prompt:
+        target = prompt_signal_exchange_amount(max_bits)
+    if target <= 0:
+        return False
+    cost = target * rate
+    game["money"] = max(0.0, float(game.get("money", 0.0)) - cost)
+    game["automation_currency"] = game.get("automation_currency", 0.0) + target
+    save_game()
+    set_settings_notice(
+        f"Refined {format_number(target)} {AUTOMATION_CURRENCY_NAME}.",
+        duration=2.8,
+    )
+    return True
+
+
 def get_tree_cost(upg, current_level=0):
     if upg.get("id") == "concept_breach":
         base = balanced_breach_key_cost()
@@ -3379,6 +3600,7 @@ def apply_automation_effects():
     game["automation_delay_mult"] = 1.0
     game["automation_gain_mult"] = 1.0
     game["automation_synergy_mult"] = 1.0
+    game["automation_auto_tiers"] = 0
     for entry in game.get("automation_upgrades", []):
         upg_id, level = (
             (entry.get("id"), entry.get("level", 1))
@@ -3398,6 +3620,55 @@ def apply_automation_effects():
             game["automation_gain_mult"] *= max(0.0, val)
         elif etype == "automation_synergy":
             game["automation_synergy_mult"] *= max(0.0, val)
+        elif etype == "auto_buyer_slots" and level > 0:
+            game["automation_auto_tiers"] += int(level)
+
+
+def _auto_buyer_attempt_purchase(upg_id):
+    idx = AUTOMATION_UPGRADE_INDEX.get(upg_id, -1)
+    if idx < 0:
+        return False
+    owned, level = get_automation_info(upg_id)
+    upg = AUTOMATION_UPGRADES[idx]
+    max_level = upg.get("max_level", 1)
+    if level >= max_level:
+        return False
+    cost = get_tree_cost(upg, current_level=level)
+    holdings = game.get("automation_currency", 0)
+    if holdings < cost:
+        return False
+    return bool(buy_tree_upgrade(AUTOMATION_UPGRADES, idx, auto=True, save=False))
+
+
+def process_auto_buyers():
+    if not auto_buyer_allowed():
+        return False
+    tiers = int(game.get("automation_auto_tiers", 0))
+    if tiers <= 0:
+        return False
+    if not AUTO_BUYER_TARGET_ORDER:
+        return False
+    progress = False
+    for tier_idx in range(tiers):
+        if game.get("automation_currency", 0) <= 0:
+            break
+        candidates = (
+            [AUTO_BUYER_TARGET_ORDER[tier_idx]]
+            if tier_idx < len(AUTO_BUYER_TARGET_ORDER)
+            else AUTO_BUYER_TARGET_ORDER
+        )
+        while True:
+            purchased = False
+            for target in candidates:
+                if _auto_buyer_attempt_purchase(target):
+                    purchased = True
+                    progress = True
+                    break
+            if not purchased:
+                break
+    if progress:
+        save_game()
+    return progress
 
 
 def challenge_metric(metric_id):
@@ -3458,7 +3729,9 @@ def challenge_reward_summary(info):
     if rtype == "motivation_cap" and value:
         return f"+{int(value)} motivation cap"
     if rtype == "unlock_autowork":
-        return "Unlock automation (auto-work & auto-buyers)"
+        return "Unlock auto-work"
+    if rtype == "unlock_auto_buyer":
+        return "Unlock auto-buyers"
     return "Permanent bonus unlocked"
 
 
@@ -3480,6 +3753,10 @@ def apply_challenge_reward(info, target_state=None):
             enable_auto_work(show_notice=True)
         else:
             state["auto_work_unlocked"] = True
+    elif rtype == "unlock_auto_buyer":
+        if state is game:
+            enable_auto_buyers(show_notice=True)
+        else:
             state["auto_buyer_unlocked"] = True
 
 
@@ -3955,6 +4232,8 @@ def boxed_lines(
     layer = game.get("layer", 0)
     layer_def = LAYER_BY_ID.get(layer, {})
     border_key = layer_def.get("border_id", layer)
+    if game.get("mirror_reality_active"):
+        border_key = MIRROR_BORDER_ID
     style = BORDERS.get(border_key)
     if style is None:
         style = list(BORDERS.values())[0]
@@ -4234,7 +4513,6 @@ def perform_stability_collapse(manual=False):
     grant_stability_currency(game, reward)
     machine = escape_machine_state()
     machine["spark_bank"] = machine.get("spark_bank", 0) + reward
-    catalysts = grant_automation_currency(game, reward)
     handle_machine_progress_event("stability")
     game["stability_resets"] = game.get("stability_resets", 0) + 1
     check_collapse_easter_eggs()
@@ -4245,10 +4523,8 @@ def perform_stability_collapse(manual=False):
         f"Recovered {format_number(reward)} {STABILITY_CURRENCY_NAME}.",
         "Spend sparks in the stabilizer menu (T).",
     ]
-    if catalysts:
-        lines.append(
-            f"Refined {format_number(catalysts)} {AUTOMATION_CURRENCY_NAME} for the Automation Lab."
-        )
+    if automation_lab_available():
+        lines.append("Route spare funds through the Automation Lab to refine Signal Bits.")
     tmp = boxed_lines(lines, title=" Collapse ", pad_top=1, pad_bottom=1)
     render_frame(tmp)
     time.sleep(1.2)
@@ -4274,7 +4550,7 @@ def manual_stability_collapse():
         return False
     perform_stability_collapse(manual=True)
     set_settings_notice(
-        "Manual collapse triggered. Sparks stored; catalysts refined.",
+        "Manual collapse triggered. Sparks stored—refine Signal Bits in the lab.",
         duration=3.5,
     )
     return True
@@ -4320,6 +4596,7 @@ def work_tick():
         work_timer += delta
         if work_timer >= eff_delay:
             perform_work(gain, eff_delay, manual=False)
+    process_auto_buyers()
     if refresh_knowledge_flags():
         save_game()
 
@@ -4554,7 +4831,7 @@ def build_timeflow_focus_lines():
     else:
         bullet("Spend Sparks in Stabilizer (T) to unlock Phase Lock.")
     if not challenge_completed("stability_drill"):
-        bullet("Clear Spark Uprising before attempting.")
+        bullet("Clear S-CHAL-1 before attempting.")
     return lines
 
 
@@ -4759,9 +5036,9 @@ def get_tree_selection(upgrades, page_key, digit):
     return digit_idx
 
 
-def buy_tree_upgrade(upgrades, idx):
+def buy_tree_upgrade(upgrades, idx, *, auto=False, save=True):
     if not (0 <= idx < len(upgrades)):
-        return
+        return False
     upg = upgrades[idx]
     if upgrades is INSPIRE_UPGRADES:
         owned, level = get_inspire_info(upg["id"])
@@ -4776,29 +5053,31 @@ def buy_tree_upgrade(upgrades, idx):
     pool_suffix = meta.get("currency_suffix")
     suffix_text = f" {pool_suffix}" if pool_suffix else ""
     if level >= max_level:
-        msg = f"{upg['name']} is already at max level!"
-        tmp = boxed_lines(
-            [msg],
-            title=f" {pool_name} ",
-            pad_top=1,
-            pad_bottom=1,
-        )
-        render_frame(tmp)
-        time.sleep(0.7)
-        return
+        if not auto:
+            msg = f"{upg['name']} is already at max level!"
+            tmp = boxed_lines(
+                [msg],
+                title=f" {pool_name} ",
+                pad_top=1,
+                pad_bottom=1,
+            )
+            render_frame(tmp)
+            time.sleep(0.7)
+        return False
     cost = get_tree_cost(upg, current_level=level)
     pool_key = meta.get("holdings_key", "concepts")
     if game.get(pool_key, 0) < cost:
-        msg = f"Not enough {pool_currency} for {upg['name']} (cost {cost}{suffix_text})."
-        tmp = boxed_lines(
-            [msg],
-            title=f" {pool_name} ",
-            pad_top=1,
-            pad_bottom=1,
-        )
-        render_frame(tmp)
-        time.sleep(0.7)
-        return
+        if not auto:
+            msg = f"Not enough {pool_currency} for {upg['name']} (cost {cost}{suffix_text})."
+            tmp = boxed_lines(
+                [msg],
+                title=f" {pool_name} ",
+                pad_top=1,
+                pad_bottom=1,
+            )
+            render_frame(tmp)
+            time.sleep(0.7)
+        return False
     game[pool_key] -= cost
     applied_list_key = meta.get("applied_key", "concept_upgrades")
     applied = False
@@ -4824,16 +5103,19 @@ def buy_tree_upgrade(upgrades, idx):
     ):
         if game.get("motivation_unlocked", False):
             set_motivation(motivation_capacity())
-    save_game()
-    msg = f"Purchased {upg['name']} level {level + 1}!"
-    tmp = boxed_lines(
-        [msg],
-        title=f" {pool_name} ",
-        pad_top=1,
-        pad_bottom=1,
-    )
-    render_frame(tmp)
-    time.sleep(0.5)
+    if save:
+        save_game()
+    if not auto:
+        msg = f"Purchased {upg['name']} level {level + 1}!"
+        tmp = boxed_lines(
+            [msg],
+            title=f" {pool_name} ",
+            pad_top=1,
+            pad_bottom=1,
+        )
+        render_frame(tmp)
+        time.sleep(0.5)
+    return True
 
 
 def calculate_inspiration(money_since_reset):
@@ -4964,7 +5246,7 @@ def reset_for_inspiration():
         tmp = boxed_lines(
             [
                 f"{corridor_name} is sealed.",
-                "Complete Spark Uprising.",
+                "Complete S-CHAL-1 to unlock access.",
             ],
             title=f" {corridor_name} Locked ",
             pad_top=1,
@@ -5784,7 +6066,7 @@ def render_ui(screen="work"):
                 )
             else:
                 top_left_lines.append(
-                    f"{Fore.LIGHTBLACK_EX}Complete Spark Uprising to unlock {corridor_name}.{Style.RESET_ALL}"
+                    f"{Fore.LIGHTBLACK_EX}Complete S-CHAL-1 to unlock {corridor_name}.{Style.RESET_ALL}"
                 )
 
         if game.get("motivation_unlocked", False):
@@ -5871,17 +6153,28 @@ def render_ui(screen="work"):
                 "",
                 auto_title,
                 f"Ranks invested: {invested}  Nodes unlocked: {owned_nodes}/{total_nodes}",
-                f"Fuel: {Fore.LIGHTMAGENTA_EX}{format_number(game.get('automation_currency', 0))}{Style.RESET_ALL} {AUTOMATION_CURRENCY_NAME}",
+                f"Signal Bits: {Fore.LIGHTMAGENTA_EX}{format_number(game.get('automation_currency', 0))}{Style.RESET_ALL}",
             ]
             if screen == "automation":
+                exchange_panel = build_signal_exchange_panel()
+                auto_buyer_panel = build_auto_buyer_panel()
                 auto_lines, auto_footer, _ = build_tree_lines(
                     AUTOMATION_UPGRADES, get_automation_info, "automation_page"
                 )
                 bottom_left_lines += [
                     "",
+                    *exchange_panel,
+                    "",
+                    *auto_buyer_panel,
+                    "",
                     *auto_lines,
                     "",
-                    auto_footer,
+                    auto_footer
+                    + (
+                        "  [E] Exchange  [R] Custom"
+                        if automation_online()
+                        else ""
+                    ),
                     "\033[1m[B] Back to Work\033[0m",
                 ]
             else:
@@ -5931,9 +6224,9 @@ def render_ui(screen="work"):
             if manual_collapse_available():
                 middle_lines.append("[L] Collapse now (trial-only reset)")
         if automation_lab_available():
-            catalyst_amount = format_number(game.get("automation_currency", 0))
+            signal_amount = format_number(game.get("automation_currency", 0))
             middle_lines.append(
-                f"{AUTOMATION_CURRENCY_NAME}: {Fore.LIGHTMAGENTA_EX}{catalyst_amount}{Style.RESET_ALL}"
+                f"{AUTOMATION_CURRENCY_NAME}: {Fore.LIGHTMAGENTA_EX}{signal_amount}{Style.RESET_ALL}"
             )
         middle_lines.append("")
         middle_lines += render_desk_table()
@@ -8804,6 +9097,12 @@ def render_rpg_screen():
 def main_loop():
     global KEY_PRESSED, running, work_timer, last_tick_time, last_manual_time, last_render
     request_fullscreen()
+    ensure_terminal_capacity(
+        LARGEST_PANEL_MIN_COLS,
+        LARGEST_PANEL_MIN_ROWS,
+        reason="largest Diverter interface",
+    )
+    run_intro_boot_sequence()
     choose_save_slot()
     load_game()
     try:
@@ -9113,6 +9412,10 @@ def main_loop():
                             total_pages = max(1, game.get("automation_page_pages", 1))
                             if game.get("automation_page", 0) < total_pages - 1:
                                 game["automation_page"] = game.get("automation_page", 0) + 1
+                        elif k == "e":
+                            exchange_signal_bits()
+                        elif k == "r":
+                            exchange_signal_bits(prompt=True)
                         elif k.isdigit():
                             idx = get_tree_selection(AUTOMATION_UPGRADES, "automation_page", k)
                             if 0 <= idx < len(AUTOMATION_UPGRADES):

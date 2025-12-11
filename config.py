@@ -1,5 +1,7 @@
 import math
 
+GAME_TITLE = "Mirrorwake Protocol"
+
 SCIENTIFIC_THRESHOLD_OPTIONS = [3, 33, 303]
 SCIENTIFIC_THRESHOLD_DEFAULT = 303
 SCIENTIFIC_THRESHOLD_EXPONENT = SCIENTIFIC_THRESHOLD_DEFAULT
@@ -61,7 +63,7 @@ GUIDE_TOPICS = [
             "Auto-work repeats the basic cycle, while auto-buyers spend money using the Automation Lab.",
             "Delay and gain modifiers stack from upgrades, Inspiration, Concepts, and active challenges.",
             "Automation synergy scales with total resets, so keep prestiging even after unlocking the lab.",
-            "Catalyst Shards refine after each collapse and only fuel the Automation Lab's nodes.",
+            "Bits refine through the Automation Lab exchange and only fuel its nodes.",
         ],
     },
     {
@@ -200,9 +202,10 @@ ESCAPE_REPLACEMENTS = [
 
 CURRENCY_SYMBOL = "¤"
 STABILITY_CURRENCY_NAME = "Stability Sparks"
-AUTOMATION_CURRENCY_NAME = "Catalyst Shards"
-AUTOMATION_CURRENCY_SUFFIX = "Cs"
+AUTOMATION_CURRENCY_NAME = "Bits"
+AUTOMATION_CURRENCY_SUFFIX = "Bits"
 AUTOMATION_REWARD_RATIO = 1.0
+AUTOMATION_EXCHANGE_RATE = 2_500_000  # money required per Signal Bit
 STABILITY_REWARD_MULT = 0.5
 STABILITY_REWARD_EXP = 0.55
 
@@ -395,6 +398,24 @@ CHALLENGES = [
             "money_gain_mult": 0.75,
             "time_velocity_mult": 0.85,
             "motivation_cap_mult": 0.8,
+        },
+    },
+    {
+        "id": "stability_drill_plus",
+        "group": "Stability",
+        "name": "S-CHAL-1+",
+        "desc": "Generate 8,500 Stability Sparks while the trial drains the window twice as fast.",
+        "goal_type": "stability_currency",
+        "goal_value": 8500,
+        "reward": {"type": "unlock_auto_buyer"},
+        "unlock_type": "stability_resets",
+        "unlock_value": 2,
+        "modifiers": {
+            "money_gain_mult": 0.35,
+            "auto_delay_mult": 1.9,
+            "time_velocity_mult": 0.55,
+            "motivation_cap_mult": 0.45,
+            "wake_timer_cap_mult": 0.4,
         },
     },
     {
@@ -890,9 +911,9 @@ AUTOMATION_UPGRADES = [
             "type": "auto_delay_mult",
             "max_level": 6,
             "cost_mult": 1.65,
-            "base_value": 0.94,
-            "value_mult": 0.96,
-            "desc": "Shaves 6% off automation cycles, -4% delay per level.",
+            "base_value": 0.97,
+            "value_mult": 0.97,
+            "desc": "Trims 3% from automation delay per rank.",
         },
         {
             "id": "automation_directives",
@@ -901,9 +922,9 @@ AUTOMATION_UPGRADES = [
             "type": "auto_money_mult",
             "max_level": 6,
             "cost_mult": 1.7,
-            "base_value": 1.18,
-            "value_mult": 1.12,
-            "desc": "+18% automation payout, +12% per level.",
+            "base_value": 1.03,
+            "value_mult": 1.03,
+            "desc": "+3% automation payout per rank.",
         },
         {
             "id": "automation_procurement",
@@ -912,9 +933,20 @@ AUTOMATION_UPGRADES = [
             "type": "automation_synergy",
             "max_level": 5,
             "cost_mult": 1.85,
-            "base_value": 1.12,
-            "value_mult": 1.1,
-            "desc": "+12% manual gain while automation is online, +10% per level.",
+            "base_value": 1.03,
+            "value_mult": 1.03,
+            "desc": "+3% manual gain while automation is online per rank.",
+        },
+        {
+            "id": "automation_buyers",
+            "name": "Acquisition Relays",
+            "base_cost": 15,
+            "type": "auto_buyer_slots",
+            "max_level": 6,
+            "cost_mult": 1.9,
+            "base_value": 1.0,
+            "value_mult": 1.0,
+            "desc": "+1 auto-buyer tier per rank.",
         },
     ]
 
@@ -1361,12 +1393,15 @@ def _build_short_scale_suffixes():
 
 SHORT_SCALE_SUFFIXES = _build_short_scale_suffixes()
 
+MIRROR_BORDER_ID = 5
+
 BORDERS = {
     0: {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "│"},
     1: {"tl": "╭", "tr": "╮", "bl": "╰", "br": "╯", "h": "─", "v": "│"},
     2: {"tl": "╔", "tr": "╗", "bl": "╚", "br": "╝", "h": "═", "v": "║"},
     3: {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "│"},
     4: {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "║"},
+    MIRROR_BORDER_ID: {"tl": "◤", "tr": "◥", "bl": "◣", "br": "◢", "h": "━", "v": "┃"},
 }
 
 LAYER2_PARTICLE_CHARS = ["·", "*", ".", "'"]
