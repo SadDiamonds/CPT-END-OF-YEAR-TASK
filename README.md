@@ -22,6 +22,9 @@ Note: On macOS you can also run the provided `run_game_mac.command` from Termina
 ## Download:
 https://github.com/SadDiamonds/CPT-END-OF-YEAR-TASK/releases/latest
 
+## **!!!** Important things to consider **!!!**:
+Consider starting challenge runs *after* you buy the 5th upgrade 3 times (hint hint)!!
+
 ## Credits
 - Lead Developer: SadDiamonds
 - Tester: Isaac
