@@ -146,6 +146,8 @@ from config import (
     ESCAPE_REPLACEMENTS,
     ESCAPE_MACHINE,
     MIRROR_BORDER_ID,
+    DEFAULT_KEYBINDS,
+    SETTINGS_SECTIONS,
 )
 from currency import grant_stability_currency
 
@@ -336,6 +338,131 @@ def run_intro_boot_sequence():
                 break
             time.sleep(0.05)
         elapsed += duration
+
+
+def open_settings_menu(game):
+    """Advanced settings UI: persists into `game['settings']` and `game['keybinds']`.
+    Supports bool toggles, choice cycling and key remapping. Changes are saved on exit.
+    """
+    keybinds = game.setdefault("keybinds", DEFAULT_KEYBINDS.copy())
+    settings = game.setdefault("settings", {})
+
+    tabs = SETTINGS_SECTIONS
+    tab_idx = 0
+    selected_idx = 0
+    while True:
+        tab = tabs[tab_idx]
+        lines = [f"Settings — {tab['label']}", ""]
+        items = tab.get("items", [])
+        for i, item in enumerate(items):
+            prefix = "> " if i == selected_idx else "  "
+            if item["type"] == "keybinds":
+                lines.append(f"{prefix}{item['label']} (open to edit)")
+            else:
+                # Read value from persisted settings if available
+                val = "-"
+                sid = item.get("id")
+                if sid and sid in settings:
+                    val = settings.get(sid)
+                else:
+                    k = item.get("key")
+                    if k and hasattr(config, k):
+                        val = getattr(config, k)
+                lines.append(f"{prefix}{item['label']}: {val}")
+
+        lines.append("")
+        lines.append("[←/→] Switch tabs   [↑/↓] Select   [Enter] Edit/Open   [Q] Quit")
+        box = boxed_lines(lines, title=" Settings ", pad_top=1, pad_bottom=1)
+        render_frame(box)
+
+        ch = get_key_with_timeout(0.1)
+        if not ch:
+            continue
+        key = ch
+        if key in ("q", "b", "esc"):
+            # Persist settings and keybinds when exiting
+            game["keybinds"] = keybinds
+            game["settings"] = settings
+            save_game()
+            return
+        if key == "left" or key == "\x1b[D":
+            tab_idx = (tab_idx - 1) % len(tabs)
+            selected_idx = 0
+            continue
+        if key == "right" or key == "\x1b[C":
+            tab_idx = (tab_idx + 1) % len(tabs)
+            selected_idx = 0
+            continue
+        if key == "up" or key == "\x1b[A":
+            selected_idx = max(0, selected_idx - 1)
+            continue
+        if key == "down" or key == "\x1b[B":
+            selected_idx = min(len(items) - 1, selected_idx + 1)
+            continue
+        if key in ("\r", "\n", "enter"):
+            sel = items[selected_idx]
+            if sel["type"] == "keybinds":
+                # open a keybind list
+                kb_keys = list(keybinds.keys())
+                kb_idx = 0
+                while True:
+                    lines = ["Keybindings:", ""]
+                    for i, kname in enumerate(kb_keys):
+                        selmark = ">" if i == kb_idx else " "
+                        lines.append(f"{selmark} {kname}: {keybinds.get(kname)}")
+                    lines.append("")
+                    lines.append("[↑/↓] select  [Enter] remap  [B/Q] back")
+                    box = boxed_lines(lines, title=" Remap Keys ", pad_top=1, pad_bottom=1)
+                    render_frame(box)
+                    ch2 = get_key_with_timeout(0.1)
+                    if not ch2:
+                        continue
+                    k2 = ch2
+                    if k2 in ("b", "q", "esc"):
+                        break
+                    if k2 == "up" or k2 == "\x1b[A":
+                        kb_idx = max(0, kb_idx - 1)
+                        continue
+                    if k2 == "down" or k2 == "\x1b[B":
+                        kb_idx = min(len(kb_keys) - 1, kb_idx + 1)
+                        continue
+                    if k2 in ("\r", "\n", "enter"):
+                        target = kb_keys[kb_idx]
+                        prompt = boxed_lines([f"Press new key for '{target}' (or B to cancel)"], title=" Remap ")
+                        render_frame(prompt)
+                        ch3 = get_key_with_timeout(10.0)
+                        if not ch3:
+                            continue
+                        newk = ch3
+                        if isinstance(newk, str) and newk.lower() in ("b", "q", "esc"):
+                            continue
+                        keybinds[target] = newk
+                        game["keybinds"] = keybinds
+                        # small confirmation
+                        set_settings_notice(f"Remapped {target} -> {newk}", duration=1.5)
+                continue
+            else:
+                # Toggle or edit settings stored in `game['settings']`
+                sid = sel.get("id")
+                stype = sel.get("type")
+                if stype == "bool" and sid:
+                    cur = settings.get(sid, False)
+                    settings[sid] = not bool(cur)
+                    game["settings"] = settings
+                    set_settings_notice(f"{sel.get('label')} set to {settings[sid]}", duration=1.2)
+                elif stype == "choice" and sid:
+                    choices = sel.get("choices") or []
+                    cur = settings.get(sid)
+                    try:
+                        idx = choices.index(cur) if cur in choices else 0
+                    except Exception:
+                        idx = 0
+                    idx = (idx + 1) % max(1, len(choices))
+                    settings[sid] = choices[idx]
+                    game["settings"] = settings
+                    set_settings_notice(f"{sel.get('label')} = {settings[sid]}", duration=1.2)
+                continue
+
 
 def escape_text(text):
     if not ESCAPE_MODE or not isinstance(text, str):
@@ -955,6 +1082,16 @@ def default_game_state():
         "escape_machine": default_escape_machine_state(),
         "escape_multiplier": 1.0,
         "mirror_reality_active": False,
+        # Persisted settings and keybindings
+        "keybinds": DEFAULT_KEYBINDS.copy(),
+        "settings": {
+            "auto_fullscreen": getattr(config, "AUTO_FULLSCREEN", False),
+            "escape_mode": getattr(config, "ESCAPE_MODE", True),
+            "beeps": True,
+            "color_theme": "default",
+            "show_floating_hints": True,
+            "autosave": True,
+        },
     }
 
 
@@ -1533,6 +1670,48 @@ def wait_for_any_keypress(timeout=None):
         time.sleep(0.05)
 
 
+def get_key_with_timeout(timeout=None):
+    """Return the next key pressed (normalized) or None if timeout reached."""
+    global KEY_PRESSED
+    start = time.time()
+    while True:
+        if KEY_PRESSED:
+            raw = KEY_PRESSED
+            KEY_PRESSED = None
+            return normalize_key(raw)
+        if timeout is not None and (time.time() - start) >= timeout:
+            return None
+        time.sleep(0.02)
+
+
+def normalize_key(raw):
+    """Normalize raw KEY_PRESSED values into simple tokens.
+    Examples: '\x1b[C' -> 'right', '\r' -> 'enter'
+    """
+    try:
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode(errors="ignore")
+        if not isinstance(raw, str):
+            return raw
+        r = raw.lower()
+        if r == "\r" or r == "\n":
+            return "enter"
+        if r == "\x1b[d":
+            return "left"
+        if r == "\x1b[c":
+            return "right"
+        if r == "\x1b[a":
+            return "up"
+        if r == "\x1b[b":
+            return "down"
+        # Common printable keys
+        return r
+    except Exception:
+        return raw
+
+
 def play_mirror_reality_epilogue():
     narrative_lines = [
         "The Diverter slams shut and the desk dissolves into argent static.",
@@ -1830,8 +2009,16 @@ def build_status_ribbon(calc_insp, calc_conc, mot_pct=None, mot_mult=None):
 
 
 def reveal_text(tag, text, placeholder="???"):
-                                                         
-    return text
+    # Only reveal the text if the player already knows it or the
+    # knowledge requirements are met (e.g., money since reset thresholds).
+    if not tag:
+        return text
+    if is_known(tag):
+        return text
+    # attempt_reveal will check knowledge_requirements_met and mark known
+    if attempt_reveal(tag):
+        return text
+    return placeholder
 
 
 def layer_name(key, placeholder="???"):
@@ -1878,10 +2065,12 @@ KNOWLEDGE_REQUIREMENTS = {
     "ui_currency_clear": {"inspiration_resets": 1},
     "ui_upgrade_catalogue": {"inspiration_resets": 1},
     "ui_auto_prompt": {"concept_resets": 1, "play_time": 480},
-    "layer_corridor": {"inspiration_resets": 2},
-    "currency_corridor": {"inspiration_resets": 3},
-    "layer_archive": {"concept_resets": 2},
-    "currency_archive": {"concept_resets": 3},
+    # Reveal corridor/archive based on money since reset (approach),
+    # while their internal calculations still use current money values.
+    "layer_corridor": {"money_since_reset": INSPIRATION_UNLOCK_MONEY},
+    "currency_corridor": {"money_since_reset": INSPIRATION_UNLOCK_MONEY},
+    "layer_archive": {"money_since_reset": CONCEPTS_UNLOCK_MONEY},
+    "currency_archive": {"money_since_reset": CONCEPTS_UNLOCK_MONEY},
     "escape_window": {"mystery_revealed": 1},
     "escape_route": {"stability_resets": 1},
     "escape_signal": {"concept_resets": 1},
@@ -2143,6 +2332,20 @@ def load_game():
         state["settings_disable_steam"] = False
     if "settings_show_signal_debug" not in state:
         state["settings_show_signal_debug"] = False
+    # migrate/load persisted keybinds and settings
+    if "keybinds" not in state or not isinstance(state.get("keybinds"), dict):
+        state["keybinds"] = DEFAULT_KEYBINDS.copy()
+    state.setdefault("settings", {})
+    defaults = {
+        "auto_fullscreen": getattr(config, "AUTO_FULLSCREEN", False),
+        "escape_mode": getattr(config, "ESCAPE_MODE", True),
+        "beeps": True,
+        "color_theme": "default",
+        "show_floating_hints": True,
+        "autosave": True,
+    }
+    for k, v in defaults.items():
+        state["settings"].setdefault(k, v)
     state.setdefault("settings_notice", "")
     state.setdefault("settings_notice_until", 0.0)
     state.setdefault("settings_cursor", 0)
@@ -9284,6 +9487,16 @@ def main_loop():
                                 k = k_raw.lower()
                             except Exception:
                                 k = k_raw
+
+                    # Honor user keybinds for opening the settings/menu
+                    keybinds_map = game.get("keybinds", DEFAULT_KEYBINDS)
+                    if k == keybinds_map.get("open_menu"):
+                        open_settings_menu(game)
+                        if current_screen == "rpg":
+                            render_rpg_screen()
+                        else:
+                            render_ui(screen=current_screen)
+                        continue
 
                     if k == "g":
                         if guide_available():

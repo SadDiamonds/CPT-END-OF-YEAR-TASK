@@ -221,6 +221,60 @@ AUTOMATION_EXCHANGE_RATE = 2_500_000  # money required per Signal Bit
 STABILITY_REWARD_MULT = 0.5
 STABILITY_REWARD_EXP = 0.55
 
+# --- Settings / Keybinds ---
+# Default keybinds used by the UI. These can be shown and remapped in-game.
+DEFAULT_KEYBINDS = {
+    "open_menu": "esc",
+    "open_automation_lab": "3",
+    "open_guide": "g",
+    "confirm": "enter",
+    "cancel": "b",
+    "exchange_max": "e",
+    "exchange_custom": "r",
+    "trigger_manual_collapse": "l",
+}
+
+# Settings sections describe grouped settings for the settings screen.
+SETTINGS_SECTIONS = [
+    {
+        "id": "general",
+        "label": "General",
+        "items": [
+            {"id": "auto_fullscreen", "type": "bool", "label": "Auto fullscreen", "key": "AUTO_FULLSCREEN"},
+            {"id": "escape_mode", "type": "bool", "label": "Escape mode (terminology)", "key": "ESCAPE_MODE"},
+        ],
+    },
+    {
+        "id": "audio",
+        "label": "Audio",
+        "items": [
+            {"id": "beeps", "type": "bool", "label": "Terminal beeps (if supported)", "key": None},
+        ],
+    },
+    {
+        "id": "controls",
+        "label": "Controls",
+        "items": [
+            {"id": "keybinds", "type": "keybinds", "label": "Keybindings", "key": None},
+        ],
+    },
+    {
+        "id": "display",
+        "label": "Display",
+        "items": [
+            {"id": "color_theme", "type": "choice", "label": "Color theme", "choices": ["default", "mono", "high_contrast"], "key": None},
+            {"id": "show_floating_hints", "type": "bool", "label": "Show floating hints", "key": None},
+        ],
+    },
+    {
+        "id": "gameplay",
+        "label": "Gameplay",
+        "items": [
+            {"id": "autosave", "type": "bool", "label": "Autosave after major events", "key": None},
+        ],
+    },
+]
+
 WAKE_TIMER_START = 120
 WAKE_TIMER_UPGRADES = [
     {
