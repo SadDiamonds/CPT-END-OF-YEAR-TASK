@@ -221,8 +221,6 @@ AUTOMATION_EXCHANGE_RATE = 2_500_000  # money required per Signal Bit
 STABILITY_REWARD_MULT = 0.5
 STABILITY_REWARD_EXP = 0.55
 
-# --- Settings / Keybinds ---
-# Default keybinds used by the UI. These can be shown and remapped in-game.
 DEFAULT_KEYBINDS = {
     "open_menu": "esc",
     "open_automation_lab": "3",
@@ -234,7 +232,6 @@ DEFAULT_KEYBINDS = {
     "trigger_manual_collapse": "l",
 }
 
-# Settings sections describe grouped settings for the settings screen.
 SETTINGS_SECTIONS = [
     {
         "id": "general",

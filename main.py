@@ -341,9 +341,6 @@ def run_intro_boot_sequence():
 
 
 def open_settings_menu(game):
-    """Advanced settings UI: persists into `game['settings']` and `game['keybinds']`.
-    Supports bool toggles, choice cycling and key remapping. Changes are saved on exit.
-    """
     keybinds = game.setdefault("keybinds", DEFAULT_KEYBINDS.copy())
     settings = game.setdefault("settings", {})
 
@@ -359,7 +356,6 @@ def open_settings_menu(game):
             if item["type"] == "keybinds":
                 lines.append(f"{prefix}{item['label']} (open to edit)")
             else:
-                # Read value from persisted settings if available
                 val = "-"
                 sid = item.get("id")
                 if sid and sid in settings:
@@ -371,7 +367,7 @@ def open_settings_menu(game):
                 lines.append(f"{prefix}{item['label']}: {val}")
 
         lines.append("")
-        lines.append("[←/→] Switch tabs   [↑/↓] Select   [Enter] Edit/Open   [Q] Quit")
+        lines.append("[a/d] Switch tabs   [w/s] Select   [Enter] Edit/Open   [Q] Quit")
         box = boxed_lines(lines, title=" Settings ", pad_top=1, pad_bottom=1)
         render_frame(box)
 
@@ -380,28 +376,26 @@ def open_settings_menu(game):
             continue
         key = ch
         if key in ("q", "b", "esc"):
-            # Persist settings and keybinds when exiting
             game["keybinds"] = keybinds
             game["settings"] = settings
             save_game()
-            # apply immediately
             try:
                 apply_settings(game)
             except Exception:
                 pass
             return
-        if key == "left" or key == "\x1b[D":
+        if key == "left" or key == "a":
             tab_idx = (tab_idx - 1) % len(tabs)
             selected_idx = 0
             continue
-        if key == "right" or key == "\x1b[C":
+        if key == "right" or key == "d":
             tab_idx = (tab_idx + 1) % len(tabs)
             selected_idx = 0
             continue
-        if key == "up" or key == "\x1b[A":
+        if key == "up" or key == "w":
             selected_idx = max(0, selected_idx - 1)
             continue
-        if key == "down" or key == "\x1b[B":
+        if key == "down" or key == "s":
             selected_idx = min(len(items) - 1, selected_idx + 1)
             continue
         if key in ("\r", "\n", "enter"):
@@ -3027,7 +3021,7 @@ def build_settings_lines():
         if option.get("spacer_after"):
             lines.append("")
     lines.append(
-        f"{Fore.YELLOW}Use Up/Down to move, Enter to activate, B or S to return. , and . switch views.{Style.RESET_ALL}"
+        f"{Fore.YELLOW}Use number keys to select, B or S to return. , and . switch views.{Style.RESET_ALL}"
     )
     notice = game.get("settings_notice", "")
     if notice and time.time() < game.get("settings_notice_until", 0.0):
@@ -6395,24 +6389,12 @@ def render_ui(screen="work"):
     work_bar = f"[{'#' * filled}{'-' * (bar_len - filled)}] {int(prog * 100):3d}%"
 
     if screen == "settings":
-        settings_lines = build_settings_lines()
-        term_width, term_height = get_term_size()
-        padding = max(0, term_height - 4 - len(settings_lines))
-        settings_lines += [""] * padding
-        tab_line = build_tab_bar_text(screen)
-        layer_title = f" {tab_line} " if tab_line else " Settings "
-        box = boxed_lines(settings_lines, title=layer_title, pad_top=2, pad_bottom=2)
-        view_offset_x = 0
-        view_offset_y = 0
-        if resized:
-            print("\033[2J\033[H", end="")
-            last_size = current_size
-            last_render = ""
-        frame = "\033[H" + "\n".join(box[: term_height])
-        if frame != last_render:
-            sys.stdout.write(frame)
-            sys.stdout.flush()
-            last_render = frame
+        # Settings are handled by the modal `open_settings_menu` to avoid
+        # duplicate UIs. Open the modal and then return.
+        try:
+            open_settings_menu(game)
+        except Exception:
+            pass
         return
 
     top_left_lines = []
@@ -9612,16 +9594,6 @@ def main_loop():
                             except Exception:
                                 k = k_raw
 
-                    # Honor user keybinds for opening the settings/menu
-                    keybinds_map = game.get("keybinds", DEFAULT_KEYBINDS)
-                    if k == keybinds_map.get("open_menu"):
-                        open_settings_menu(game)
-                        if current_screen == "rpg":
-                            render_rpg_screen()
-                        else:
-                            render_ui(screen=current_screen)
-                        continue
-
                     if k == "g":
                         if guide_available():
                             open_guide_book()
@@ -9639,6 +9611,16 @@ def main_loop():
                         direction = -1 if k == "," else 1
                         next_screen = cycle_screen(current_screen, direction)
                         if next_screen != current_screen:
+                            if next_screen == "settings":
+                                try:
+                                    open_settings_menu(game)
+                                except Exception:
+                                    pass
+                                if current_screen == "rpg":
+                                    render_rpg_screen()
+                                else:
+                                    render_ui(screen=current_screen)
+                                continue
                             current_screen = next_screen
                             if current_screen != "rpg":
                                 last_render = ""
@@ -9688,16 +9670,14 @@ def main_loop():
                             else:
                                 rpg_handle_command(k)
                     elif current_screen == "settings":
-                        result = handle_settings_menu_input(k)
-                        if result == "back":
-                            current_screen = "work"
-                            last_render = ""
-                        elif isinstance(result, tuple) and result and result[0] == "switch":
-                            _, target = result
-                            current_screen = target
-                            last_render = ""
-                        elif result == "refresh":
-                            last_render = ""
+                        # Legacy path: map to the new settings modal so there
+                        # is a single settings UI in the game.
+                        try:
+                            open_settings_menu(game)
+                        except Exception:
+                            pass
+                        current_screen = "work"
+                        last_render = ""
                         continue
                     elif k == "w":
                         now = time.time()
