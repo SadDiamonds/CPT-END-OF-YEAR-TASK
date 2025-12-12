@@ -271,6 +271,8 @@ SETTINGS_SECTIONS = [
         "label": "Gameplay",
         "items": [
             {"id": "autosave", "type": "bool", "label": "Autosave after major events", "key": None},
+            {"id": "export_settings", "type": "action", "label": "Export settings to file", "key": None},
+            {"id": "import_settings", "type": "action", "label": "Import settings from file", "key": None},
         ],
     },
 ]

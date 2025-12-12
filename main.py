@@ -384,6 +384,11 @@ def open_settings_menu(game):
             game["keybinds"] = keybinds
             game["settings"] = settings
             save_game()
+            # apply immediately
+            try:
+                apply_settings(game)
+            except Exception:
+                pass
             return
         if key == "left" or key == "\x1b[D":
             tab_idx = (tab_idx - 1) % len(tabs)
@@ -461,6 +466,12 @@ def open_settings_menu(game):
                     settings[sid] = choices[idx]
                     game["settings"] = settings
                     set_settings_notice(f"{sel.get('label')} = {settings[sid]}", duration=1.2)
+                elif stype == "action" and sid:
+                    # handle simple actions like export/import
+                    if sid == "export_settings":
+                        export_settings(game)
+                    elif sid == "import_settings":
+                        import_settings(game)
                 continue
 
 
@@ -707,7 +718,19 @@ def challenge_persistent_state():
 def begin_challenge_run(entry):
     if challenge_run_active_flag():
         return False
-    backup = copy.deepcopy(game)
+    # Deep-copy the game state for backup, but guard against values
+    # that may not deepcopy cleanly on some platforms (e.g., threads,
+    # file handles or OS-specific objects). Perform a per-key attempt
+    # to deepcopy and fall back to a shallow copy or reference.
+    backup = {}
+    for k, v in list(game.items()):
+        try:
+            backup[k] = copy.deepcopy(v)
+        except Exception:
+            try:
+                backup[k] = copy.copy(v)
+            except Exception:
+                backup[k] = v
     game["_challenge_backup"] = backup
     game["challenge_run_active"] = True
     game["challenge_run_id"] = entry.get("id") if entry else None
@@ -1712,6 +1735,97 @@ def normalize_key(raw):
         return raw
 
 
+def apply_settings(game):
+    """Apply settings immediately from `game['settings']` and `game['keybinds']`.
+
+    This updates module-level flags that other systems read and performs
+    immediate actions where sensible (fullscreen, autosave, beeps confirmation).
+    """
+    try:
+        settings = game.get("settings", {})
+        # AUTO_FULLSCREEN / ESCAPE_MODE live toggle
+        af = bool(settings.get("auto_fullscreen", getattr(config, "AUTO_FULLSCREEN", False)))
+        setattr(config, "AUTO_FULLSCREEN", af)
+        if af:
+            # Attempt to request fullscreen (best-effort)
+            try:
+                request_fullscreen()
+            except Exception:
+                pass
+
+        esc = bool(settings.get("escape_mode", getattr(config, "ESCAPE_MODE", True)))
+        setattr(config, "ESCAPE_MODE", esc)
+
+        # Color theme — store on game for later rendering usage
+        game["color_theme"] = settings.get("color_theme", game.get("color_theme", "default"))
+
+        # Autosave: if user turned it on, persist immediately
+        if settings.get("autosave"):
+            try:
+                save_game()
+            except Exception:
+                pass
+
+        # Beep: optional immediate feedback when enabling
+        if settings.get("beeps"):
+            try:
+                sys.stdout.write("\a")
+                sys.stdout.flush()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def export_settings(game, path=None):
+    """Export current settings and keybinds to a JSON file.
+
+    Uses `data/settings_export.json` by default.
+    """
+    try:
+        data = {
+            "settings": game.get("settings", {}),
+            "keybinds": game.get("keybinds", {}),
+        }
+        if not path:
+            path = os.path.join(DATA_DIR, "settings_export.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+        set_settings_notice(f"Settings exported to {os.path.basename(path)}", duration=2.5)
+        return True
+    except Exception:
+        set_settings_notice("Failed to export settings.", duration=2.5)
+        return False
+
+
+def import_settings(game, path=None):
+    """Import settings and keybinds from a JSON file.
+
+    Loads from `data/settings_export.json` by default and applies them.
+    """
+    try:
+        if not path:
+            path = os.path.join(DATA_DIR, "settings_export.json")
+        if not os.path.exists(path):
+            set_settings_notice(f"No import file found: {os.path.basename(path)}", duration=2.5)
+            return False
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        settings = data.get("settings") or {}
+        keybinds = data.get("keybinds") or {}
+        if isinstance(settings, dict):
+            game["settings"] = settings
+        if isinstance(keybinds, dict):
+            game["keybinds"] = keybinds
+        save_game()
+        apply_settings(game)
+        set_settings_notice("Settings imported.", duration=2.5)
+        return True
+    except Exception:
+        set_settings_notice("Failed to import settings.", duration=2.5)
+        return False
+
+
 def play_mirror_reality_epilogue():
     narrative_lines = [
         "The Diverter slams shut and the desk dissolves into argent static.",
@@ -2277,7 +2391,17 @@ def format_currency(amount):
 def save_game():
     ensure_rpg_state()
     game["last_save_timestamp"] = time.time()
-    payload = copy.deepcopy(game)
+    # Create a safe deepcopy for serialization: try deep-copy per-key and
+    # fall back to shallow copy or reference if deepcopy fails for a value.
+    payload = {}
+    for k, v in list(game.items()):
+        try:
+            payload[k] = copy.deepcopy(v)
+        except Exception:
+            try:
+                payload[k] = copy.copy(v)
+            except Exception:
+                payload[k] = v
     target_path = current_save_path()
     tmp_path = target_path + ".tmp"
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
