@@ -367,7 +367,8 @@ def open_settings_menu(game):
                 lines.append(f"{prefix}{item['label']}: {val}")
 
         lines.append("")
-        lines.append("[a/d] Switch tabs   [w/s] Select   [Enter] Edit/Open   [Q] Quit")
+        # navigation hints use WASD tokens (arrow keys map to WASD now)
+        lines.append(f"[{render_key_label('a')}/{render_key_label('d')}] Switch tabs   [{render_key_label('w')}/{render_key_label('s')}] Select   [{render_key_label('enter')}] Edit/Open   [{render_key_label('q')}] Quit")
         box = boxed_lines(lines, title=" Settings ", pad_top=1, pad_bottom=1)
         render_frame(box)
 
@@ -410,7 +411,9 @@ def open_settings_menu(game):
                         selmark = ">" if i == kb_idx else " "
                         lines.append(f"{selmark} {kname}: {keybinds.get(kname)}")
                     lines.append("")
-                    lines.append("[↑/↓] select  [Enter] remap  [B/Q] back")
+                    # show remap hints using current movement keys and cancel key
+                    cancel_key = game.get('keybinds', {}).get('cancel', 'b')
+                    lines.append(f"[{render_key_label('w')}/{render_key_label('s')}] select  [{render_key_label('enter')}] remap  [{render_key_label(cancel_key)}/{render_key_label('q')}] back")
                     box = boxed_lines(lines, title=" Remap Keys ", pad_top=1, pad_bottom=1)
                     render_frame(box)
                     ch2 = get_key_with_timeout(0.1)
@@ -419,10 +422,11 @@ def open_settings_menu(game):
                     k2 = ch2
                     if k2 in ("b", "q", "esc"):
                         break
-                    if k2 == "up" or k2 == "\x1b[A":
+                    k2n = normalize_key(k2) if k2 else k2
+                    if k2n == "w":
                         kb_idx = max(0, kb_idx - 1)
                         continue
-                    if k2 == "down" or k2 == "\x1b[B":
+                    if k2n == "s":
                         kb_idx = min(len(kb_keys) - 1, kb_idx + 1)
                         continue
                     if k2 in ("\r", "\n", "enter"):
@@ -1702,9 +1706,6 @@ def get_key_with_timeout(timeout=None):
 
 
 def normalize_key(raw):
-    """Normalize raw KEY_PRESSED values into simple tokens.
-    Examples: '\x1b[C' -> 'right', '\r' -> 'enter'
-    """
     try:
         if not raw:
             return None
@@ -1716,17 +1717,40 @@ def normalize_key(raw):
         if r == "\r" or r == "\n":
             return "enter"
         if r == "\x1b[d":
-            return "left"
+            return "a"
         if r == "\x1b[c":
-            return "right"
+            return "d"
         if r == "\x1b[a":
-            return "up"
+            return "w"
         if r == "\x1b[b":
-            return "down"
+            return "s"
         # Common printable keys
         return r
     except Exception:
         return raw
+
+
+def render_key_label(key):
+    """Return a human-friendly label for a key token.
+
+    Examples: 'enter' -> 'Enter', 'a' -> 'A', None -> '?'
+    """
+    if not key:
+        return "?"
+    try:
+        k = str(key)
+    except Exception:
+        return "?"
+    k = k.lower()
+    if k in ("enter", "return"):
+        return "Enter"
+    if k in ("esc", "escape"):
+        return "Esc"
+    if k == " ":
+        return "Space"
+    if len(k) == 1:
+        return k.upper()
+    return k.title()
 
 
 def apply_settings(game):
@@ -3338,16 +3362,27 @@ def choose_save_slot():
                         seq += nxt
                         if nxt.isalpha():
                             break
+                    # map arrow sequences to WASD equivalents and apply
                     if seq in ("\x1b[A", "\x1bOA"):
+                        kseq = "w"
+                    elif seq in ("\x1b[B", "\x1bOB"):
+                        kseq = "s"
+                    elif seq in ("\x1b[C", "\x1bOC"):
+                        kseq = "d"
+                    elif seq in ("\x1b[D", "\x1bOD"):
+                        kseq = "a"
+                    else:
+                        kseq = None
+                    if kseq == "w":
                         selected = (selected - 2) % SAVE_SLOT_COUNT
                         continue
-                    if seq in ("\x1b[B", "\x1bOB"):
+                    if kseq == "s":
                         selected = (selected + 2) % SAVE_SLOT_COUNT
                         continue
-                    if seq in ("\x1b[C", "\x1bOC"):
+                    if kseq == "d":
                         selected = (selected + 1) % SAVE_SLOT_COUNT
                         continue
-                    if seq in ("\x1b[D", "\x1bOD"):
+                    if kseq == "a":
                         selected = (selected - 1) % SAVE_SLOT_COUNT
                         continue
                     continue
