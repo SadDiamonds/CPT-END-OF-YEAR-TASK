@@ -1692,7 +1692,6 @@ def wait_for_any_keypress(timeout=None):
 
 
 def get_key_with_timeout(timeout=None):
-    """Return the next key pressed (normalized) or None if timeout reached."""
     global KEY_PRESSED
     start = time.time()
     while True:
@@ -1724,17 +1723,12 @@ def normalize_key(raw):
             return "w"
         if r == "\x1b[b":
             return "s"
-        # Common printable keys
         return r
     except Exception:
         return raw
 
 
 def render_key_label(key):
-    """Return a human-friendly label for a key token.
-
-    Examples: 'enter' -> 'Enter', 'a' -> 'A', None -> '?'
-    """
     if not key:
         return "?"
     try:
@@ -1753,19 +1747,34 @@ def render_key_label(key):
     return k.title()
 
 
-def apply_settings(game):
-    """Apply settings immediately from `game['settings']` and `game['keybinds']`.
+def _get_bound_key(game_obj, action):
+    try:
+        binds = (game_obj or globals().get('game') or {}).get('keybinds', {})
+        val = binds.get(action) or DEFAULT_KEYBINDS.get(action)
+        if val is None:
+            return None
+        return normalize_key(val)
+    except Exception:
+        return None
 
-    This updates module-level flags that other systems read and performs
-    immediate actions where sensible (fullscreen, autosave, beeps confirmation).
-    """
+
+def is_binding_pressed(game_obj, token, action_name):
+    if not token:
+        return False
+    try:
+        tnorm = normalize_key(token) if isinstance(token, str) else token
+        bound = _get_bound_key(game_obj, action_name)
+        return bound is not None and tnorm == bound
+    except Exception:
+        return False
+
+
+def apply_settings(game):
     try:
         settings = game.get("settings", {})
-        # AUTO_FULLSCREEN / ESCAPE_MODE live toggle
         af = bool(settings.get("auto_fullscreen", getattr(config, "AUTO_FULLSCREEN", False)))
         setattr(config, "AUTO_FULLSCREEN", af)
         if af:
-            # Attempt to request fullscreen (best-effort)
             try:
                 request_fullscreen()
             except Exception:
@@ -1774,17 +1783,18 @@ def apply_settings(game):
         esc = bool(settings.get("escape_mode", getattr(config, "ESCAPE_MODE", True)))
         setattr(config, "ESCAPE_MODE", esc)
 
-        # Color theme — store on game for later rendering usage
         game["color_theme"] = settings.get("color_theme", game.get("color_theme", "default"))
+        try:
+            apply_color_theme(game.get("color_theme", "default"))
+        except Exception:
+            pass
 
-        # Autosave: if user turned it on, persist immediately
         if settings.get("autosave"):
             try:
                 save_game()
             except Exception:
                 pass
 
-        # Beep: optional immediate feedback when enabling
         if settings.get("beeps"):
             try:
                 sys.stdout.write("\a")
@@ -1795,11 +1805,62 @@ def apply_settings(game):
         pass
 
 
-def export_settings(game, path=None):
-    """Export current settings and keybinds to a JSON file.
+def apply_color_theme(theme_name: str):
+    try:
+        t = (theme_name or "").lower()
+        if t == "mono":
+            for k in list(ROOM_COLOR_MAP.keys()):
+                ROOM_COLOR_MAP[k] = ""
+        elif t == "high_contrast":
+            ROOM_COLOR_MAP.update(
+                {
+                    "start": Fore.WHITE,
+                    "enemy": Fore.LIGHTRED_EX,
+                    "elite": Fore.MAGENTA,
+                    "boss": Fore.LIGHTMAGENTA_EX,
+                    "treasure": Fore.LIGHTYELLOW_EX,
+                    "healer": Fore.CYAN,
+                    "trap": Fore.RED,
+                    "empty": Fore.LIGHTBLACK_EX,
+                    "secret": Fore.BLUE,
+                    "secret_vault": Fore.YELLOW,
+                    "secret_echo": Fore.CYAN,
+                    "secret_sentinel": Fore.MAGENTA,
+                    "secret_exit": Fore.GREEN,
+                    "exit": Fore.GREEN,
+                    "stairs": Fore.GREEN,
+                }
+            )
+        else:
+            # restore default palette
+            ROOM_COLOR_MAP.update(
+                {
+                    "start": Fore.WHITE,
+                    "enemy": Fore.RED,
+                    "elite": Fore.MAGENTA,
+                    "boss": Fore.LIGHTMAGENTA_EX,
+                    "treasure": Fore.YELLOW,
+                    "healer": Fore.CYAN,
+                    "trap": Fore.LIGHTRED_EX,
+                    "empty": Fore.LIGHTBLACK_EX,
+                    "secret": Fore.BLUE,
+                    "secret_vault": Fore.YELLOW,
+                    "secret_echo": Fore.CYAN,
+                    "secret_sentinel": Fore.MAGENTA,
+                    "secret_exit": Fore.GREEN,
+                    "exit": Fore.GREEN,
+                    "stairs": Fore.GREEN,
+                }
+            )
+    except Exception:
+        pass
+try:
+    apply_color_theme(game.get("color_theme", "default"))
+except Exception:
+    pass
 
-    Uses `data/settings_export.json` by default.
-    """
+
+def export_settings(game, path=None):
     try:
         data = {
             "settings": game.get("settings", {}),
@@ -1817,10 +1878,6 @@ def export_settings(game, path=None):
 
 
 def import_settings(game, path=None):
-    """Import settings and keybinds from a JSON file.
-
-    Loads from `data/settings_export.json` by default and applies them.
-    """
     try:
         if not path:
             path = os.path.join(DATA_DIR, "settings_export.json")
@@ -2905,7 +2962,7 @@ def open_quick_travel_menu():
                 k = "s"
             else:
                 continue
-        if k == "b":
+        if is_binding_pressed(game, k, "cancel"):
             return None
         if k in {"w", "s"}:
             delta = -1 if k == "w" else 1
@@ -4533,7 +4590,7 @@ def open_guide_book():
                 k = "enter"
             else:
                 k = k.lower()
-        if k == "b":
+        if is_binding_pressed(game, k, "cancel"):
             return
         if k in {"w", "s"} and topics:
             delta = -1 if k == "w" else 1
@@ -5927,7 +5984,7 @@ def open_wake_timer_menu(auto_invoked=False):
                 k = k_input.lower()
             except Exception:
                 continue
-            if k == "b":
+            if is_binding_pressed(game, k, "cancel"):
                 last_render = ""
                 return
             if k.isdigit():
@@ -6140,7 +6197,7 @@ def open_upgrade_menu():
         if KEY_PRESSED:
             k = KEY_PRESSED.lower()
             KEY_PRESSED = None
-            if k == "b":
+            if is_binding_pressed(game, k, "cancel"):
                 last_render = ""
                 return
             elif k == "z":
@@ -9693,7 +9750,7 @@ def main_loop():
                                     rpg_log("Can't minimize the fight.")
                                 else:
                                     game["rpg_view"] = "desktop"
-                            elif k == "b":
+                            elif is_binding_pressed(game, k, "cancel"):
                                 if rpg.get("state") == "shop":
                                     rpg_log("Use C to climb out of the shop.")
                                     continue
@@ -9819,7 +9876,7 @@ def main_loop():
                     ):
                         current_screen = "automation"
                     elif current_screen == "inspiration":
-                        if k == "b":
+                        if is_binding_pressed(game, k, "cancel"):
                             current_screen = "work"
                         elif k == "z":
                             total_pages = max(1, game.get("insp_page_pages", 1))
@@ -9834,7 +9891,7 @@ def main_loop():
                                 buy_tree_upgrade(INSPIRE_UPGRADES, idx)
                             time.sleep(0.2)
                     elif current_screen == "concepts":
-                        if k == "b":
+                        if is_binding_pressed(game, k, "cancel"):
                             current_screen = "work"
                         elif k == "z":
                             total_pages = max(1, game.get("concept_page_pages", 1))
@@ -9849,7 +9906,7 @@ def main_loop():
                                 buy_tree_upgrade(CONCEPT_UPGRADES, idx)
                             time.sleep(0.2)
                     elif current_screen == "automation":
-                        if k == "b":
+                        if is_binding_pressed(game, k, "cancel"):
                             current_screen = "work"
                         elif k == "z":
                             total_pages = max(1, game.get("automation_page_pages", 1))
