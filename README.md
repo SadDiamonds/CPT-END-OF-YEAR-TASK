@@ -26,6 +26,6 @@ Consider starting challenge runs *after* you buy the 5th upgrade 3 times (hint h
 https://github.com/SadDiamonds/CPT-END-OF-YEAR-TASK/releases/latest
 
 ## Credits
-- Lead Developer: SadDiamonds
+- Lead Developer: Gordon
 - Tester: Isaac
 - Tester & Balancer: David
